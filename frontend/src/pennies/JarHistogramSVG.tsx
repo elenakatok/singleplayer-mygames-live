@@ -6,18 +6,15 @@
 // distinct series with a legend.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import { computeHistogram } from './histogram'
+
 const BID_COLOR = '#2563eb'      // blue
 const ESTIMATE_COLOR = '#f59e0b' // amber
 
 export function JarHistogramSVG({ bids, estimates }: { bids: number[]; estimates: number[] }) {
-  const all = [...bids, ...estimates]
-  const maxDollar = Math.max(1, Math.ceil(Math.max(0, ...all)))
-  const bins = Array.from({ length: maxDollar }, (_, k) => k) // [0..maxDollar-1], bin k = [k, k+1)
-
-  const countIn = (xs: number[], k: number) => xs.filter(v => Math.floor(v) === k).length
-  const bidCounts = bins.map(k => countIn(bids, k))
-  const estCounts = bins.map(k => countIn(estimates, k))
-  const maxCount = Math.max(1, ...bidCounts, ...estCounts)
+  // Bins 0..floor(max) inclusive — the top whole-dollar bar is always included (see
+  // histogram.ts; ceil(max) used to drop a value that fell exactly on a whole dollar).
+  const { bins, bidCounts, estCounts, maxCount } = computeHistogram(bids, estimates)
 
   // Layout.
   const padL = 40, padR = 16, padT = 28, padB = 46
