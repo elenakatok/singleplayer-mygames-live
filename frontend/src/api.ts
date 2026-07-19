@@ -91,9 +91,13 @@ export type ScoreResult = {
 
 export const penniesScoreAndRecord = () => callFn<ScoreResult>('penniesScoreAndRecord', {})
 
+export const penniesSyncRoster = () =>
+  callFn<{ ok: boolean; synced?: number; note?: string }>('penniesSyncRoster', {})
+
 export type ReportParticipant = {
   participant_id: string
   name: string | null
+  launched: boolean
   submitted: boolean
   estimate: number | null
   bid: number | null

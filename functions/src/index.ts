@@ -31,6 +31,7 @@ export { penniesSubmit } from './pennies/submit'
 
 // Instructor.
 export { penniesGetConfig, penniesUpdateConfig } from './pennies/instructorConfig'
+export { penniesSyncRoster } from './pennies/syncRoster'
 export { penniesScoreAndRecord } from './pennies/scoreAndRecord'
 export { penniesGetReport } from './pennies/report'
 

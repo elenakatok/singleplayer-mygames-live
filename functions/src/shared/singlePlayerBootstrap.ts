@@ -76,20 +76,23 @@ export function makeSinglePlayerBootstrap(opts: SinglePlayerBootstrapOptions) {
       const db = admin.firestore()
       const participantRef = db.collection(participantsCollection).doc(participantId)
 
-      // Idempotent upsert of the participant's identity. Created once on first launch;
-      // a returning student (resume) re-enters here only if they lack a live session,
-      // and we must NOT clobber an existing estimate/bid/submitted_at — so identity
-      // fields are set on create only, inside a transaction.
+      // Idempotent upsert of the participant's identity, marking THIS launch. We must
+      // NOT clobber an existing estimate/bid/submitted_at, so we only ever add fields
+      // via merge. `launched_at` is stamped on every launch — including when a roster
+      // sync (which never sets it) created the doc first — so the dashboard can tell a
+      // student who launched-but-didn't-submit from one who never launched at all.
       await db.runTransaction(async (tx) => {
         const snap = await tx.get(participantRef)
-        if (!snap.exists) {
-          tx.set(participantRef, {
-            participant_id: participantId,
-            game_instance_id: gameInstanceId,
-            ...(displayName ? { name: displayName } : {}),
-            created_at: FieldValue.serverTimestamp(),
-          })
-        }
+        const patch = snap.exists
+          ? { launched_at: FieldValue.serverTimestamp() }
+          : {
+              participant_id: participantId,
+              game_instance_id: gameInstanceId,
+              ...(displayName ? { name: displayName } : {}),
+              created_at: FieldValue.serverTimestamp(),
+              launched_at: FieldValue.serverTimestamp(),
+            }
+        tx.set(participantRef, patch, { merge: true })
       })
 
       const customToken = await admin.auth().createCustomToken(participantId, {

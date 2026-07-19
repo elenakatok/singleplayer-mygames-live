@@ -17,6 +17,8 @@ import {
 export interface ReportParticipant {
   participant_id: string
   name: string | null
+  /** Did the student actually open the game (penniesBootstrap stamped launched_at)? */
+  launched: boolean
   submitted: boolean
   estimate: number | null
   bid: number | null
@@ -48,6 +50,7 @@ export const penniesGetReport = onCall({ cors: PENNIES_CORS_ORIGINS }, async (re
     return {
       participant_id: d.id,
       name: (p.name as string | undefined) ?? null,
+      launched: p.launched_at != null,
       submitted: p.submitted_at != null,
       estimate: typeof p.estimate === 'number' ? p.estimate : null,
       bid: typeof p.bid === 'number' ? p.bid : null,

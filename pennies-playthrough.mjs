@@ -58,6 +58,19 @@ await new Promise(r => callbackServer.listen(0, r))
 const CALLBACK_URL = `http://127.0.0.1:${callbackServer.address().port}/push`
 const CALLBACK_SECRET = 'test-secret'
 
+// ── Mock classroom getCourseRoster (returns a configurable roster) ─────────────
+let currentRoster = []
+const rosterServer = http.createServer((req, res) => {
+  let raw = ''
+  req.on('data', c => (raw += c))
+  req.on('end', () => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true, participants: currentRoster }))
+  })
+})
+await new Promise(r => rosterServer.listen(0, r))
+const ROSTER_URL = `http://127.0.0.1:${rosterServer.address().port}/roster`
+
 async function main() {
   const stamp = Date.now()
 
@@ -141,13 +154,53 @@ async function main() {
   const e1 = await callFn('penniesScoreAndRecord', asDev(GID3))
   check(e1.ok && e1.result.winner === null, 'no submitters → winner null')
 
+  // ── Scenario 4 — roster sync + never-launched grading (Item 1) ──────────────
+  console.log('\n[4] Roster sync: submitted / launched-no-bid / never-launched all graded')
+  const GID4 = `pt-roster-${stamp}`
+  await callFn('penniesUpdateConfig', { ...asDev(GID4), true_value: 5.0 })
+  // Course roster of 5; only r1 + r2 will launch.
+  currentRoster = ['r1', 'r2', 'r3', 'r4', 'r5'].map(id => ({ participant_id: id, name: `Student ${id}`, external_id: null }))
+
+  // r1 launches + submits; r2 launches but never submits; r3/r4/r5 never launch.
+  await callFn('penniesBootstrap', { _test: { participant_id: 'r1', game_instance_id: GID4 } })
+  await callFn('penniesBootstrap', { _test: { participant_id: 'r2', game_instance_id: GID4 } })
+  await callFn('penniesSubmit', asStudent(GID4, 'r1', { estimate: 4, bid: 4.5 }))
+
+  // Instructor opens dashboard → syncRoster pulls the full class (mock getCourseRoster).
+  const sync = await callFn('penniesSyncRoster', { _dev: { game_instance_id: GID4, roster_url: ROSTER_URL, callback_secret: 'x' } })
+  check(sync.ok && sync.result.synced === 5, `syncRoster pulled all 5 rostered students (got ${sync.result?.synced})`)
+
+  // Report reflects all three states.
+  const rr = await callFn('penniesGetReport', asDev(GID4))
+  const rb = Object.fromEntries((rr.result?.participants ?? []).map(p => [p.participant_id, p]))
+  check((rr.result?.participants?.length ?? 0) === 5, 'report shows all 5 on roster (incl. never-launched)')
+  check(rb['r1'].submitted === true, 'r1 submitted')
+  check(rb['r2'].launched === true && rb['r2'].submitted === false, 'r2 launched but did not submit')
+  check(rb['r3'].launched === false && rb['r3'].submitted === false, 'r3 never launched (roster-only)')
+
+  // Score & Record grades EVERYONE on the roster.
+  const before4 = pushCount
+  const sc4 = await callFn('penniesScoreAndRecord', { _dev: { game_instance_id: GID4, callback_url: CALLBACK_URL, callback_secret: CALLBACK_SECRET } })
+  check(sc4.ok && sc4.result.scored === 5, `scored all 5 rostered students (got ${sc4.result?.scored})`)
+  check(pushCount - before4 === 5, `pushed 5 grade records (got ${pushCount - before4})`)
+  const p4 = Object.fromEntries(pushed.slice(-5).map(r => [r.participant_id, r]))
+  check(p4['r1'].normalized_score === 0 && p4['r1'].status === 'completed', 'r1 (submitted) → normalized 0, completed')
+  check(p4['r2'].normalized_score === -2 && p4['r2'].status === 'no_show', 'r2 (launched, no bid) → normalized −2, no_show')
+  check(p4['r3'].normalized_score === -2 && p4['r3'].status === 'no_show', 'r3 (NEVER launched) → normalized −2, no_show')
+
+  // Idempotent merge: re-syncing must not wipe r1's submission.
+  await callFn('penniesSyncRoster', { _dev: { game_instance_id: GID4, roster_url: ROSTER_URL, callback_secret: 'x' } })
+  const rr2 = await callFn('penniesGetReport', asDev(GID4))
+  const r1b = (rr2.result?.participants ?? []).find(p => p.participant_id === 'r1')
+  check(r1b?.submitted === true && r1b?.bid === 4.5, 're-sync did NOT clobber r1 submitted_at/bid (safe merge)')
+
   console.log(`\n${failed === 0 ? '✅' : '❌'} pennies harness: ${passed} passed, ${failed} failed`)
-  callbackServer.close()
+  callbackServer.close(); rosterServer.close()
   process.exit(failed === 0 ? 0 : 1)
 }
 
 main().catch(err => {
   console.error('harness crashed:', err)
-  callbackServer.close()
+  callbackServer.close(); rosterServer.close()
   process.exit(1)
 })

@@ -3,7 +3,7 @@ import {
   GameHeader, SortableTable, typography, colors, type SortableColumn,
 } from '@mygames/game-ui'
 import { useInstructorSession } from '../shared/useInstructorSession'
-import { penniesGetReport, penniesScoreAndRecord, CLASSROOM_URL, type ReportParticipant } from '../api'
+import { penniesGetReport, penniesScoreAndRecord, penniesSyncRoster, CLASSROOM_URL, type ReportParticipant } from '../api'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Instructor dashboard (spec §8.1). Roster: Name | Status | Outcome = THE BID.
@@ -20,6 +20,8 @@ import { penniesGetReport, penniesScoreAndRecord, CLASSROOM_URL, type ReportPart
 const money = (n: number | null) =>
   n == null ? '—' : '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
+const statusRank = (r: ReportParticipant) => (r.submitted ? 2 : r.launched ? 1 : 0)
+
 type SortKey = 'name' | 'status' | 'bid'
 
 const columns: readonly SortableColumn<ReportParticipant, SortKey>[] = [
@@ -32,8 +34,9 @@ const columns: readonly SortableColumn<ReportParticipant, SortKey>[] = [
   {
     key: 'status',
     label: 'Status',
-    render: r => (r.submitted ? 'Completed' : 'Not submitted'),
-    compare: (a, b) => Number(a.submitted) - Number(b.submitted),
+    render: r => (r.submitted ? 'Submitted' : r.launched ? 'Launched — no bid' : 'Not launched'),
+    // Rank so the sort orders Not launched < Launched-no-bid < Submitted.
+    compare: (a, b) => statusRank(a) - statusRank(b),
   },
   {
     key: 'bid',
@@ -59,7 +62,10 @@ export default function Dashboard() {
   }, [])
 
   useEffect(() => {
-    if (session.kind === 'ready') load()
+    if (session.kind !== 'ready') return
+    // Pull the full course roster first (so never-launched students appear + can be
+    // graded), then load. `finally` so the table still loads if no classroom is wired.
+    penniesSyncRoster().catch(() => {}).finally(load)
   }, [session.kind, load])
 
   const handleScore = async () => {
@@ -95,6 +101,7 @@ export default function Dashboard() {
   }
 
   const submittedCount = rows?.filter(r => r.submitted).length ?? 0
+  const launchedCount = rows?.filter(r => r.launched).length ?? 0
 
   return shell(
     <>
@@ -114,7 +121,7 @@ export default function Dashboard() {
           {scoring ? 'Scoring…' : 'Score & Record'}
         </button>
         <span style={{ color: colors.textSecondary }}>
-          {rows ? `${submittedCount} submitted / ${rows.length} launched` : ''}
+          {rows ? `${submittedCount} submitted / ${launchedCount} launched / ${rows.length} on roster` : ''}
         </span>
         {scoreMsg && <span data-testid="pennies-score-msg" style={{ color: colors.text }}>{scoreMsg}</span>}
       </div>
@@ -127,7 +134,7 @@ export default function Dashboard() {
           getRowKey={r => r.participant_id}
           initialSortKey="bid"
           initialSortDir="desc"
-          emptyMessage="No students have launched yet."
+          emptyMessage="No students on the roster yet — open the dashboard from the classroom to sync it."
         />
       )}
     </>,
