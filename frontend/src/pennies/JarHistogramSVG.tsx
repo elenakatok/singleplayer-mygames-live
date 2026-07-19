@@ -6,7 +6,7 @@
 // distinct series with a legend.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { computeHistogram } from './histogram'
+import { computeHistogram, plotWidth, tickStep } from './histogram'
 
 const BID_COLOR = '#2563eb'      // blue
 const ESTIMATE_COLOR = '#f59e0b' // amber
@@ -16,9 +16,9 @@ export function JarHistogramSVG({ bids, estimates }: { bids: number[]; estimates
   // histogram.ts; ceil(max) used to drop a value that fell exactly on a whole dollar).
   const { bins, bidCounts, estCounts, maxCount } = computeHistogram(bids, estimates)
 
-  // Layout.
+  // Layout — plot width is bounded (see plotWidth), so wide ranges pack tighter.
   const padL = 40, padR = 16, padT = 28, padB = 46
-  const plotW = Math.max(360, bins.length * 34)
+  const plotW = plotWidth(bins.length)
   const plotH = 220
   const W = padL + plotW + padR
   const H = padT + plotH + padB
@@ -33,8 +33,10 @@ export function JarHistogramSVG({ bids, estimates }: { bids: number[]; estimates
   const step = Math.max(1, Math.ceil(maxCount / 5))
   for (let c = 0; c <= maxCount; c += step) yTicks.push(c)
 
-  // X tick spacing — avoid crowding when there are many bins.
-  const xEvery = bins.length > 24 ? 5 : bins.length > 12 ? 2 : 1
+  // X tick density — adaptive: label EVERY whole-dollar bin when they fit, thinning to
+  // 2/5/10 only when adjacent labels would collide (see tickStep). Typical $0–$25 ranges
+  // stay every-bin; only much wider ranges thin.
+  const xEvery = tickStep(bins.length)
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: W, fontFamily: 'inherit' }} role="img" aria-label="Histogram of bids and estimates">

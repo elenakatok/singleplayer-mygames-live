@@ -22,6 +22,39 @@ export interface HistogramData {
   maxCount: number
 }
 
+// ── X-axis layout + adaptive tick density ───────────────────────────────────────
+// The plot width is BOUNDED: it grows with the bin count up to a cap, then stops, so
+// a wide range packs bins tighter (rather than the chart growing without limit). That
+// is what makes tick thinning real — with an unbounded width every bin is 34px and
+// nothing ever collides.
+const BAR_GROUP_PX = 34   // natural width per whole-dollar bin (two bars + gaps)
+const MIN_PLOT_W = 360
+const MAX_PLOT_W = 900
+const CHAR_PX = 6         // ~ width of one glyph ('$' or a digit) at fontSize 10
+const LABEL_GAP_PX = 8    // minimum clear space between adjacent labels
+
+/** Plot width in viewBox units: grows with bins, clamped to [MIN, MAX]. */
+export function plotWidth(binCount: number): number {
+  return Math.min(MAX_PLOT_W, Math.max(MIN_PLOT_W, binCount * BAR_GROUP_PX))
+}
+
+/**
+ * Adaptive x-tick step. Labels EVERY whole-dollar bin when they fit; when the range
+ * is wide enough that adjacent "$NN" labels would collide, thins to the SMALLEST of
+ * 2 / 5 / 10 that fits. Never returns a step that lets labels overlap (a label needs
+ * its glyph width + a gap; the widest label is the largest bin, "$" + (binCount-1)).
+ */
+export function tickStep(binCount: number): number {
+  if (binCount <= 1) return 1
+  const binW = plotWidth(binCount) / binCount
+  const widestLabelPx = `$${binCount - 1}`.length * CHAR_PX
+  const needed = widestLabelPx + LABEL_GAP_PX
+  for (const s of [1, 2, 5]) {
+    if (s * binW >= needed) return s
+  }
+  return 10
+}
+
 export function computeHistogram(bids: number[], estimates: number[]): HistogramData {
   const maxValue = Math.max(0, ...bids, ...estimates)
   // bins 0..floor(maxValue) inclusive → floor(maxValue)+1 bins. This guarantees the

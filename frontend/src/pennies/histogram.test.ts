@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeHistogram } from './histogram'
+import { computeHistogram, plotWidth, tickStep } from './histogram'
 
 // Regression: the Class Analysis histogram dropped the top bar when the largest value
 // fell exactly on a whole dollar (ceil(max) === max → bins 0..max-1, missing bin max).
@@ -54,5 +54,43 @@ describe('computeHistogram — top-bin inclusion', () => {
     expect(h.binCount).toBe(1)
     expect(h.bidCounts[0]).toBe(1)
     expect(h.estCounts[0]).toBe(1)
+  })
+})
+
+describe('tickStep — adaptive x-axis label density', () => {
+  const CHAR_PX = 6, GAP = 8
+  const labelPx = (binCount: number) => `$${binCount - 1}`.length * CHAR_PX
+
+  it('labels EVERY bin (step 1) for a narrow / typical range ($0–$25)', () => {
+    expect(tickStep(26)).toBe(1)   // the typical case
+    expect(tickStep(15)).toBe(1)   // $0–$14
+    expect(tickStep(24)).toBe(1)   // $0–$23 — fits, so every bin
+    expect(tickStep(1)).toBe(1)
+  })
+
+  it('a WIDE range picks a LARGER step rather than overlapping', () => {
+    expect(tickStep(51)).toBeGreaterThan(1)   // $0–$50
+    expect(tickStep(51)).toBe(2)
+    expect(tickStep(101)).toBe(5)             // $0–$100
+  })
+
+  it('the chosen step never lets adjacent labels overlap', () => {
+    // For any range, step * (space per bin) must clear the widest label + gap.
+    for (const binCount of [10, 26, 40, 51, 80, 101, 200]) {
+      const binW = plotWidth(binCount) / binCount
+      const spacing = tickStep(binCount) * binW
+      expect(spacing).toBeGreaterThanOrEqual(labelPx(binCount) + GAP)
+    }
+  })
+
+  it('is monotonic — wider ranges never use a smaller step', () => {
+    const steps = [15, 26, 40, 51, 80, 101].map(tickStep)
+    for (let i = 1; i < steps.length; i++) expect(steps[i]).toBeGreaterThanOrEqual(steps[i - 1])
+  })
+
+  it('plotWidth is bounded [360, 900]', () => {
+    expect(plotWidth(1)).toBe(360)
+    expect(plotWidth(26)).toBe(884)     // grows with bins…
+    expect(plotWidth(1000)).toBe(900)   // …until the cap
   })
 })
