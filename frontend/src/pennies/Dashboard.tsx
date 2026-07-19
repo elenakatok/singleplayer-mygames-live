@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { SortableTable, colors, type SortableColumn } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
-import { penniesGetReport, penniesScoreAndRecord, penniesSyncRoster, CLASSROOM_URL, type ReportParticipant } from '../api'
+import { penniesGetReport, penniesScoreAndRecord, penniesSyncRoster, penniesInstructorSession, CLASSROOM_URL, type ReportParticipant } from '../api'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Instructor dashboard (spec §8.1). Roster: Name | Status | Outcome = THE BID.
@@ -53,7 +53,7 @@ const columns: readonly SortableColumn<ReportParticipant, SortKey>[] = [
 const TITLE = 'Jar of Pennies — Dashboard'
 
 export default function Dashboard() {
-  const session = useInstructorSession()
+  const session = useInstructorSession(penniesInstructorSession)
   const navigate = useNavigate()
   const [rows, setRows] = useState<ReportParticipant[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)

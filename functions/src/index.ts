@@ -3,6 +3,7 @@ import * as admin from 'firebase-admin'
 import { makeSinglePlayerBootstrap } from './shared/singlePlayerBootstrap'
 import { makeSinglePlayerInstructorSession } from './shared/singlePlayerInstructorSession'
 import { PENNIES_COLLECTION_PREFIX, PENNIES_CORS_ORIGINS } from './pennies/config'
+import { POLL_COLLECTION_PREFIX, POLL_CORS_ORIGINS } from './poll/config'
 
 admin.initializeApp()
 
@@ -35,17 +36,40 @@ export { penniesSyncRoster } from './pennies/syncRoster'
 export { penniesScoreAndRecord } from './pennies/scoreAndRecord'
 export { penniesGetReport } from './pennies/report'
 
-// ── Health probe (onRequest; not a game endpoint) ─────────────────────────────
+// ── Poll (game_id: poll) — entirely ungraded; NO scoreAndRecord, NO gradebook push ──
 
-const CORS_ORIGINS = new Set(PENNIES_CORS_ORIGINS)
-
-export const penniesHealth = onRequest((req, res) => {
-  const origin = req.headers.origin ?? ''
-  if (CORS_ORIGINS.has(origin)) {
-    res.set('Access-Control-Allow-Origin', origin)
-    res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    res.set('Vary', 'Origin')
-  }
-  if (req.method === 'OPTIONS') { res.status(204).send(''); return }
-  res.json({ ok: true, game: 'pennies' })
+export const pollBootstrap = makeSinglePlayerBootstrap({
+  collectionPrefix: POLL_COLLECTION_PREFIX,
+  corsOrigins: POLL_CORS_ORIGINS,
 })
+export const pollInstructorSession = makeSinglePlayerInstructorSession({
+  corsOrigins: POLL_CORS_ORIGINS,
+})
+
+// Student.
+export { pollGetQuestions } from './poll/getQuestions'
+export { pollSubmitAnswer } from './poll/submitAnswer'
+
+// Instructor.
+export { pollGetConfig, pollUpdateConfig } from './poll/instructorConfig'
+export { pollSyncRoster } from './poll/syncRoster'
+export { pollGetReport } from './poll/report'
+
+// ── Health probes (onRequest; not game endpoints) ─────────────────────────────
+
+function makeHealth(game: string, origins: string[]) {
+  const allow = new Set(origins)
+  return onRequest((req, res) => {
+    const origin = req.headers.origin ?? ''
+    if (allow.has(origin)) {
+      res.set('Access-Control-Allow-Origin', origin)
+      res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+      res.set('Vary', 'Origin')
+    }
+    if (req.method === 'OPTIONS') { res.status(204).send(''); return }
+    res.json({ ok: true, game })
+  })
+}
+
+export const penniesHealth = makeHealth('pennies', PENNIES_CORS_ORIGINS)
+export const pollHealth = makeHealth('poll', POLL_CORS_ORIGINS)

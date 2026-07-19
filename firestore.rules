@@ -51,5 +51,29 @@ service cloud.firestore {
       allow read: if request.auth != null && request.auth.uid == participantId;
       allow write: if false;
     }
+
+    // ── Poll (game_id: poll) ───────────────────────────────────────────────────
+
+    // A poll has NO secret and NO truth document (Poll spec §8.3): the question
+    // definitions ARE what the student answers, so config/main is client-readable.
+    match /poll_game_instances/{instanceId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+
+      // The question list. Student-readable (they answer it); written only via
+      // pollUpdateConfig. Deliberately NO truth/ subcollection — nothing is secret.
+      match /config/{doc} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+    }
+
+    // Participant document (top-level, prefixed). A student may read ONLY their own —
+    // request.auth.uid IS the participant_id. The family's defining constraint: no
+    // student reads another student's answers. No client writes (callables only).
+    match /poll_participants/{participantId} {
+      allow read: if request.auth != null && request.auth.uid == participantId;
+      allow write: if false;
+    }
   }
 }

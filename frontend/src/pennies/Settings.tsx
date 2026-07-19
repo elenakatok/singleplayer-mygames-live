@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { colors } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
-import { penniesGetConfig, penniesUpdateConfig, CLASSROOM_URL } from '../api'
+import { penniesGetConfig, penniesUpdateConfig, penniesInstructorSession, CLASSROOM_URL } from '../api'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Settings (spec §9). Two per-instance fields: True value (currency, default 3.50)
@@ -14,7 +14,7 @@ import { penniesGetConfig, penniesUpdateConfig, CLASSROOM_URL } from '../api'
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function Settings() {
-  const session = useInstructorSession()
+  const session = useInstructorSession(penniesInstructorSession)
   const [trueValue, setTrueValue] = useState('')
   const [jarImage, setJarImage] = useState('')
   const [loaded, setLoaded] = useState(false)

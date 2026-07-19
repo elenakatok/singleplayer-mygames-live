@@ -7,7 +7,7 @@ import {
 } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
-import { penniesGetReport, CLASSROOM_URL, type ReportData, type ReportParticipant } from '../api'
+import { penniesGetReport, penniesInstructorSession, CLASSROOM_URL, type ReportData, type ReportParticipant } from '../api'
 import { JarHistogramSVG } from './JarHistogramSVG'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -54,7 +54,7 @@ function bidColumns(trueValue: number): readonly SortableColumn<ReportParticipan
 }
 
 export default function Reports() {
-  const session = useInstructorSession()
+  const session = useInstructorSession(penniesInstructorSession)
   const [data, setData] = useState<ReportData | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [active, setActive] = useState<'analysis' | 'bids' | null>(null)

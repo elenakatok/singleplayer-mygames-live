@@ -7,8 +7,12 @@
       "hosting": {
         "pennies": [
           "pennies"
+        ],
+        "poll": [
+          "poll-mygames"
         ]
       }
     }
-  }
+  },
+  "etags": {}
 }
