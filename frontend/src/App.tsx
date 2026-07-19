@@ -1,9 +1,12 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import Play from './pennies/Play'
+import Dashboard from './pennies/Dashboard'
+import Settings from './pennies/Settings'
+import Reports from './pennies/Reports'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Jar of Pennies — routes. Part 1 ships only the student entry ('/'). The instructor
-// dashboard, settings, and reports routes are family machinery added in Part 2.
+// Jar of Pennies — routes. Student entry at '/'; instructor pages (game-local, all
+// calling penniesX callables) at /dashboard, /settings, /reports.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function App() {
@@ -11,6 +14,9 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<Play />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/settings" element={<Settings />} />
+        <Route path="/reports" element={<Reports />} />
       </Routes>
     </BrowserRouter>
   )

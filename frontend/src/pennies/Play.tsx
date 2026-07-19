@@ -1,24 +1,39 @@
+import { useEffect, useState } from 'react'
 import { auth } from '../firebase'
-import { penniesBootstrap, CLASSROOM_URL } from '../api'
+import { penniesBootstrap, penniesGetScreen, CLASSROOM_URL, type JarQuestion } from '../api'
 import { PageShell } from '../shared/PageShell'
 import { SequenceRunner } from '../shared/sequence'
-import { penniesScreens } from './screens'
-import { useStudentSession, typography } from '@mygames/game-ui'
+import { JarScreen } from './JarScreen'
+import { useStudentSession, typography, colors } from '@mygames/game-ui'
 import type { BootstrapArgs } from '@mygames/game-ui'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Jar of Pennies — student entry. Reuses the family's launch (penniesBootstrap) via
-// the shared useStudentSession hook: the student arrives with a classroom JWT and
-// exchanges it once for a persistent Firebase session. When the session is 'ready',
-// the SequenceRunner walks this game's screen list.
-//
-// No KC, no gate, no role selection, no attendance code, no matching, no waiting
-// room — none of those exist in this family. Launch → screens. That is the flow.
+// Jar of Pennies — student entry. Launch (penniesBootstrap via useStudentSession),
+// then fetch the screen. A returning student who already submitted lands on the
+// confirmation, not the form (the one-shot lock, spec §3.3). No KC, gate, role,
+// attendance code, or matching — launch → screen → submit → done.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+type Screen =
+  | { name: 'loading' }
+  | { name: 'error'; message: string }
+  | { name: 'form'; jarImage: string; questions: JarQuestion[] }
+  | { name: 'confirmation' }
+
+function Confirmation() {
+  return (
+    <PageShell>
+      <h1 style={{ marginTop: 0, fontSize: '1.6rem', color: colors.text }}>Thank you</h1>
+      <p style={{ lineHeight: 1.6, color: colors.text }}>
+        Your estimate and bid have been recorded. You can close this tab.
+      </p>
+    </PageShell>
+  )
+}
+
 export default function Play() {
-  const params  = new URLSearchParams(window.location.search)
-  const token   = params.get('token')
+  const params = new URLSearchParams(window.location.search)
+  const token = params.get('token')
   const testPid = import.meta.env.DEV ? params.get('_pid') : null
   const testGid = import.meta.env.DEV ? params.get('_gid') : null
 
@@ -29,12 +44,31 @@ export default function Play() {
     bootstrap: async (args: BootstrapArgs) => {
       const r = await penniesBootstrap(args)
       return {
-        participantId:  r.participant_id,
+        participantId: r.participant_id,
         gameInstanceId: r.game_instance_id,
-        customToken:    r.customToken,
+        customToken: r.customToken,
       }
     },
   })
+
+  const [screen, setScreen] = useState<Screen>({ name: 'loading' })
+
+  useEffect(() => {
+    if (session.kind !== 'ready') return
+    let cancelled = false
+    penniesGetScreen()
+      .then(res => {
+        if (cancelled) return
+        if (res.already_submitted) setScreen({ name: 'confirmation' })
+        else setScreen({ name: 'form', jarImage: res.jar_image, questions: res.questions })
+      })
+      .catch(err => {
+        if (!cancelled) setScreen({ name: 'error', message: err instanceof Error ? err.message : 'Failed to load the game.' })
+      })
+    return () => { cancelled = true }
+  }, [session])
+
+  // ── Pre-session states ────────────────────────────────────────────────────
 
   if (session.kind === 'loading') {
     return (
@@ -63,10 +97,40 @@ export default function Play() {
     )
   }
 
-  // session.kind === 'ready' — walk the screen sequence.
+  // ── session.kind === 'ready' ──────────────────────────────────────────────
+
+  if (screen.name === 'confirmation') return <Confirmation />
+
+  if (screen.name === 'error') {
+    return (
+      <PageShell>
+        <p style={{ color: '#c00' }}>{screen.message}</p>
+      </PageShell>
+    )
+  }
+
+  if (screen.name === 'form') {
+    return (
+      <PageShell>
+        <SequenceRunner
+          screens={[
+            {
+              id: 'jar',
+              render: ({ onDone }) => (
+                <JarScreen jarImage={screen.jarImage} questions={screen.questions} onDone={onDone} />
+              ),
+            },
+          ]}
+          onAllComplete={() => setScreen({ name: 'confirmation' })}
+        />
+      </PageShell>
+    )
+  }
+
+  // screen.name === 'loading'
   return (
-    <PageShell>
-      <SequenceRunner screens={penniesScreens} />
-    </PageShell>
+    <main style={{ padding: '2rem', fontFamily: typography.fontFamily }}>
+      <p>Loading…</p>
+    </main>
   )
 }

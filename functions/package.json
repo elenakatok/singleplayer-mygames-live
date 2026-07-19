@@ -5,7 +5,9 @@
     "build": "tsc",
     "build:watch": "tsc --watch",
     "serve": "npm run build && firebase emulators:start --only functions",
-    "logs": "firebase functions:log"
+    "logs": "firebase functions:log",
+    "test": "vitest run",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-singleplayer --config ../firebase.json \"vitest run --config vitest.rules.config.ts\""
   },
   "engines": {
     "node": "22"
@@ -19,7 +21,9 @@
     "jsonwebtoken": "^9.0.3"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
     "@types/jsonwebtoken": "^9.0.10",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^2.0.0"
   }
 }

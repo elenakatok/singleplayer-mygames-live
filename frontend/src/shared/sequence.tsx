@@ -1,77 +1,51 @@
-import { useState } from 'react'
-import type { PrepTextQuestion } from '@mygames/game-ui'
-import { colors, spacing, typography } from '@mygames/game-ui'
+import { useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SEQUENCE RUNNER — the single-player family's core: a game is an ordered list of
-// screens (as DATA), rendered in order. This is the minimal runner a one-screen
-// game needs (Jar of Pennies). It walks the list and, for a non-terminal screen,
-// offers a "Continue".
+// screens, rendered in order, one at a time. Each screen owns its own view and its
+// own submit; the runner only sequences and resumes.
+//
+// RESUME: the caller passes `startIndex` — the first screen the student has not yet
+// completed. For a per-question game (Poll, Part 3) that index is computed exactly
+// like the KC pattern: read the persisted per-question answers map, findIndex the
+// first question with no entry (see Poll spec §5.3). For Jar of Pennies (one screen)
+// it is always 0, and a returning student who already submitted never mounts the
+// runner at all — Play shows the confirmation instead.
 //
 // DELIBERATELY NOT BUILT (architecture §7 — no consumer yet; Newsvendor introduces
 // them): the fixed-count LOOP wrapper, the DISPLAY screen, and the COMPUTE step.
-// The Screen union and the runner are left open enough to add those without a
-// rewrite (add a union member + a case in renderScreen), but no speculative code
-// for them exists here.
+// Adding them is a new SequenceScreen shape + handling here, not a rewrite.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** A screen that collects inputs from the student. Questions are DATA OBJECTS
- *  (the shared PrepTextQuestion model), never hardcoded inline JSX — the standing
- *  platform constraint that keeps a future admin-defaults screen small. */
-export interface QuestionScreen {
-  kind:      'question'
-  id:        string
-  title:     string
-  questions: PrepTextQuestion[]
+/** One screen in the sequence. `render` draws it and calls `onDone` when its
+ *  submission has been ACCEPTED by the server (the per-screen one-shot lock lives
+ *  in the screen's own callable, not here). */
+export interface SequenceScreen {
+  id: string
+  render: (ctx: { onDone: () => void }) => ReactNode
 }
 
-/** The screen union. Open by design — 'display' (and a loop wrapper over a span of
- *  screens) join here when Newsvendor needs them. Today there is exactly one kind. */
-export type Screen = QuestionScreen
+export function SequenceRunner({
+  screens,
+  startIndex = 0,
+  onAllComplete,
+}: {
+  screens: SequenceScreen[]
+  startIndex?: number
+  onAllComplete: () => void
+}) {
+  const [index, setIndex] = useState(startIndex)
+  const onAllCompleteRef = useRef(onAllComplete)
+  onAllCompleteRef.current = onAllComplete
 
-// ── Runner ──────────────────────────────────────────────────────────────────────
-
-export function SequenceRunner({ screens }: { screens: Screen[] }) {
-  const [index, setIndex] = useState(0)
   const screen = screens[index]
   if (!screen) return null
 
-  const isLast  = index === screens.length - 1
-  const advance = () => { if (!isLast) setIndex(i => i + 1) }
-
-  return renderScreen(screen, isLast, advance)
-}
-
-function renderScreen(screen: Screen, isLast: boolean, onAdvance: () => void) {
-  switch (screen.kind) {
-    case 'question':
-      return <QuestionScreenView screen={screen} isLast={isLast} onAdvance={onAdvance} />
+  const onDone = () => {
+    if (index >= screens.length - 1) onAllCompleteRef.current()
+    else setIndex(i => i + 1)
   }
-}
 
-// ── Question screen (PLACEHOLDER — Part 2 replaces the body with the real numeric
-//    form + one-shot submit; the shell, title, and sequencing are proven now) ─────
-
-function QuestionScreenView({
-  screen,
-  isLast,
-  onAdvance,
-}: {
-  screen: QuestionScreen
-  isLast: boolean
-  onAdvance: () => void
-}) {
-  return (
-    <section>
-      <h1 style={{ marginTop: 0, fontSize: '1.6rem', color: colors.text }}>{screen.title}</h1>
-      <p style={{ color: colors.textSecondary, lineHeight: 1.6, fontFamily: typography.fontFamily }}>
-        Screen content lands in Part 2.
-      </p>
-      {!isLast && (
-        <button onClick={onAdvance} style={{ marginTop: spacing.gapMd }}>
-          Continue
-        </button>
-      )}
-    </section>
-  )
+  return <>{screen.render({ onDone })}</>
 }
