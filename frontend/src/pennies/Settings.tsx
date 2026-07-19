@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
-import { GameHeader, typography, colors } from '@mygames/game-ui'
+import { useNavigate } from 'react-router-dom'
+import { colors } from '@mygames/game-ui'
+import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { penniesGetConfig, penniesUpdateConfig, CLASSROOM_URL } from '../api'
 
@@ -46,24 +48,27 @@ export default function Settings() {
     }
   }
 
-  const shell = (body: React.ReactNode) => (
-    <div style={{ fontFamily: typography.fontFamily }}>
-      <GameHeader />
-      <main style={{ padding: '1.5rem 1.25rem', maxWidth: 640, margin: '0 auto' }}>{body}</main>
-    </div>
+  const navigate = useNavigate()
+  const navLinks = [
+    { label: '← Dashboard', href: `/dashboard${window.location.search}` },
+    { label: 'Reports →', href: `/reports${window.location.search}` },
+  ]
+  const chrome = (body: React.ReactNode) => (
+    <InstructorChrome title="Settings — Jar of Pennies" navLinks={navLinks} onNavigate={navigate}>
+      <div style={{ maxWidth: 640 }}>{body}</div>
+    </InstructorChrome>
   )
 
-  if (session.kind === 'loading') return shell(<p>Loading…</p>)
-  if (session.kind === 'no-token') return shell(<p>Open settings from the classroom.</p>)
+  if (session.kind === 'loading') return chrome(<p>Loading…</p>)
+  if (session.kind === 'no-token') return chrome(<p>Open settings from the classroom.</p>)
   if (session.kind === 'error') {
-    return shell(<><p style={{ color: '#c00' }}>{session.message}</p><p><a href={CLASSROOM_URL}>← Return to classroom</a></p></>)
+    return chrome(<><p style={{ color: '#c00' }}>{session.message}</p><p><a href={CLASSROOM_URL}>← Return to classroom</a></p></>)
   }
 
   const fieldStyle = { width: '100%', fontSize: '1rem', padding: '0.5rem 0.6rem', borderRadius: 4, border: '1px solid #cbd5e1', boxSizing: 'border-box' as const }
 
-  return shell(
+  return chrome(
     <>
-      <h1 style={{ marginTop: 0, color: colors.text }}>Settings — Jar of Pennies</h1>
       {!loaded && !err && <p>Loading settings…</p>}
       {loaded && (
         <>

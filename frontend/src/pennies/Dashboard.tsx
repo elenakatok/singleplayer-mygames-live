@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import {
-  GameHeader, SortableTable, typography, colors, type SortableColumn,
-} from '@mygames/game-ui'
+import { useNavigate } from 'react-router-dom'
+import { SortableTable, colors, type SortableColumn } from '@mygames/game-ui'
+import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { penniesGetReport, penniesScoreAndRecord, penniesSyncRoster, CLASSROOM_URL, type ReportParticipant } from '../api'
 
@@ -11,10 +11,12 @@ import { penniesGetReport, penniesScoreAndRecord, penniesSyncRoster, CLASSROOM_U
 // shown here — it is load-bearing for grades.
 //
 // The bid column sorts NUMERICALLY on the underlying number (SortableColumn.compare
-// runs on the number, never the "$1,200" string). Because this is a game-local
-// dashboard (the shared InstructorDashboard hardcodes generic callable names that
-// can't coexist in a shared project), the bid is a native numeric column, not a
-// DOM-patched override — the twice-shipped string-sort bug cannot occur here.
+// runs on the number, never the "$1,200" string) — a native SortableTable column,
+// not a DOM-patched override, so the twice-shipped string-sort bug cannot occur.
+// The page chrome (sticky action bar + nav) is the shared, presentational
+// InstructorChrome — the shared multiplayer InstructorDashboard is wrong-shaped for
+// this family (RTDB presence, matching, attendance), so we assemble our own from the
+// same theme tokens instead.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const money = (n: number | null) =>
@@ -48,8 +50,11 @@ const columns: readonly SortableColumn<ReportParticipant, SortKey>[] = [
   },
 ]
 
+const TITLE = 'Jar of Pennies — Dashboard'
+
 export default function Dashboard() {
   const session = useInstructorSession()
+  const navigate = useNavigate()
   const [rows, setRows] = useState<ReportParticipant[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [scoring, setScoring] = useState(false)
@@ -87,45 +92,50 @@ export default function Dashboard() {
     }
   }
 
-  const shell = (body: React.ReactNode) => (
-    <div style={{ fontFamily: typography.fontFamily }}>
-      <GameHeader />
-      <main style={{ padding: '1.5rem 1.25rem', maxWidth: 960, margin: '0 auto' }}>{body}</main>
-    </div>
-  )
+  // Nav links preserve the current ?token=/?_gid= params so the next instructor page
+  // can re-establish its session.
+  const navLinks = [
+    { label: 'Settings →', href: `/settings${window.location.search}` },
+    { label: 'Reports →', href: `/reports${window.location.search}` },
+  ]
 
-  if (session.kind === 'loading') return shell(<p>Loading…</p>)
-  if (session.kind === 'no-token') return shell(<p>Open the dashboard from the classroom.</p>)
+  if (session.kind === 'loading') return <InstructorChrome title={TITLE}><p>Loading…</p></InstructorChrome>
+  if (session.kind === 'no-token') return <InstructorChrome title={TITLE}><p>Open the dashboard from the classroom.</p></InstructorChrome>
   if (session.kind === 'error') {
-    return shell(<><p style={{ color: '#c00' }}>{session.message}</p><p><a href={CLASSROOM_URL}>← Return to classroom</a></p></>)
+    return (
+      <InstructorChrome title={TITLE}>
+        <p style={{ color: '#c00' }}>{session.message}</p>
+        <p><a href={CLASSROOM_URL}>← Return to classroom</a></p>
+      </InstructorChrome>
+    )
   }
 
   const submittedCount = rows?.filter(r => r.submitted).length ?? 0
   const launchedCount = rows?.filter(r => r.launched).length ?? 0
 
-  return shell(
+  const actions = (
     <>
-      <h1 style={{ marginTop: 0, color: colors.text }}>Jar of Pennies — Dashboard</h1>
+      <button
+        onClick={() => void handleScore()}
+        disabled={scoring}
+        style={{
+          padding: '0.6rem 1.5rem', fontSize: '1rem', fontWeight: 600,
+          cursor: scoring ? 'not-allowed' : 'pointer',
+          backgroundColor: scoring ? '#999' : colors.text, color: colors.white,
+          border: 'none', borderRadius: 6,
+        }}
+      >
+        {scoring ? 'Scoring…' : 'Score & Record'}
+      </button>
+      <span style={{ color: colors.textSecondary }}>
+        {rows ? `${submittedCount} submitted / ${launchedCount} launched / ${rows.length} on roster` : ''}
+      </span>
+      {scoreMsg && <span data-testid="pennies-score-msg" style={{ color: colors.text }}>{scoreMsg}</span>}
+    </>
+  )
 
-      <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '1rem' }}>
-        <button
-          onClick={() => void handleScore()}
-          disabled={scoring}
-          style={{
-            padding: '0.6rem 1.5rem', fontSize: '1rem', fontWeight: 600,
-            cursor: scoring ? 'not-allowed' : 'pointer',
-            backgroundColor: scoring ? '#999' : colors.text, color: colors.white,
-            border: 'none', borderRadius: 6,
-          }}
-        >
-          {scoring ? 'Scoring…' : 'Score & Record'}
-        </button>
-        <span style={{ color: colors.textSecondary }}>
-          {rows ? `${submittedCount} submitted / ${launchedCount} launched / ${rows.length} on roster` : ''}
-        </span>
-        {scoreMsg && <span data-testid="pennies-score-msg" style={{ color: colors.text }}>{scoreMsg}</span>}
-      </div>
-
+  return (
+    <InstructorChrome title={TITLE} actions={actions} navLinks={navLinks} onNavigate={navigate}>
       {loadError && <p style={{ color: '#c00' }}>{loadError}</p>}
       {rows && (
         <SortableTable<ReportParticipant, SortKey>
@@ -137,6 +147,6 @@ export default function Dashboard() {
           emptyMessage="No students on the roster yet — open the dashboard from the classroom to sync it."
         />
       )}
-    </>,
+    </InstructorChrome>
   )
 }

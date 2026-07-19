@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
-  GameHeader, ReportBoard, SortableTable, typography, colors,
+  ReportBoard, SortableTable, colors,
   type ReportTileConfig, type SortableColumn,
 } from '@mygames/game-ui'
+import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { penniesGetReport, CLASSROOM_URL, type ReportData, type ReportParticipant } from '../api'
 import { JarHistogramSVG } from './JarHistogramSVG'
@@ -65,20 +67,24 @@ export default function Reports() {
       .catch(e => setErr(e instanceof Error ? e.message : 'Failed to load reports.'))
   }, [session.kind])
 
-  const shell = (body: ReactNode) => (
-    <div style={{ fontFamily: typography.fontFamily }}>
-      <GameHeader />
-      <main style={{ padding: '1.5rem 1.25rem', maxWidth: 960, margin: '0 auto' }}>{body}</main>
-    </div>
+  const navigate = useNavigate()
+  const navLinks = [
+    { label: '← Dashboard', href: `/dashboard${window.location.search}` },
+    { label: 'Settings →', href: `/settings${window.location.search}` },
+  ]
+  const chrome = (body: ReactNode) => (
+    <InstructorChrome title="Jar of Pennies — Reports" navLinks={navLinks} onNavigate={navigate}>
+      {body}
+    </InstructorChrome>
   )
 
-  if (session.kind === 'loading') return shell(<p>Loading…</p>)
-  if (session.kind === 'no-token') return shell(<p>Open reports from the classroom.</p>)
+  if (session.kind === 'loading') return chrome(<p>Loading…</p>)
+  if (session.kind === 'no-token') return chrome(<p>Open reports from the classroom.</p>)
   if (session.kind === 'error') {
-    return shell(<><p style={{ color: '#c00' }}>{session.message}</p><p><a href={CLASSROOM_URL}>← Return to classroom</a></p></>)
+    return chrome(<><p style={{ color: '#c00' }}>{session.message}</p><p><a href={CLASSROOM_URL}>← Return to classroom</a></p></>)
   }
-  if (err) return shell(<p style={{ color: '#c00' }}>{err}</p>)
-  if (!data) return shell(<p>Loading reports…</p>)
+  if (err) return chrome(<p style={{ color: '#c00' }}>{err}</p>)
+  if (!data) return chrome(<p>Loading reports…</p>)
 
   const submitters = data.participants.filter(p => p.submitted && p.bid != null)
   const hasResponses = data.stats.responses > 0
@@ -111,9 +117,8 @@ export default function Reports() {
     </div>
   )
 
-  return shell(
+  return chrome(
     <>
-      <h1 style={{ marginTop: 0, color: colors.text }}>Jar of Pennies — Reports</h1>
       {!data.scored && (
         <p style={{ color: colors.textSecondary }}>
           Not yet scored. The histogram is available once students respond; the Class Bids table (winners, profit)
