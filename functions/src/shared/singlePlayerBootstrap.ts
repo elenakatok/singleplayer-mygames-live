@@ -40,7 +40,12 @@ export interface SinglePlayerBootstrapOptions {
  * Returns: { ok, participant_id, game_instance_id, customToken }
  */
 export function makeSinglePlayerBootstrap(opts: SinglePlayerBootstrapOptions) {
-  const participantsCollection = `${opts.collectionPrefix}_participants`
+  // Participants live in a per-INSTANCE subcollection —
+  // <prefix>_game_instances/{iid}/participants/{pid} — NOT a top-level collection.
+  // Instance isolation is STRUCTURAL: the same student (stable participant_id across a
+  // course's instances) gets a distinct doc per instance, so data can never leak
+  // between instances (spec §4.2 / §8.2; architecture §4.1).
+  const instancesCollection = `${opts.collectionPrefix}_game_instances`
 
   return onCall({ cors: opts.corsOrigins }, async (request) => {
     const data = request.data as Record<string, unknown>
@@ -74,7 +79,9 @@ export function makeSinglePlayerBootstrap(opts: SinglePlayerBootstrapOptions) {
 
     try {
       const db = admin.firestore()
-      const participantRef = db.collection(participantsCollection).doc(participantId)
+      const participantRef = db
+        .collection(instancesCollection).doc(gameInstanceId)
+        .collection('participants').doc(participantId)
 
       // Idempotent upsert of the participant's identity, marking THIS launch. We must
       // NOT clobber an existing estimate/bid/submitted_at, so we only ever add fields

@@ -1,8 +1,8 @@
-import { onCall, HttpsError } from 'firebase-functions/v2/https'
+import { onCall } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { extractStudentOnCallIds } from '@mygames/game-server'
 import {
-  PENNIES_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_COLLECTION,
+  PENNIES_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION,
   CONFIG_DOC, DEFAULT_JAR_IMAGE,
 } from './config'
 import { penniesQuestions } from './questions'
@@ -27,17 +27,16 @@ export const penniesGetScreen = onCall({ cors: PENNIES_CORS_ORIGINS }, async (re
   const db = admin.firestore()
   const instanceRef = db.collection(INSTANCES_COLLECTION).doc(gameInstanceId)
 
+  // Participant is read from THIS instance's subcollection — a returning student in a
+  // DIFFERENT instance is a different doc, so there is nothing to leak and no belongs
+  // check to make (isolation is structural).
   const [configSnap, participantSnap] = await Promise.all([
     instanceRef.collection('config').doc(CONFIG_DOC).get(),
-    db.collection(PARTICIPANTS_COLLECTION).doc(participantId).get(),
+    instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId).get(),
   ])
 
   const jarImage = (configSnap.data()?.jar_image as string | undefined) ?? DEFAULT_JAR_IMAGE
   const alreadySubmitted = participantSnap.data()?.submitted_at != null
-
-  if (participantSnap.exists && participantSnap.data()?.game_instance_id !== gameInstanceId) {
-    throw new HttpsError('permission-denied', 'Participant does not belong to this instance.')
-  }
 
   return {
     ok: true as const,

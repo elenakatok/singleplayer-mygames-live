@@ -2,7 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import { defineSecret } from 'firebase-functions/params'
 import * as admin from 'firebase-admin'
 import { extractInstructorGameId } from '@mygames/game-server'
-import { POLL_CORS_ORIGINS, PARTICIPANTS_COLLECTION } from './config'
+import { POLL_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION } from './config'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // pollSyncRoster (instructor) — pulls the full course roster from the classroom so the
@@ -65,11 +65,14 @@ export const pollSyncRoster = onCall(
     }
 
     const db = admin.firestore()
+    const participantsRef = db
+      .collection(INSTANCES_COLLECTION).doc(gameInstanceId)
+      .collection(PARTICIPANTS_SUBCOLLECTION)
     const batch = db.batch()
     for (const p of participants) {
       if (!p.participant_id) continue
       batch.set(
-        db.collection(PARTICIPANTS_COLLECTION).doc(p.participant_id),
+        participantsRef.doc(p.participant_id),
         {
           participant_id: p.participant_id,
           game_instance_id: gameInstanceId,

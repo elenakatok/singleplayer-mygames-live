@@ -40,16 +40,20 @@ service cloud.firestore {
       match /truth/{doc} {
         allow read, write: if false;
       }
-    }
 
-    // Participant document (top-level, prefixed). A student may read ONLY their own
-    // document — request.auth.uid IS the participant_id (minted as the Firebase UID
-    // by penniesBootstrap). This one line is the family's defining constraint: no
-    // student can read another student's estimate, bid, or outcome. No client
-    // writes at all — every write goes through a callable (penniesSubmit, scoring).
-    match /pennies_participants/{participantId} {
-      allow read: if request.auth != null && request.auth.uid == participantId;
-      allow write: if false;
+      // Participant document — a PER-INSTANCE subcollection (spec §4.2). Isolation is
+      // structural: the same student (stable participant_id across a course's instances)
+      // gets a distinct doc per instance. A student may read ONLY their own doc AND only
+      // under the instance they are authenticated for: request.auth.uid IS the
+      // participant_id, and the custom token's game_instance_id claim must match this
+      // instanceId — so a student cannot read their own doc under a DIFFERENT instance,
+      // nor any other student's. No client writes (callables only).
+      match /participants/{participantId} {
+        allow read: if request.auth != null
+          && request.auth.uid == participantId
+          && request.auth.token.game_instance_id == instanceId;
+        allow write: if false;
+      }
     }
 
     // ── Poll (game_id: poll) ───────────────────────────────────────────────────
@@ -66,14 +70,16 @@ service cloud.firestore {
         allow read: if request.auth != null;
         allow write: if false;
       }
-    }
 
-    // Participant document (top-level, prefixed). A student may read ONLY their own —
-    // request.auth.uid IS the participant_id. The family's defining constraint: no
-    // student reads another student's answers. No client writes (callables only).
-    match /poll_participants/{participantId} {
-      allow read: if request.auth != null && request.auth.uid == participantId;
-      allow write: if false;
+      // Participant document — per-INSTANCE subcollection (spec §8.2). Same structural
+      // isolation as pennies: read only your OWN doc, and only under the instance you
+      // are authenticated for (token game_instance_id claim must match). No client writes.
+      match /participants/{participantId} {
+        allow read: if request.auth != null
+          && request.auth.uid == participantId
+          && request.auth.token.game_instance_id == instanceId;
+        allow write: if false;
+      }
     }
   }
 }

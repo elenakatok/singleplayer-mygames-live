@@ -13,8 +13,10 @@ export const PENNIES_COLLECTION_PREFIX = 'pennies'
 export const PENNIES_CORS_ORIGINS = ['https://pennies.mygames.live']
 
 // ── Firestore collection / doc paths (all pennies_ prefixed; spec §4) ───────────
-export const INSTANCES_COLLECTION    = 'pennies_game_instances'
-export const PARTICIPANTS_COLLECTION  = 'pennies_participants'
+export const INSTANCES_COLLECTION = 'pennies_game_instances'
+// Participants are a per-INSTANCE subcollection (structural isolation, spec §4.2):
+//   pennies_game_instances/{iid}/participants/{pid}
+export const PARTICIPANTS_SUBCOLLECTION = 'participants'
 export const CONFIG_DOC = 'main'   // pennies_game_instances/{id}/config/main
 export const TRUTH_DOC  = 'main'   // pennies_game_instances/{id}/truth/main  (rules-denied)
 

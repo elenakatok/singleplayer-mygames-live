@@ -2,7 +2,7 @@ import { onCall } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { extractStudentOnCallIds } from '@mygames/game-server'
 import {
-  POLL_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_COLLECTION, CONFIG_DOC,
+  POLL_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC,
   loadQuestions,
 } from './config'
 
@@ -21,9 +21,10 @@ export const pollGetQuestions = onCall({ cors: POLL_CORS_ORIGINS }, async (reque
   const { participantId, gameInstanceId } = await extractStudentOnCallIds(data, isEmulator, authHeader)
 
   const db = admin.firestore()
+  const instanceRef = db.collection(INSTANCES_COLLECTION).doc(gameInstanceId)
   const [configSnap, participantSnap] = await Promise.all([
-    db.collection(INSTANCES_COLLECTION).doc(gameInstanceId).collection('config').doc(CONFIG_DOC).get(),
-    db.collection(PARTICIPANTS_COLLECTION).doc(participantId).get(),
+    instanceRef.collection('config').doc(CONFIG_DOC).get(),
+    instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId).get(),
   ])
 
   const visible = loadQuestions(configSnap.data()).filter(q => q.visible)

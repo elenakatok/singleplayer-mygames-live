@@ -4,7 +4,7 @@ import * as admin from 'firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
 import { extractInstructorGameId, toGameResult, dispatchResults, type PushSummary } from '@mygames/game-server'
 import {
-  PENNIES_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_COLLECTION,
+  PENNIES_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION,
   TRUTH_DOC, DEFAULT_TRUE_VALUE,
 } from './config'
 import { scoreClass, type ParticipantInput } from './scoring'
@@ -47,10 +47,12 @@ export const penniesScoreAndRecord = onCall(
 
     const db = admin.firestore()
     const instanceRef = db.collection(INSTANCES_COLLECTION).doc(gameInstanceId)
+    const participantsRef = instanceRef.collection(PARTICIPANTS_SUBCOLLECTION)
 
-    // 1–2. Read participants for this instance + the true value (truth/main).
+    // 1–2. Read this instance's participants (its own subcollection — no cross-instance
+    // filter needed) + the true value (truth/main).
     const [participantsSnap, truthSnap] = await Promise.all([
-      db.collection(PARTICIPANTS_COLLECTION).where('game_instance_id', '==', gameInstanceId).get(),
+      participantsRef.get(),
       instanceRef.collection('truth').doc(TRUTH_DOC).get(),
     ])
     const trueValue = (truthSnap.data()?.true_value as number | undefined) ?? DEFAULT_TRUE_VALUE
@@ -72,7 +74,7 @@ export const penniesScoreAndRecord = onCall(
 
     const batch = db.batch()
     for (const [pid, s] of Object.entries(scored.results)) {
-      batch.update(db.collection(PARTICIPANTS_COLLECTION).doc(pid), {
+      batch.update(participantsRef.doc(pid), {
         won: s.won,
         profit: s.profit,
         raw_score: s.raw_score,

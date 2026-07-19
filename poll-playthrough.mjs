@@ -139,6 +139,36 @@ async function main() {
   const badSync = await callFn('pollSyncRoster', { _dev: { game_instance_id: GID, roster_url: ROSTER_URL, callback_secret: 'wrong' } })
   check(!badSync.ok, 'syncRoster with a WRONG callback secret is rejected (Bearer is really sent + checked)')
 
+  // ── Scenario 6 — CROSS-INSTANCE ISOLATION with a SHARED question id ──────────
+  // The same student answers a poll, then a SECOND poll instance ships the same
+  // default question ids (the normal case). In the second poll they must be ASKED that
+  // question again — not skipped past it because they answered it in the first.
+  console.log('\n[6] Cross-instance: same student, two polls sharing a question id')
+  const PA = `poll-isoA-${stamp}`, PB = `poll-isoB-${stamp}`
+  const SHARED = 'deals_experience' // a shipped default → present in BOTH polls
+
+  // Poll A: make the default visible, student answers it.
+  const cfgA = await callFn('pollGetConfig', asDev(PA))
+  await callFn('pollUpdateConfig', { ...asDev(PA), questions: cfgA.result.questions.map(q => (q.id === SHARED ? { ...q, visible: true } : q)) })
+  await callFn('pollBootstrap', { _test: { participant_id: 'poll-iso', game_instance_id: PA } })
+  await callFn('pollSubmitAnswer', asStudent(PA, 'poll-iso', { question_id: SHARED, value: 'answered in poll A' }))
+  const qA = await callFn('pollGetQuestions', asStudent(PA, 'poll-iso'))
+  check(qA.result.answered.includes(SHARED), 'poll A: student has answered the shared question')
+
+  // Poll B: the SAME default id is visible; the SAME student.
+  const cfgB = await callFn('pollGetConfig', asDev(PB))
+  await callFn('pollUpdateConfig', { ...asDev(PB), questions: cfgB.result.questions.map(q => (q.id === SHARED ? { ...q, visible: true } : q)) })
+  await callFn('pollBootstrap', { _test: { participant_id: 'poll-iso', game_instance_id: PB } })
+  const qB = await callFn('pollGetQuestions', asStudent(PB, 'poll-iso'))
+  check(qB.result.questions.some(q => q.id === SHARED), 'poll B: the shared question is served')
+  check(qB.result.answered.length === 0 && !qB.result.answered.includes(SHARED), 'poll B: the shared question is ASKED AGAIN (not skipped from poll A)')
+
+  // Answering it in B does not disturb A.
+  await callFn('pollSubmitAnswer', asStudent(PB, 'poll-iso', { question_id: SHARED, value: 'answered in poll B' }))
+  const repPA = await callFn('pollGetReport', asDev(PA))
+  const aAns = repPA.result.reports.find(r => r.id === SHARED)?.answers ?? []
+  check(aAns.length === 1 && aAns[0].value === 'answered in poll A', 'poll A report still shows only its own answer')
+
   console.log(`\n${failed === 0 ? '✅' : '❌'} poll harness: ${passed} passed, ${failed} failed`)
   rosterServer.close()
   process.exit(failed === 0 ? 0 : 1)

@@ -194,6 +194,43 @@ async function main() {
   const r1b = (rr2.result?.participants ?? []).find(p => p.participant_id === 'r1')
   check(r1b?.submitted === true && r1b?.bid === 4.5, 're-sync did NOT clobber r1 submitted_at/bid (safe merge)')
 
+  // ── Scenario 6 — CROSS-INSTANCE ISOLATION (the bug that broke) ───────────────
+  // Same student plays instance A, then a NEW instance B is created with the same
+  // roster. A's bid must appear NOWHERE in B — and the student gets a fresh screen.
+  console.log('\n[6] Cross-instance isolation: A\'s data never leaks into B')
+  const GIA = `pt-isoA-${stamp}`, GIB = `pt-isoB-${stamp}`
+  const S = 'iso-student'
+  await callFn('penniesUpdateConfig', { ...asDev(GIA), true_value: 5.0 })
+  await callFn('penniesBootstrap', { _test: { participant_id: S, game_instance_id: GIA } })
+  await callFn('penniesSubmit', asStudent(GIA, S, { estimate: 4, bid: 5 }))       // A: bid $5
+
+  // New instance B, SAME roster (the exact reported trigger: syncRoster on B's dashboard).
+  await callFn('penniesUpdateConfig', { ...asDev(GIB), true_value: 5.0 })
+  currentRoster = [{ participant_id: S, name: 'Iso Student', external_id: null }]
+  await callFn('penniesSyncRoster', { _dev: { game_instance_id: GIB, roster_url: ROSTER_URL, callback_secret: 'x' } })
+
+  const repB0 = await callFn('penniesGetReport', asDev(GIB))
+  const sB0 = (repB0.result?.participants ?? []).find(p => p.participant_id === S)
+  check(sB0 && sB0.submitted === false && sB0.bid === null, 'B dashboard: student is fresh (no bid) after roster sync — A\'s $5 did NOT leak')
+  check(!(repB0.result?.participants ?? []).some(p => p.bid === 5), 'B dashboard shows NO $5 bid anywhere')
+
+  const scrB = await callFn('penniesGetScreen', asStudent(GIB, S))
+  check(scrB.ok && scrB.result.already_submitted === false, 'B: student sees a FRESH screen (not "already submitted")')
+  const subB = await callFn('penniesSubmit', asStudent(GIB, S, { estimate: 9, bid: 9 })) // B: bid $9
+  check(subB.ok, 'B: student can submit their bid')
+
+  const scB = await callFn('penniesScoreAndRecord', asDev(GIB))
+  check(scB.ok && scB.result.winner === S, 'B scoring: the student wins on THEIR B bid')
+  const repB = await callFn('penniesGetReport', asDev(GIB))
+  const sB = (repB.result?.participants ?? []).find(p => p.participant_id === S)
+  check(sB && sB.bid === 9, 'B reports the B bid ($9), not the A bid')
+  check(!(repB.result?.participants ?? []).some(p => p.bid === 5), 'A\'s $5 appears NOWHERE in B reports/scoring')
+
+  // And A is untouched — isolation runs both ways.
+  const repA = await callFn('penniesGetReport', asDev(GIA))
+  const sA = (repA.result?.participants ?? []).find(p => p.participant_id === S)
+  check(sA && sA.bid === 5, 'instance A still holds its own $5 bid (isolation is two-way)')
+
   console.log(`\n${failed === 0 ? '✅' : '❌'} pennies harness: ${passed} passed, ${failed} failed`)
   callbackServer.close(); rosterServer.close()
   process.exit(failed === 0 ? 0 : 1)

@@ -2,7 +2,7 @@ import { onCall } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { extractInstructorGameId } from '@mygames/game-server'
 import {
-  PENNIES_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_COLLECTION,
+  PENNIES_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION,
   TRUTH_DOC, DEFAULT_TRUE_VALUE,
 } from './config'
 
@@ -37,7 +37,7 @@ export const penniesGetReport = onCall({ cors: PENNIES_CORS_ORIGINS }, async (re
   const instanceRef = db.collection(INSTANCES_COLLECTION).doc(gameInstanceId)
 
   const [participantsSnap, truthSnap, instanceSnap] = await Promise.all([
-    db.collection(PARTICIPANTS_COLLECTION).where('game_instance_id', '==', gameInstanceId).get(),
+    instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).get(),
     instanceRef.collection('truth').doc(TRUTH_DOC).get(),
     instanceRef.get(),
   ])

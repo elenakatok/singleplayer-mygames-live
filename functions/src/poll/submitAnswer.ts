@@ -3,7 +3,7 @@ import * as admin from 'firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
 import { extractStudentOnCallIds } from '@mygames/game-server'
 import {
-  POLL_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_COLLECTION, CONFIG_DOC,
+  POLL_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC,
   loadQuestions,
 } from './config'
 
@@ -58,14 +58,12 @@ export const pollSubmitAnswer = onCall({ cors: POLL_CORS_ORIGINS }, async (reque
   }
 
   const visibleIds = visible.map(q => q.id)
-  const participantRef = db.collection(PARTICIPANTS_COLLECTION).doc(participantId)
+  const participantRef = instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
 
   const result = await db.runTransaction(async (tx) => {
     const snap = await tx.get(participantRef)
     const pData = snap.data() ?? {}
-    if (snap.exists && pData.game_instance_id !== gameInstanceId) {
-      throw new HttpsError('permission-denied', 'Your session does not match this poll.')
-    }
+    // No belongs check — the doc IS under this instance (structural isolation).
     const answers = (pData.answers ?? {}) as Record<string, { value: string }>
 
     // Idempotent: already answered — discard the incoming value, return the stored one.

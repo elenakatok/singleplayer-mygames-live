@@ -2,7 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
 import { extractStudentOnCallIds } from '@mygames/game-server'
-import { PENNIES_CORS_ORIGINS, PARTICIPANTS_COLLECTION } from './config'
+import { PENNIES_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION } from './config'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // penniesSubmit (student) — validates and writes { estimate, bid, submitted_at }.
@@ -39,7 +39,9 @@ export const penniesSubmit = onCall({ cors: PENNIES_CORS_ORIGINS }, async (reque
   }
 
   const db = admin.firestore()
-  const participantRef = db.collection(PARTICIPANTS_COLLECTION).doc(participantId)
+  const participantRef = db
+    .collection(INSTANCES_COLLECTION).doc(gameInstanceId)
+    .collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
 
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(participantRef)
@@ -47,9 +49,7 @@ export const penniesSubmit = onCall({ cors: PENNIES_CORS_ORIGINS }, async (reque
       throw new HttpsError('not-found', 'We could not find your session. Please relaunch from the classroom.')
     }
     const pData = snap.data()!
-    if (pData.game_instance_id !== gameInstanceId) {
-      throw new HttpsError('permission-denied', 'Your session does not match this game.')
-    }
+    // No belongs check needed — the doc IS under this instance (structural isolation).
     // One-shot lock.
     if (pData.submitted_at != null) {
       throw new HttpsError('failed-precondition', 'You have already submitted. Your estimate and bid are final.')

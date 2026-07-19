@@ -9,7 +9,9 @@ export const POLL_COLLECTION_PREFIX = 'poll'
 export const POLL_CORS_ORIGINS = ['https://poll.mygames.live']
 
 export const INSTANCES_COLLECTION = 'poll_game_instances'
-export const PARTICIPANTS_COLLECTION = 'poll_participants'
+// Participants are a per-INSTANCE subcollection (structural isolation, spec §8.2):
+//   poll_game_instances/{iid}/participants/{pid}
+export const PARTICIPANTS_SUBCOLLECTION = 'participants'
 export const CONFIG_DOC = 'main' // poll_game_instances/{id}/config/main  (client-readable)
 
 // ── Question model (Poll spec §4.3, §4.5) ───────────────────────────────────────
