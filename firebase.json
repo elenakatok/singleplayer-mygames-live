@@ -1,0 +1,55 @@
+{
+  "hosting": [
+    {
+      "target": "pennies",
+      "public": "frontend/dist",
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "rewrites": [
+        {
+          "source": "**",
+          "destination": "/index.html"
+        }
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ]
+    }
+  ],
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "emulators": {
+    "auth": {
+      "port": 9110
+    },
+    "functions": {
+      "port": 5010
+    },
+    "firestore": {
+      "port": 8090
+    },
+    "hosting": {
+      "port": 5011
+    },
+    "ui": {
+      "enabled": true,
+      "port": 4010
+    },
+    "singleProjectMode": true
+  }
+}

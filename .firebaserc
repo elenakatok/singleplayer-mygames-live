@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "default": "singleplayer-mygames-live"
+  },
+  "targets": {
+    "singleplayer-mygames-live": {
+      "hosting": {
+        "pennies": [
+          "pennies"
+        ]
+      }
+    }
+  }
+}
