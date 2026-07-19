@@ -15,7 +15,11 @@ import { POLL_CORS_ORIGINS, PARTICIPANTS_COLLECTION } from './config'
 // never touches a responder's `answers`/`completed_at`.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const classroomCallbackSecret = defineSecret('CLASSROOM_CALLBACK_SECRET')
+// Poll's OWN game-side secret (NOT pennies' CLASSROOM_CALLBACK_SECRET). The single-
+// player family shares one project, so each game declares a distinct secret name —
+// provisioning poll never rotates pennies' secret. Its VALUE must equal the classroom's
+// CALLBACK_SECRET_POLL (spawn-secret.sh writes both from one mint).
+const classroomCallbackSecret = defineSecret('POLL_CALLBACK_SECRET')
 
 function resolveRosterConfig(data: Record<string, unknown>, isEmulator: boolean): { url: string; secret: string } {
   if (isEmulator) {
