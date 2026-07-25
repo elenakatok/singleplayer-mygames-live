@@ -3,7 +3,7 @@ import React from 'react'
 import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { PayoffMatrix } from './PayoffMatrix'
-import { HistoryTable } from './HistoryTable'
+import { HistoryTable, averagePerRound } from './HistoryTable'
 import type { PdHistoryRow, PdMoveLabels, PdPayoffs } from './api'
 
 // Static-markup render tests. The repo has no jsdom/testing-library, but these two
@@ -19,7 +19,8 @@ const LABELS: PdMoveLabels = { C: 'Cooperate', D: 'Defect' }
  *  Asserting on text rather than raw markup keeps inline styles — `text-align:left`
  *  and friends — from colliding with the words being looked for. */
 const textOf = (html: string, testid: string) => {
-  const m = html.match(new RegExp(`<(t[dhr])\\s+data-testid="${testid}"[^>]*>([\\s\\S]*?)</\\1>`))
+  // Any element, not just table cells — the caption's averages live in <strong>.
+  const m = html.match(new RegExp(`<(\\w+)\\s+data-testid="${testid}"[^>]*>([\\s\\S]*?)</\\1>`))
   return m ? m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : null
 }
 
@@ -79,10 +80,31 @@ describe('HistoryTable — rounds PLAYED, grouped You | Opponent header', () => 
     expect(html).not.toContain('data-testid="pd-history-row-4"')
   })
 
-  it('shows each round’s moves, years, and running totals', () => {
-    // round │ your move, years, running total │ their move, years, running total
-    expect(textOf(html, 'pd-history-row-2')).toBe('2 Defect 0 1 Cooperate 15 16')
-    expect(textOf(html, 'pd-history-row-3')).toBe('3 Defect 10 11 Defect 10 26')
+  it('shows each round’s moves and per-round years — and NO cumulative totals', () => {
+    // round │ your move, your years │ their move, their years
+    expect(textOf(html, 'pd-history-row-2')).toBe('2 Defect 0 Cooperate 15')
+    expect(textOf(html, 'pd-history-row-3')).toBe('3 Defect 10 Defect 10')
+  })
+
+  it('has exactly five columns — the Total columns are gone', () => {
+    // Header row 2 carries the per-side sub-labels; "Total" must appear nowhere.
+    const text = visibleText(html)
+    expect(text).not.toContain('Total')
+    // Round + (Move, Years) × 2 sides.
+    const headerCells = html.match(/<th[^>]*>(?:(?!<\/th>).)*<\/th>/g) ?? []
+    expect(headerCells.length).toBe(7)   // Round(rowSpan) + 2 block heads + 4 sub-labels
+  })
+
+  it('reports AVERAGES per round, to one decimal place', () => {
+    // Student years 1 + 0 + 10 = 11 over 3 rounds → 3.7; bot 1 + 15 + 10 = 26 → 8.7.
+    expect(textOf(html, 'pd-your-average')).toBe('3.7')
+    expect(textOf(html, 'pd-their-average')).toBe('8.7')
+    expect(visibleText(html)).toContain('averaging')
+    expect(visibleText(html)).toContain('per round so far')
+  })
+
+  it('keeps the lower-is-better framing on the caption', () => {
+    expect(visibleText(html)).toContain('Years in prison — lower is better')
   })
 
   it('says nothing about rounds remaining — the whole point of the table', () => {
@@ -96,5 +118,24 @@ describe('HistoryTable — rounds PLAYED, grouped You | Opponent header', () => 
     const empty = renderToStaticMarkup(<HistoryTable history={[]} labels={LABELS} />)
     expect(empty).toContain('No rounds played yet')
     expect(empty).not.toContain('<table')
+  })
+})
+
+describe('averagePerRound — the one arithmetic on the student’s screen', () => {
+  it('rounds to one decimal place', () => {
+    expect(averagePerRound(11, 3)).toBe('3.7')
+    expect(averagePerRound(26, 3)).toBe('8.7')
+    expect(averagePerRound(1, 1)).toBe('1.0')
+    expect(averagePerRound(0, 5)).toBe('0.0')
+  })
+
+  it('never divides by zero', () => {
+    expect(averagePerRound(0, 0)).toBe('0.0')
+    expect(averagePerRound(7, 0)).toBe('0.0')
+  })
+
+  it('is a MEAN over rounds played, not a total', () => {
+    // 10 years across 10 rounds is 1.0/round — the number that compares to the matrix.
+    expect(averagePerRound(10, 10)).toBe('1.0')
   })
 })

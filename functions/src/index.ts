@@ -79,6 +79,7 @@ export { pdSubmitDebrief } from './pd/submitDebrief'
 // Instructor.
 export { pdSyncRoster } from './pd/syncRoster'
 export { pdScoreAndRecord } from './pd/scoreAndRecord'
+export { pdGetReport } from './pd/report'
 
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 
