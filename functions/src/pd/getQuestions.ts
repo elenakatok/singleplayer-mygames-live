@@ -7,20 +7,27 @@ import {
 import { resolveKcQuestions, toClientKcQuestions, debriefQuestion } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// pdGetQuestions (student) — the whole non-round question set in ONE call: the four
-// KC questions (spec §7) and the debrief paragraph (spec §8), plus which of them this
-// student has already answered.
+// pdGetQuestions (student) — the whole non-round question set in ONE call: the
+// knowledge check (spec §7) and the debrief paragraph (spec §8), plus which of them
+// this student has already answered.
 //
-// ONE CALLABLE FOR BOTH because the play screen builds its whole sequence up front
-// (KC → round loop → debrief) and would otherwise round-trip twice before rendering
-// anything. Poll's getQuestions has the same shape: the questions, plus `answered`
-// so the client can resume on the first one with no entry.
+// ⚠ THE TWO KC SOURCES ARE RETURNED SEPARATELY, and stay separate all the way down.
+//   • `kc.derived` — the four matrix-comprehension questions, RECOMPUTED from this
+//     instance's payoff matrix, labels and unit on every call. Never stored as text,
+//     so they cannot drift from the matrix the student is looking at.
+//   • `kc.added`   — the instructor's own questions, read from config as stored data
+//     objects with their own answer keys.
+// The client renders derived-then-added; the grader routes each field to its own
+// path. Flattening these into one list server-side would mean freezing the derived
+// four as text, which is exactly what the derivation exists to prevent.
 //
-// ⚠ THE ANSWER KEY NEVER SHIPS. toClientKcQuestions drops `correct_value` AND
-// `explanation` — the explanation is earned by answering (pdSubmitKcAnswer returns
-// it) and the key is server-only. This is the same whitelist discipline the round
-// callables use for the round count and the strategy: build the client object field
-// by field, never spread the server-side one.
+// ⚠ THE ANSWER KEY NEVER SHIPS, from EITHER source. toClientKcQuestions drops
+// `correct_value` and `explanation` from the derived four; the added questions are
+// rebuilt field by field below for the same reason. The explanation is earned by
+// answering (pdSubmitKcAnswer returns it).
+//
+// Both the KC and the debrief can be switched OFF per instance; when off, the arrays
+// are empty / the debrief is null and the client simply omits those screens.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const pdGetQuestions = onCall({ cors: PD_CORS_ORIGINS }, async (request) => {
@@ -40,22 +47,39 @@ export const pdGetQuestions = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
   const config = loadPdConfig(configSnap.data())
   const pData = participantSnap.data() ?? {}
 
-  // Resolved against THIS instance's matrix, so the options match the matrix the KC
-  // screen renders beside them.
-  const resolved = resolveKcQuestions(config.payoffs)
+  // Derived against THIS instance's matrix/labels/unit, so the options match the
+  // matrix rendered beside them on the KC screen.
+  const derived = config.kcEnabled
+    ? toClientKcQuestions(resolveKcQuestions(config.payoffs, config.unit, config.labels))
+    : []
+
+  // Added questions, whitelisted field by field — never spread, so a stored
+  // `correct_value` cannot ride along.
+  const added = config.kcEnabled
+    ? config.addedKcQuestions.map(q => ({
+        field: q.id,
+        type: q.type,
+        prompt: q.prompt,
+        options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+      }))
+    : []
 
   const answers = (pData.kc_static_answers ?? {}) as Record<string, unknown>
-  const answered = resolved.filter(q => answers[q.field] != null).map(q => q.field)
+  const answered = [...derived, ...added].filter(q => answers[q.field] != null).map(q => q.field)
 
   return {
     ok: true as const,
-    kc: toClientKcQuestions(resolved),
-    // Ungraded and keyless — safe to send whole, but still built field by field.
-    debrief: {
-      field: debriefQuestion.field,
-      prompt: debriefQuestion.prompt,
-      placeholder: debriefQuestion.placeholder,
-    },
+    kcEnabled: config.kcEnabled,
+    kc: { derived, added },
+    debriefEnabled: config.debriefEnabled,
+    // Ungraded and keyless, but still built field by field.
+    debrief: config.debriefEnabled
+      ? {
+          field: debriefQuestion.field,
+          prompt: config.debriefPrompt,
+          placeholder: debriefQuestion.placeholder,
+        }
+      : null,
     kcAnswered: answered,
     debriefSubmitted: (pData.debrief_answers ?? {})[debriefQuestion.field] != null,
   }

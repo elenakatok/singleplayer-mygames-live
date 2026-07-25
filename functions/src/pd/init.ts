@@ -3,7 +3,7 @@ import { FieldValue } from 'firebase-admin/firestore'
 import { STRATEGIES, isStrategy, type Strategy } from './strategy'
 import {
   INSTANCES_COLLECTION, CONFIG_DOC, TRUTH_DOC, truthParticipantDoc,
-  MIN_ROUNDS, MAX_ROUNDS, loadPdConfig, type PdConfig,
+  HARD_MIN_ROUNDS, loadPdConfig, type PdConfig,
 } from './config'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -63,16 +63,22 @@ export function hash32(s: string): number {
 }
 
 /**
- * The instance's round count: a uniform integer in [MIN_ROUNDS, MAX_ROUNDS].
+ * The instance's round count: a uniform integer in the instance's configured
+ * [minRounds, maxRounds], inclusive at both ends.
  * Seeded ⇒ derived from (seed, instanceId). Unseeded ⇒ real randomness.
  * PURE with respect to the seeded path — same inputs, same answer, always.
  */
-export function drawRoundCount(seed: string | null, instanceId: string): number {
-  const span = MAX_ROUNDS - MIN_ROUNDS + 1 // inclusive on both ends
+export function drawRoundCount(
+  seed: string | null,
+  instanceId: string,
+  minRounds: number,
+  maxRounds: number,
+): number {
+  const span = maxRounds - minRounds + 1 // inclusive on both ends
   const k = seed === null
     ? Math.floor(Math.random() * span)
     : hash32(`${seed}:rounds:${instanceId}`) % span
-  return MIN_ROUNDS + k
+  return minRounds + k
 }
 
 /**
@@ -133,12 +139,19 @@ export async function initPdParticipant(
     const config = loadPdConfig(configSnap.data())
 
     // ── Instance-level: the round count ──────────────────────────────────────
+    // ⚠ VALIDITY IS "IS IT A PLAYABLE COUNT", NOT "IS IT INSIDE THE CURRENT RANGE".
+    // The range is instructor-configurable (Slice 5), and an already-drawn count must
+    // survive a range edit: an instance drawn at 13 and then re-ranged to [5,8] keeps
+    // 13, because students are mid-game against it and the horizon is fixed once
+    // drawn. Range-bounding this check would silently REDRAW those instances — which
+    // is the one thing init.ts exists to prevent.
     const storedRounds = truthSnap.data()?.rounds
     const roundsValid = typeof storedRounds === 'number'
       && Number.isInteger(storedRounds)
-      && storedRounds >= MIN_ROUNDS
-      && storedRounds <= MAX_ROUNDS
-    const rounds = roundsValid ? (storedRounds as number) : drawRoundCount(config.seed, instanceId)
+      && storedRounds >= HARD_MIN_ROUNDS
+    const rounds = roundsValid
+      ? (storedRounds as number)
+      : drawRoundCount(config.seed, instanceId, config.minRounds, config.maxRounds)
     const drewRounds = !roundsValid
 
     // ── Per-student: the bot strategy ────────────────────────────────────────

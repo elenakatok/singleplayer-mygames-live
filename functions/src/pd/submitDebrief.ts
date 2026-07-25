@@ -2,7 +2,9 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
 import { extractStudentOnCallIds } from '@mygames/game-server'
-import { PD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION } from './config'
+import {
+  PD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC, loadPdConfig,
+} from './config'
 import { debriefQuestion } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -35,9 +37,14 @@ export const pdSubmitDebrief = onCall({ cors: PD_CORS_ORIGINS }, async (request)
   const answer = raw.trim().slice(0, MAX_LENGTH)
 
   const db = admin.firestore()
-  const participantRef = db
-    .collection(INSTANCES_COLLECTION).doc(gameInstanceId)
-    .collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
+  const instanceRef = db.collection(INSTANCES_COLLECTION).doc(gameInstanceId)
+
+  const configSnap = await instanceRef.collection('config').doc(CONFIG_DOC).get()
+  if (!loadPdConfig(configSnap.data()).debriefEnabled) {
+    throw new HttpsError('failed-precondition', 'The debrief is not part of this game.')
+  }
+
+  const participantRef = instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
 
   const field = debriefQuestion.field
 

@@ -1,5 +1,6 @@
 import type { PrepTextQuestion } from '@mygames/game-server'
 import { yearsFor, type PayoffConfig } from './payoff'
+import { DEFAULT_MOVE_LABELS, DEFAULT_UNIT, type PdMoveLabels } from './config'
 import type { Move } from './strategy'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -47,48 +48,95 @@ const kcBase = {
 /** The shipped option set — the four values of the default matrix (spec §7). */
 const DEFAULT_YEAR_OPTIONS = ['0', '1', '10', '15']
 
-const yearLabel = (v: string) => `${v} ${v === '1' ? 'year' : 'years'}`
+/**
+ * "3 points" / "1 point" — best-effort singularization for an arbitrary configured
+ * unit. Only the common English plural is handled (drop a trailing 's' at exactly 1);
+ * any other word is used as given rather than mangled. The unit is the instructor's
+ * word, so guessing harder than this would produce worse output, not better.
+ */
+export function unitLabel(value: string, unit: string): string {
+  const one = value === '1'
+  const word = one && unit.length > 1 && unit.endsWith('s') ? unit.slice(0, -1) : unit
+  return `${value} ${word}`
+}
 
+/**
+ * The prompt for one cell. Uses the instance's MOVE LABELS and UNIT, and states no
+ * direction — it asks what you get, not whether that is good.
+ */
+export function kcPrompt(cell: { you: Move; other: Move }, labels: PdMoveLabels, unit: string): string {
+  const mine = cell.you === 'C' ? labels.C : labels.D
+  const theirs = cell.other === 'C' ? labels.C : labels.D
+  const also = cell.you === cell.other ? 'also ' : ''
+  return `You choose ${mine} and the other player ${also}chooses ${theirs}. How many ${unit} do YOU get?`
+}
+
+/**
+ * The post-answer explanation for one cell, DERIVED from the instance's own numbers.
+ * It states the two values and nothing else: no "best", no "worst", no "sucker's
+ * payoff" — which of these outcomes is good is the instructor's framing, not the
+ * software's, and a configured matrix may not be a dilemma at all.
+ */
+export function kcExplanation(
+  cell: { you: Move; other: Move }, payoffs: PayoffConfig, labels: PdMoveLabels, unit: string,
+): string {
+  const mine = cell.you === 'C' ? labels.C : labels.D
+  const theirs = cell.other === 'C' ? labels.C : labels.D
+  const you = unitLabel(String(yearsFor(cell.you, cell.other, payoffs)), unit)
+  const them = unitLabel(String(yearsFor(cell.other, cell.you, payoffs)), unit)
+  return cell.you === cell.other
+    ? `When you both choose ${mine}, you each get ${you}.`
+    : `Choosing ${mine} while they choose ${theirs} gets you ${you}; they get ${them}.`
+}
+
+/**
+ * The four questions, as DATA. `field`, `order` and `cell` are the real content here —
+ * the prompt/options/correct_value/explanation literals below are what the SHIPPED
+ * DEFAULT matrix derives, kept inline so the shape stays readable and so the shared
+ * PrepTextQuestion contract is satisfied. resolveKcQuestions() regenerates all four of
+ * those from the instance's own config, and a unit test asserts the literals match
+ * what the defaults derive — so they cannot rot into a second source of truth.
+ */
 export const kcQuestions: PdKcQuestion[] = [
   {
     ...kcBase,
     field: 'kc_cc',
     order: 1,
     cell: { you: 'C', other: 'C' },
-    prompt: 'You cooperate and the other player also cooperates. How many years do YOU serve?',
-    options: DEFAULT_YEAR_OPTIONS.map(v => ({ value: v, label: yearLabel(v) })),
+    prompt: 'You choose Cooperate and the other player also chooses Cooperate. How many years do YOU get?',
+    options: DEFAULT_YEAR_OPTIONS.map(v => ({ value: v, label: unitLabel(v, DEFAULT_UNIT) })),
     correct_value: '1',
-    explanation: 'When you both cooperate, you each serve 1 year — the shared best outcome.',
+    explanation: 'When you both choose Cooperate, you each get 1 year.',
   },
   {
     ...kcBase,
     field: 'kc_cd',
     order: 2,
     cell: { you: 'C', other: 'D' },
-    prompt: 'You cooperate but the other player defects. How many years do YOU serve?',
-    options: DEFAULT_YEAR_OPTIONS.map(v => ({ value: v, label: yearLabel(v) })),
+    prompt: 'You choose Cooperate and the other player chooses Defect. How many years do YOU get?',
+    options: DEFAULT_YEAR_OPTIONS.map(v => ({ value: v, label: unitLabel(v, DEFAULT_UNIT) })),
     correct_value: '15',
-    explanation: 'Cooperating against a defector is the worst cell for you — 15 years, the sucker’s payoff. They go free.',
+    explanation: 'Choosing Cooperate while they choose Defect gets you 15 years; they get 0 years.',
   },
   {
     ...kcBase,
     field: 'kc_dc',
     order: 3,
     cell: { you: 'D', other: 'C' },
-    prompt: 'You defect and the other player cooperates. How many years do YOU serve?',
-    options: DEFAULT_YEAR_OPTIONS.map(v => ({ value: v, label: yearLabel(v) })),
+    prompt: 'You choose Defect and the other player chooses Cooperate. How many years do YOU get?',
+    options: DEFAULT_YEAR_OPTIONS.map(v => ({ value: v, label: unitLabel(v, DEFAULT_UNIT) })),
     correct_value: '0',
-    explanation: 'Defecting against a cooperator is the best cell for you — 0 years. They serve 15.',
+    explanation: 'Choosing Defect while they choose Cooperate gets you 0 years; they get 15 years.',
   },
   {
     ...kcBase,
     field: 'kc_dd',
     order: 4,
     cell: { you: 'D', other: 'D' },
-    prompt: 'You defect and the other player also defects. How many years do YOU serve?',
-    options: DEFAULT_YEAR_OPTIONS.map(v => ({ value: v, label: yearLabel(v) })),
+    prompt: 'You choose Defect and the other player also chooses Defect. How many years do YOU get?',
+    options: DEFAULT_YEAR_OPTIONS.map(v => ({ value: v, label: unitLabel(v, DEFAULT_UNIT) })),
     correct_value: '10',
-    explanation: 'When you both defect, you each serve 10 years — worse for both of you than if you had both cooperated.',
+    explanation: 'When you both choose Defect, you each get 10 years.',
   },
 ]
 
@@ -110,23 +158,32 @@ export const debriefQuestion: PrepTextQuestion = {
 }
 
 /**
- * The KC questions resolved against ONE instance's payoff matrix: each question's
- * options become that matrix's distinct values (ascending) and its correct answer
- * becomes the years the student actually serves in that cell.
+ * The four questions resolved against ONE instance's config: prompt, options, correct
+ * answer and explanation are ALL regenerated from that instance's payoff matrix, move
+ * labels and unit. Nothing about them is stored, which is why they can never drift
+ * from the matrix the student is shown — that no-drift property is the whole reason
+ * these four are derived rather than editable (Slice 5 adds editable questions as a
+ * separate list; see PdAddedKcQuestion).
  *
  * Pure — no Firestore. Both the serve path and the grade path call this, so the
  * options a student sees and the answer they are graded against cannot disagree.
  */
-export function resolveKcQuestions(payoffs: PayoffConfig): PdKcQuestion[] {
+export function resolveKcQuestions(
+  payoffs: PayoffConfig,
+  unit: string = DEFAULT_UNIT,
+  labels: PdMoveLabels = DEFAULT_MOVE_LABELS,
+): PdKcQuestion[] {
   const distinct = [...new Set([
     payoffs.both_cooperate, payoffs.sucker, payoffs.temptation, payoffs.both_defect,
   ])].sort((a, b) => a - b)
-  const options = distinct.map(v => ({ value: String(v), label: yearLabel(String(v)) }))
+  const options = distinct.map(v => ({ value: String(v), label: unitLabel(String(v), unit) }))
 
   return kcQuestions.map(q => ({
     ...q,
+    prompt: kcPrompt(q.cell, labels, unit),
     options,
     correct_value: String(yearsFor(q.cell.you, q.cell.other, payoffs)),
+    explanation: kcExplanation(q.cell, payoffs, labels, unit),
   }))
 }
 

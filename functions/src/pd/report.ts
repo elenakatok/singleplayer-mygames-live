@@ -129,6 +129,9 @@ export const pdGetReport = onCall({ cors: PD_CORS_ORIGINS }, async (request) => 
     roundCount,
     payoffs: config.payoffs,
     labels: config.labels,
+    /** The instance's unit word, so the roster/charts label their numbers the same
+     *  way the students' screens did. */
+    unit: config.unit,
     participants,
     charts,
     debriefPrompt: debriefQuestion.prompt,

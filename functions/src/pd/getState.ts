@@ -54,6 +54,16 @@ export const pdGetState = onCall({ cors: PD_CORS_ORIGINS }, async (request) => {
     // Student-facing settings (spec §2 — the matrix is shown to students).
     labels: config.labels,
     payoffs: config.payoffs,
+    /** The word the payoff numbers are counted in. Carries no direction. */
+    unit: config.unit,
+    /**
+     * The round-count RANGE — the only thing about the schedule a student may be told
+     * (spec §3). This is the configured [min, max], NOT the drawn count, which stays
+     * in truth/ and appears in no student response. Sent so the framing copy can say
+     * "between {min} and {max} rounds" from config instead of hardcoding 10 and 20.
+     */
+    minRounds: config.minRounds,
+    maxRounds: config.maxRounds,
     // What they have earned by playing. Rounds PLAYED only.
     history: toClientHistory(stored),
     // Derived from the stored finish stamp — NOT from comparing history.length to the

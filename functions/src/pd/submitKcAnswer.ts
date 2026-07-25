@@ -50,18 +50,52 @@ export const pdSubmitKcAnswer = onCall({ cors: PD_CORS_ORIGINS }, async (request
   const configSnap = await instanceRef.collection('config').doc(CONFIG_DOC).get()
   const config = loadPdConfig(configSnap.data())
 
-  // Resolved against this instance's matrix — the same call the serve path made, so a
-  // student is graded against the matrix they were shown.
-  const questions = resolveKcQuestions(config.payoffs)
-  const question = questions.find(q => q.field === field)
-  if (!question) {
-    throw new HttpsError('invalid-argument', `'${field}' is not a knowledge-check question in this game.`)
-  }
-  if (!(question.options ?? []).some(o => o.value === answer)) {
-    throw new HttpsError('invalid-argument', 'Please choose one of the options.')
+  if (!config.kcEnabled) {
+    throw new HttpsError('failed-precondition', 'The knowledge check is not part of this game.')
   }
 
-  const forScoring = questions.map(q => ({ field: q.field, correct_value: q.correct_value! }))
+  // ── ROUTE THE FIELD TO ITS OWN SOURCE ─────────────────────────────────────
+  // Derived first: resolved against this instance's matrix, the same call the serve
+  // path made, so a student is graded against the matrix they were shown. Added
+  // questions are looked up in config with their own stored key. The two lists are
+  // never merged — an added question cannot even take a kc_ id (config.ts), so this
+  // lookup order can never shadow one with the other.
+  const derived = resolveKcQuestions(config.payoffs, config.unit, config.labels)
+  const derivedQ = derived.find(q => q.field === field)
+  const addedQ = derivedQ ? undefined : config.addedKcQuestions.find(q => q.id === field)
+
+  if (!derivedQ && !addedQ) {
+    throw new HttpsError('invalid-argument', `'${field}' is not a knowledge-check question in this game.`)
+  }
+
+  /** The correct answer, or null when the question is ungraded (added free text). */
+  let correctValue: string | null
+  let explanation: string
+  if (derivedQ) {
+    if (!(derivedQ.options ?? []).some(o => o.value === answer)) {
+      throw new HttpsError('invalid-argument', 'Please choose one of the options.')
+    }
+    correctValue = derivedQ.correct_value ?? null
+    explanation = derivedQ.explanation ?? ''
+  } else {
+    const q = addedQ!
+    if (q.type === 'mc' && !(q.options ?? []).some(o => o.value === answer)) {
+      throw new HttpsError('invalid-argument', 'Please choose one of the options.')
+    }
+    // Free text has no key: it is RECORDED and left ungraded, never counted wrong.
+    correctValue = q.type === 'mc' ? (q.correct_value ?? null) : null
+    explanation = q.explanation ?? ''
+  }
+
+  // The scoring set: the derived four PLUS any added question that carries a key.
+  // Added free-text questions are absent from BOTH numerator and denominator, so
+  // adding one cannot silently lower everyone's score.
+  const forScoring = [
+    ...derived.map(q => ({ field: q.field, correct_value: q.correct_value! })),
+    ...config.addedKcQuestions
+      .filter(q => q.type === 'mc' && typeof q.correct_value === 'string')
+      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
+  ]
   const participantRef = instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
 
   const result = await db.runTransaction(async (tx) => {
@@ -75,7 +109,9 @@ export const pdSubmitKcAnswer = onCall({ cors: PD_CORS_ORIGINS }, async (request
       return { correct: existing[field].correct, stored: true as const }
     }
 
-    const correct = answer === question.correct_value
+    // An ungraded (free-text) added question is stored with correct:false and is
+    // excluded from `forScoring`, so it counts nowhere — it is a record, not a mark.
+    const correct = correctValue !== null && answer === correctValue
 
     // Every answer, including this one, for the all-answered check + the score.
     const allAnswers: Record<string, string> = {}
@@ -107,7 +143,10 @@ export const pdSubmitKcAnswer = onCall({ cors: PD_CORS_ORIGINS }, async (request
   return {
     ok: true as const,
     correct: result.correct,
+    /** False for an ungraded added question, so the client shows "recorded" rather
+     *  than marking a free-text answer wrong. */
+    graded: correctValue !== null,
     // Earned by answering — this is the ONLY path that returns it.
-    explanation: question.explanation ?? '',
+    explanation,
   }
 })

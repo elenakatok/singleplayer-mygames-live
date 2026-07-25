@@ -20,8 +20,8 @@ describe('the KC data objects (spec §7)', () => {
     }
   })
 
-  it('asks about the student’s OWN years every time', () => {
-    for (const q of kcQuestions) expect(q.prompt).toContain('YOU serve')
+  it('asks about the student’s OWN payoff every time', () => {
+    for (const q of kcQuestions) expect(q.prompt).toContain('do YOU get')
   })
 })
 
@@ -38,12 +38,38 @@ describe('resolveKcQuestions — options and answers come from the INSTANCE matr
   })
 
   it('agrees with the frozen literals in the data objects on the default matrix', () => {
-    // The literals are documentation; this is what keeps them honest.
+    // The literals are documentation of what the SHIPPED defaults derive. Pinning
+    // prompt and explanation too — not just the key — is what stops them rotting into
+    // a second source of truth once everything became derived in Slice 5.
     const resolved = resolveKcQuestions(DEFAULT_PAYOFFS)
     for (let i = 0; i < kcQuestions.length; i++) {
       expect(resolved[i].correct_value).toBe(kcQuestions[i].correct_value)
+      expect(resolved[i].prompt).toBe(kcQuestions[i].prompt)
+      expect(resolved[i].explanation).toBe(kcQuestions[i].explanation)
       expect((resolved[i].options ?? []).map(o => o.value).sort())
         .toEqual((kcQuestions[i].options ?? []).map(o => o.value).sort())
+    }
+  })
+
+  it('follows the configured UNIT into prompts, options and explanations', () => {
+    const resolved = resolveKcQuestions(DEFAULT_PAYOFFS, 'points')
+    expect(resolved[0].prompt).toContain('How many points do YOU get?')
+    expect((resolved[0].options ?? []).map(o => o.label)).toEqual(['0 points', '1 point', '10 points', '15 points'])
+    expect(resolved[0].explanation).toContain('1 point')
+    expect(JSON.stringify(resolved)).not.toContain('year')
+  })
+
+  it('follows the configured MOVE LABELS into prompts and explanations', () => {
+    const resolved = resolveKcQuestions(DEFAULT_PAYOFFS, 'years', { C: 'Stay silent', D: 'Confess' })
+    expect(resolved[0].prompt).toBe('You choose Stay silent and the other player also chooses Stay silent. How many years do YOU get?')
+    expect(resolved[1].explanation).toBe('Choosing Stay silent while they choose Confess gets you 15 years; they get 0 years.')
+    expect(JSON.stringify(resolved)).not.toContain('Cooperate')
+  })
+
+  it('states NO direction — the game does not claim which outcome is better', () => {
+    const text = JSON.stringify(resolveKcQuestions(DEFAULT_PAYOFFS)).toLowerCase()
+    for (const word of ['lower is better', 'higher is better', 'best', 'worst', 'sucker', 'losses', 'prison']) {
+      expect(text).not.toContain(word)
     }
   })
 
