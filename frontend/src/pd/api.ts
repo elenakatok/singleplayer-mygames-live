@@ -138,6 +138,75 @@ export const pdSubmitKcAnswer = (field: string, answer: string) =>
 export const pdSubmitDebrief = (answer: string) =>
   callFn<{ ok: boolean; stored: boolean; answer: string }>('pdSubmitDebrief', { answer })
 
+// ── Instructor: roster, scoring, reports ────────────────────────────────────────
+//
+// ⚠ EVERYTHING BELOW IS INSTRUCTOR-ONLY and DOES carry the strategy and the round
+// count. That is not a hole in the no-leak rule: these callables are
+// instructor-authenticated server-side, no student screen imports them, and the
+// student-facing types above still cannot express either value. Keep it that way —
+// if a student component ever needs data from here, that is the bug.
+
+export type PdStrategy = 'tft' | 'grim'
+
+/** One roster row (Tier 1, Reports Contract). */
+export type PdReportParticipant = {
+  participant_id: string
+  name: string | null
+  launched: boolean
+  completed: boolean
+  rounds_played: number
+  cooperation_rate: number | null
+  avg_years: number | null
+  student_years_total: number
+  bot_years_total: number
+  strategy: PdStrategy | null
+  first_move: Move | null
+  knowledge_check_score: number | null
+  participation_score: number | null
+  debrief: string | null
+}
+
+/** Tier 3a — one point per round, one value per strategy series. */
+export type PdCooperationPoint = {
+  round: number
+  tft: number | null
+  grim: number | null
+  tftN: number
+  grimN: number
+}
+
+/** Tier 3b — one bar per (first move × strategy). */
+export type PdFirstMoveOutcome = {
+  firstMove: Move
+  strategy: PdStrategy
+  avgYearsPerRound: number | null
+  n: number
+}
+
+export type PdReportData = {
+  ok: boolean
+  scored: boolean
+  /** The drawn round count — the cooperation chart's x-axis. Instructor-only. */
+  roundCount: number
+  payoffs: PdPayoffs
+  labels: PdMoveLabels
+  participants: PdReportParticipant[]
+  charts: { cooperation: PdCooperationPoint[]; firstMove: PdFirstMoveOutcome[] }
+  debriefPrompt: string
+}
+
+/** The roster + every report dataset, in one call. */
+export const pdGetReport = () => callFn<PdReportData>('pdGetReport')
+
+/** Participation scoring + the gradebook push. Re-runnable. */
+export const pdScoreAndRecord = () =>
+  callFn<{ ok: boolean; scored: number; finishers: number; names: Record<string, string | null>; push: { total: number; succeeded: number; failed: { participant_id: string; reason: string }[] } | null }>(
+    'pdScoreAndRecord')
+
+/** Pull the course roster so never-launched students appear (and can be graded −2). */
+export const pdSyncRoster = () =>
+  callFn<{ ok: boolean; synced: number; note?: string }>('pdSyncRoster')
+
 // ── Instructor: session ─────────────────────────────────────────────────────────
 
 export type InstructorSessionArgs =
