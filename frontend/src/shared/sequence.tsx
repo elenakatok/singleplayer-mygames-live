@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { Fragment, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -148,5 +148,13 @@ export function SequenceRunner({
     return <LoopRunner key={screen.id} screen={screen} onLoopDone={onDone} />
   }
 
-  return <>{screen.render({ onDone })}</>
+  // ⚠ `key={screen.id}` IS LOAD-BEARING, not tidiness. Consecutive screens render the
+  // same component type at the same position in the tree, so without a changing key
+  // React reconciles them as ONE component: it keeps the mounted instance and merely
+  // swaps the props, and every piece of the screen's own state survives into the next
+  // screen. Concretely: PD's second KC question would render already-answered,
+  // showing the FIRST question's verdict with its options disabled; Poll's next
+  // question would arrive with the previous answer still typed in. Keying by screen
+  // id forces a remount at every step, which is what "one screen at a time" means.
+  return <Fragment key={screen.id}>{screen.render({ onDone })}</Fragment>
 }

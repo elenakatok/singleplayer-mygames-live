@@ -18,10 +18,9 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | `poll` | Poll | `poll.mygames.live` | `poll-mygames` |
 | `pd` | Repeated Prisoner's Dilemma | `pd.mygames.live` | `pd-mygames-live` |
 
-> `pd` is at **Slice 2 (the round loop)**: launch, instructor session, health, the
-> four routes, and the playable game — `pdGetState` / `pdSubmitRound`, the compute
-> step (bot move + payoffs), the play screen, the history table, and the payoff
-> matrix. No KC, no debrief, no scoring, no reports yet.
+> `pd` is at **Slice 3 (complete student flow)**: knowledge check → round loop →
+> debrief, plus participation scoring and the gradebook push. Only the reports
+> (Slice 4) are outstanding.
 >
 > ⚠ **PD's two invariants, in code:** the instance's round count and the student's
 > bot strategy are server-side truth (`truth/…`, rules-denied) and appear in **no**
@@ -78,6 +77,25 @@ firebase deploy --only hosting:pennies --project singleplayer-mygames-live
 
 Adding a game adds a second hosting array entry and a second CNAME — it must never
 become possible to deploy all games with one command by accident.
+
+## Harnesses
+
+Every game has an emulator harness driving its callables over HTTP, and PD adds the
+family's first **real-browser** harness (Playwright + Chromium). The browser harness is
+ADDITIONAL coverage — the HTTP harnesses still own the server contract.
+
+```sh
+npm install && npx playwright install chromium   # once, for the browser harness
+npm run harness:pd          # HTTP  — server contract
+npm run harness:pd:browser  # BROWSER — the whole game, clicked through
+npm run harness:pennies
+npm run harness:poll
+```
+
+The browser harness boots the Vite **dev** server itself (dev mode is what enables the
+`?_pid/_gid` test identity and the emulator wiring in `frontend/src/firebase.ts`) and
+shuts it down afterwards. Its plumbing is deliberately game-agnostic — copy it for the
+next game and change only the selectors.
 
 ## Shared packages (consumed, never modified)
 

@@ -20,6 +20,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import fs from 'node:fs'
+import http from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -84,6 +85,44 @@ const payoffFields = (p) => ({ mapValue: { fields: {
 
 const asStudent = (gid, pid, extra = {}) => ({ _test: { participant_id: pid, game_instance_id: gid }, ...extra })
 const asDev = (gid) => ({ _dev: { game_instance_id: gid } })
+
+// ── Mock classroom (the gradebook callback + the roster endpoint) ──────────────
+// Same shape pennies' harness uses. In the emulator both URLs and the secret are
+// passed explicitly inside _dev, so nothing here depends on a deployed classroom or
+// on PD_CALLBACK_SECRET being present.
+let pushCount = 0
+const pushed = []
+const callbackServer = http.createServer((req, res) => {
+  let raw = ''
+  req.on('data', c => (raw += c))
+  req.on('end', () => {
+    pushCount++
+    try { pushed.push(JSON.parse(raw)) } catch { /* ignore */ }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true }))
+  })
+})
+await new Promise(r => callbackServer.listen(0, r))
+const CALLBACK_URL = `http://127.0.0.1:${callbackServer.address().port}/push`
+const CALLBACK_SECRET = 'test-secret'
+
+/** The roster the mock classroom hands back: the two students who play, plus one who
+ *  never launches — the −2 floor case only a roster sync can create. */
+const ROSTER = [
+  { participant_id: 'pd-finisher', name: 'Fin Isher', external_id: 'ext-1' },
+  { participant_id: 'pd-quitter', name: 'Quinn Itter', external_id: 'ext-2' },
+  { participant_id: 'pd-absent', name: 'Abby Sent', external_id: 'ext-3' },
+]
+const rosterServer = http.createServer((req, res) => {
+  let raw = ''
+  req.on('data', c => (raw += c))
+  req.on('end', () => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true, participants: ROSTER }))
+  })
+})
+await new Promise(r => rosterServer.listen(0, r))
+const ROSTER_URL = `http://127.0.0.1:${rosterServer.address().port}/roster`
 
 // ── Independent models of the server's logic ───────────────────────────────────
 // Deliberately re-implemented here rather than imported from functions/lib: a harness
@@ -482,13 +521,148 @@ async function main() {
   const leakParticipant = await getDoc(`pd_game_instances/${GID6}/participants/${KPID}`)
   check(leakParticipant?.strategy === undefined, 'the participant doc carries no strategy field at all')
 
-  // ── 11. The pd play screen ships in the bundle ──────────────────────────────
+  // ── 11. KC + debrief server contract ────────────────────────────────────────
+  // The browser harness (pd-playwright.mjs) walks these through the UI. This section
+  // owns the parts a UI cannot reach: the answer key never being served, the
+  // per-question lock, and rejection of malformed input.
+  console.log('\n[11] Knowledge check + debrief (server contract)')
+  const GID7 = `pd-kc-${stamp}`
+  const QPID = 'pd-kc-stu'
+  await openInstance(GID7, QPID, 'seed-kc')
+
+  const qs = await callFn('pdGetQuestions', asStudent(GID7, QPID))
+  check(qs.ok, 'pdGetQuestions succeeds')
+  check(qs.result.kc.length === 4, 'serves the four KC questions (spec §7)')
+  check(qs.result.kc.every(q => Object.keys(q).sort().join() === 'field,options,prompt'),
+    'each KC question carries only field, prompt, options')
+  const qsJson = JSON.stringify(qs.result)
+  check(!qsJson.includes('correct_value'), '⚠ the answer key is NOT served to the student')
+  check(!qsJson.includes('explanation'), '⚠ the explanations are NOT served ahead of answering')
+  check(qs.result.kcAnswered.length === 0 && qs.result.debriefSubmitted === false,
+    'a new student has answered nothing')
+  check(qs.result.debrief?.prompt.startsWith('In a short paragraph'), 'serves the debrief question')
+
+  // The KC options are THIS instance's payoff values (config-driven), and the correct
+  // answer follows the same matrix — a student is never graded against a matrix they
+  // were not shown.
+  const optionValues = qs.result.kc[0].options.map(o => o.value).sort()
+  check(optionValues.join() === ['0', '1', '6', '9'].sort().join(),
+    `KC options come from the instance matrix (${optionValues.join('/')})`)
+
+  const kcCorrect = {
+    kc_cc: String(PAYOFFS.both_cooperate), kc_cd: String(PAYOFFS.sucker),
+    kc_dc: String(PAYOFFS.temptation), kc_dd: String(PAYOFFS.both_defect),
+  }
+  const a1 = await callFn('pdSubmitKcAnswer', asStudent(GID7, QPID, { field: 'kc_cc', answer: kcCorrect.kc_cc }))
+  check(a1.ok && a1.result.correct === true, 'a correct answer is graded correct')
+  check(typeof a1.result.explanation === 'string' && a1.result.explanation.length > 0,
+    'the explanation IS returned post-answer (earned by answering)')
+
+  // Per-question lock: a second attempt cannot upgrade a wrong answer.
+  const wrongFirst = await callFn('pdSubmitKcAnswer', asStudent(GID7, QPID, { field: 'kc_cd', answer: kcCorrect.kc_dc }))
+  check(wrongFirst.ok && wrongFirst.result.correct === false, 'a wrong answer is graded incorrect — and accepted')
+  const retry = await callFn('pdSubmitKcAnswer', asStudent(GID7, QPID, { field: 'kc_cd', answer: kcCorrect.kc_cd }))
+  check(retry.ok && retry.result.correct === false, 'retrying a question returns the STORED verdict — no second chance')
+
+  const badField = await callFn('pdSubmitKcAnswer', asStudent(GID7, QPID, { field: 'kc_nope', answer: '1' }))
+  check(!badField.ok, 'an unknown question field is rejected')
+  const badOption = await callFn('pdSubmitKcAnswer', asStudent(GID7, QPID, { field: 'kc_dc', answer: '99' }))
+  check(!badOption.ok, 'an answer outside the offered options is rejected')
+
+  // No score until every question is answered; then correct/total.
+  const midDoc = await getDoc(`pd_game_instances/${GID7}/participants/${QPID}`)
+  check(midDoc?.knowledge_check_score === undefined, 'no KC score is written until all four are answered')
+  await callFn('pdSubmitKcAnswer', asStudent(GID7, QPID, { field: 'kc_dc', answer: kcCorrect.kc_dc }))
+  await callFn('pdSubmitKcAnswer', asStudent(GID7, QPID, { field: 'kc_dd', answer: kcCorrect.kc_dd }))
+  const kcDoc = await getDoc(`pd_game_instances/${GID7}/participants/${QPID}`)
+  const kcScore = Number(kcDoc?.knowledge_check_score?.doubleValue ?? kcDoc?.knowledge_check_score?.integerValue)
+  check(kcScore === 0.75, `three of four correct scores 0.75 (got ${kcScore})`)
+
+  // NO GATE: the KC never blocks the game. This student can play round 1 right now,
+  // and so could a student who got every question wrong.
+  const kcThenPlay = await callFn('pdSubmitRound', asStudent(GID7, QPID, { round: 1, move: 'C' }))
+  check(kcThenPlay.ok, 'a student with a WRONG KC answer still enters the round loop (no gate)')
+
+  // Debrief: ungraded, one-shot, and it must not disturb the KC score.
+  const dbEmpty = await callFn('pdSubmitDebrief', asStudent(GID7, QPID, { answer: '   ' }))
+  check(!dbEmpty.ok, 'an empty debrief paragraph is rejected')
+  const db1 = await callFn('pdSubmitDebrief', asStudent(GID7, QPID, { answer: 'I cooperated throughout.' }))
+  check(db1.ok && db1.result.stored === false, 'the debrief paragraph is stored')
+  const db2 = await callFn('pdSubmitDebrief', asStudent(GID7, QPID, { answer: 'Actually I defected.' }))
+  check(db2.ok && db2.result.stored === true && db2.result.answer === 'I cooperated throughout.',
+    'a second debrief submit returns the STORED paragraph — one-shot, like every other submit')
+  const dbDoc = await getDoc(`pd_game_instances/${GID7}/participants/${QPID}`)
+  check(Number(dbDoc?.knowledge_check_score?.doubleValue ?? dbDoc?.knowledge_check_score?.integerValue) === 0.75,
+    'the ungraded debrief did NOT touch the knowledge-check score')
+
+  // ── 12. Participation scoring + the gradebook push ──────────────────────────
+  console.log('\n[12] Score & Record → the classroom gradebook')
+  const GID8 = `pd-score-${stamp}`
+  const finisher = 'pd-finisher'
+  const quitter = 'pd-quitter'
+  const scoreTruth = await openInstance(GID8, finisher, 'seed-score')
+  await openInstance(GID8, quitter, 'seed-score')
+
+  // One student plays to the end; the other plays two rounds and walks away.
+  for (let n = 1; n <= scoreTruth.rounds; n++) {
+    await callFn('pdSubmitRound', asStudent(GID8, finisher, { round: n, move: n % 3 === 0 ? 'D' : 'C' }))
+  }
+  await callFn('pdSubmitRound', asStudent(GID8, quitter, { round: 1, move: 'C' }))
+  await callFn('pdSubmitRound', asStudent(GID8, quitter, { round: 2, move: 'D' }))
+
+  // A third student is enrolled by the roster sync but never launches at all.
+  const sync = await callFn('pdSyncRoster', {
+    _dev: { game_instance_id: GID8, roster_url: ROSTER_URL, callback_secret: 'x' },
+  })
+  check(sync.ok && sync.result.synced === 3, `pdSyncRoster pre-created the roster (${sync.result?.synced})`)
+  const neverDoc = await getDoc(`pd_game_instances/${GID8}/participants/pd-absent`)
+  check(neverDoc !== null && neverDoc.finished_at === undefined,
+    'a rostered student who never launched has an identity-only doc')
+  // …and the sync did not clobber the student who was mid-game.
+  const quitterAfterSync = await getDoc(`pd_game_instances/${GID8}/participants/${quitter}`)
+  check(quitterAfterSync?.rounds?.arrayValue?.values?.length === 2,
+    'the roster sync did NOT clobber a student who had already played (safe identity-only merge)')
+
+  const pushBefore = pushCount
+  const score = await callFn('pdScoreAndRecord', {
+    _dev: { game_instance_id: GID8, callback_url: CALLBACK_URL, callback_secret: CALLBACK_SECRET },
+  })
+  check(score.ok, 'pdScoreAndRecord succeeds')
+  check(score.result.finishers === 1, 'exactly one student finished')
+  check(pushCount - pushBefore === 3, `pushed 3 grade records (got ${pushCount - pushBefore})`)
+
+  const byId = Object.fromEntries(pushed.slice(-3).map(r => [r.participant_id, r]))
+  check(byId[finisher].normalized_score === 0, 'the finisher normalizes to 0 (participation)')
+  check(byId[finisher].status === 'completed', 'the finisher pushes status completed')
+  check(byId[quitter].normalized_score === -2, 'a student who played but never FINISHED gets the −2 floor')
+  check(byId[quitter].status === 'no_show', 'and pushes status no_show')
+  check(byId['pd-absent'].normalized_score === -2, 'a never-launched student gets the −2 floor')
+  check(byId[finisher].role === null, 'role is null — this family has no roles')
+  check(!('raw_score' in byId[finisher]), 'the push omits raw_score (gradebook contract)')
+
+  // ⚠ PRISON-YEARS ARE NEVER GRADED (spec §6). The finisher served a real number of
+  // years; none of it may appear in, or move, anything the gradebook receives.
+  const finisherDoc = await getDoc(`pd_game_instances/${GID8}/participants/${finisher}`)
+  const yearsServed = Number(finisherDoc?.student_years_total?.integerValue)
+  check(yearsServed > 0, `the finisher's prison-years were recorded for the report (${yearsServed})`)
+  check(byId[finisher].normalized_score === 0 && byId[finisher].knowledge_check_score === null,
+    '…and the pushed record carries participation + KC only — no years, in any field')
+  check(!JSON.stringify(byId[finisher]).includes(String(yearsServed)),
+    '…and the years total appears nowhere in the pushed payload')
+
+  // Re-running is byte-identical: nothing is ranked, so there is no tie to break.
+  const rerun = await callFn('pdScoreAndRecord', {
+    _dev: { game_instance_id: GID8, callback_url: CALLBACK_URL, callback_secret: CALLBACK_SECRET },
+  })
+  check(rerun.ok && rerun.result.finishers === 1, 'a re-run reproduces the same result exactly')
+
+  // ── 13. The pd play screen ships in the bundle ──────────────────────────────
   // One Vite bundle serves every game and picks by hostname, so "the pd route is
   // built and shipped" is what can be asserted here. This is a BUILD-ARTIFACT check,
   // not a DOM render — the repo has no jsdom/testing-library, so the components'
   // markup is covered by the static-render tests in frontend/src/pd/ instead.
   // `npm run build` in frontend/ must have run first.
-  console.log('\n[11] pd play screen present in the shipped bundle')
+  console.log('\n[13] pd play screen present in the shipped bundle')
   const distDir = path.join(ROOT, 'frontend', 'dist', 'assets')
   if (!fs.existsSync(distDir)) {
     check(false, `frontend/dist/assets missing — run \`npm run build\` in frontend/ first`)
