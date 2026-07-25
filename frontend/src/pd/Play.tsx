@@ -1,61 +1,71 @@
 import { useEffect, useState } from 'react'
 import { auth } from '../firebase'
 import {
-  pdBootstrap, pdGetState, CLASSROOM_URL,
+  pdBootstrap, pdGetState, pdGetQuestions, CLASSROOM_URL,
   type PdHistoryRow, type PdMoveLabels, type PdPayoffs, type PdRoundResult,
+  type PdKcQuestionClient, type PdDebriefQuestionClient,
 } from './api'
 import { PageShell } from '../shared/PageShell'
-import { SequenceRunner, loopScreen } from '../shared/sequence'
+import { SequenceRunner, loopScreen, type SequenceScreen } from '../shared/sequence'
 import { ChooseRound, RevealRound } from './RoundScreen'
+import { KcScreen } from './KcScreen'
+import { DebriefScreen } from './DebriefScreen'
+import { resumeIndex } from './resume'
 import { HistoryTable } from './HistoryTable'
 import { useStudentSession, typography, colors } from '@mygames/game-ui'
 import type { BootstrapArgs } from '@mygames/game-ui'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Repeated Prisoner's Dilemma — student entry (spec §4, the round loop).
+// Repeated Prisoner's Dilemma — student entry. THE WHOLE FLOW, in one sequence:
 //
-// Launch (pdBootstrap) → pdGetState → the loop → the end screen.
+//   KC Q1 … Q4  →  the round loop  →  the debrief paragraph  →  done
+//   (graded,        (self-paced,        (ungraded)
+//    no gate)        server-ended)
 //
-// RESUME (self-paced; close and come back anytime): the loop's starting iteration is
-// simply HOW MANY ROUNDS ARE ALREADY STORED — `history.length`, straight from
-// pdGetState. It is the loop's analogue of Poll's findIndex-the-first-unanswered:
-// n rounds played ⇒ iteration n ⇒ round n+1, and the history table comes back
-// populated. Nothing is kept in the browser between visits; the server's record of
-// played rounds IS the resume point, so a different device resumes identically.
+// The KC comes FIRST (spec §7): it confirms the student can read the payoff matrix
+// before they start making decisions with it. It is graded but it is NOT A GATE —
+// a wrong answer is recorded and the student continues into the game regardless.
 //
-// The loop ENDS ON THE SERVER'S WORD (`gameOver`), never on a count held here — the
-// round count must never reach this bundle (spec §3). A student who returns after
-// finishing skips the loop entirely and lands on the end screen.
+// RESUME, one rule for the whole flow: every step's completion is a fact stored on
+// the server, so `startIndex` is just "how many steps are already done" —
+// KC answers first, then the loop's own gameOver, then the debrief's stored answer.
+// Nothing is kept in the browser; a student resumes identically on another device.
 //
-// SLICE 2 ends at "the game is over" + the final history. The debrief question and
-// the knowledge check arrive in Slice 3.
+// The round count and the strategy still never reach this file (spec §3, §5) — see
+// api.ts. Slice 4 adds the reports; nothing student-facing is left after this.
 // ═══════════════════════════════════════════════════════════════════════════════
+
+type Loaded = {
+  kc: PdKcQuestionClient[]
+  debrief: PdDebriefQuestionClient
+  payoffs: PdPayoffs
+  labels: PdMoveLabels
+}
 
 type Screen =
   | { name: 'loading' }
   | { name: 'error'; message: string }
-  | { name: 'playing'; startIteration: number }
-  | { name: 'over' }
+  | { name: 'flow'; startIndex: number }
+  | { name: 'done' }
 
-function EndScreen({ history, labels }: { history: PdHistoryRow[]; labels: PdMoveLabels }) {
+function DoneScreen({ history, labels }: { history: PdHistoryRow[]; labels: PdMoveLabels }) {
   const last = history[history.length - 1]
   return (
     <div>
-      <h1 data-testid="pd-game-over" style={{ marginTop: 0, fontSize: '1.6rem', color: colors.text }}>
-        The game is over
+      <h1 data-testid="pd-all-done" style={{ marginTop: 0, fontSize: '1.6rem', color: colors.text }}>
+        All done — thank you
       </h1>
       <p style={{ lineHeight: 1.6, color: colors.text }}>
-        That was the last round. You played <strong>{history.length}</strong> round{history.length === 1 ? '' : 's'} and
-        served a total of <strong>{last ? last.studentTotal : 0}</strong> year
-        {last && last.studentTotal === 1 ? '' : 's'} in prison; the other player served{' '}
-        <strong>{last ? last.botTotal : 0}</strong>.
+        Your answers and your game have been recorded. You played{' '}
+        <strong>{history.length}</strong> round{history.length === 1 ? '' : 's'} and served a total of{' '}
+        <strong>{last ? last.studentTotal : 0}</strong> year{last && last.studentTotal === 1 ? '' : 's'} in prison;
+        the other player served <strong>{last ? last.botTotal : 0}</strong>. You can close this tab.
       </p>
-      <p style={{ lineHeight: 1.6, color: colors.text }}>
-        Your full record is below. You can close this tab.
-      </p>
-      <div style={{ marginTop: '1.25rem' }}>
-        <HistoryTable history={history} labels={labels} />
-      </div>
+      {history.length > 0 && (
+        <div style={{ marginTop: '1.25rem' }}>
+          <HistoryTable history={history} labels={labels} />
+        </div>
+      )}
     </div>
   )
 }
@@ -81,26 +91,33 @@ export default function Play() {
   })
 
   const [screen, setScreen] = useState<Screen>({ name: 'loading' })
-  // The running history + the instance's settings, held here because BOTH loop phases
-  // and the end screen render them. Seeded by pdGetState, then advanced by each
-  // round's response — the server returns the whole history every time, so this can
-  // never drift from the record and is replaced wholesale rather than appended to.
+  const [loaded, setLoaded] = useState<Loaded | null>(null)
+  // The running history: seeded by pdGetState, then replaced wholesale by each round's
+  // response (the server returns the entire history every time, so this cannot drift).
   const [history, setHistory] = useState<PdHistoryRow[]>([])
-  const [labels, setLabels] = useState<PdMoveLabels>({ C: 'Cooperate', D: 'Defect' })
-  const [payoffs, setPayoffs] = useState<PdPayoffs | null>(null)
 
   useEffect(() => {
     if (session.kind !== 'ready') return
     let cancelled = false
-    pdGetState()
-      .then(res => {
+    Promise.all([pdGetState(), pdGetQuestions()])
+      .then(([state, questions]) => {
         if (cancelled) return
-        setLabels(res.labels)
-        setPayoffs(res.payoffs)
-        setHistory(res.history)
-        // Resume: n rounds stored ⇒ start the loop at iteration n (⇒ round n+1).
-        if (res.gameOver) setScreen({ name: 'over' })
-        else setScreen({ name: 'playing', startIteration: res.history.length })
+        setLoaded({
+          kc: questions.kc,
+          debrief: questions.debrief,
+          payoffs: state.payoffs,
+          labels: state.labels,
+        })
+        setHistory(state.history)
+        const start = resumeIndex({
+          kcCount: questions.kc.length,
+          kcAnswered: questions.kcAnswered.length,
+          gameOver: state.gameOver,
+          debriefSubmitted: questions.debriefSubmitted,
+        })
+        // Past the last screen ⇒ everything is done.
+        if (start >= questions.kc.length + 2) setScreen({ name: 'done' })
+        else setScreen({ name: 'flow', startIndex: start })
       })
       .catch(err => {
         if (!cancelled) {
@@ -132,38 +149,59 @@ export default function Play() {
   }
 
   if (screen.name === 'error') return <PageShell><p style={{ color: '#c00' }}>{screen.message}</p></PageShell>
-  if (screen.name === 'over') return <PageShell><EndScreen history={history} labels={labels} /></PageShell>
+  if (screen.name === 'done') return <PageShell><DoneScreen history={history} labels={loaded?.labels ?? { C: 'Cooperate', D: 'Defect' }} /></PageShell>
 
-  if (screen.name === 'playing' && payoffs !== null) {
+  if (screen.name === 'flow' && loaded !== null) {
+    const { kc, debrief, payoffs, labels } = loaded
+
+    const screens: SequenceScreen[] = [
+      // ── The knowledge check: one graded screen per question, no gate ──────────
+      ...kc.map((q, i) => ({
+        id: q.field,
+        render: ({ onDone }: { onDone: () => void }) => (
+          <KcScreen question={q} index={i} total={kc.length} payoffs={payoffs} labels={labels} onDone={onDone} />
+        ),
+      })),
+
+      // ── The round loop: ask → reveal, repeated until the SERVER says done ─────
+      loopScreen<PdRoundResult>({
+        id: 'pd-rounds',
+        startIteration: history.length,
+        ask: ({ iteration, onResult }) => (
+          <ChooseRound
+            roundNumber={iteration + 1}
+            labels={labels}
+            payoffs={payoffs}
+            history={history}
+            onResult={(res, done) => { setHistory(res.history); onResult(res, done) }}
+          />
+        ),
+        display: ({ iteration, result, onContinue }) => (
+          <RevealRound
+            roundNumber={iteration + 1}
+            result={result}
+            labels={labels}
+            payoffs={payoffs}
+            onContinue={onContinue}
+          />
+        ),
+      }),
+
+      // ── The debrief paragraph ────────────────────────────────────────────────
+      {
+        id: debrief.field,
+        render: ({ onDone }: { onDone: () => void }) => (
+          <DebriefScreen question={debrief} history={history} labels={labels} onDone={onDone} />
+        ),
+      },
+    ]
+
     return (
       <PageShell>
         <SequenceRunner
-          screens={[
-            loopScreen<PdRoundResult>({
-              id: 'pd-rounds',
-              startIteration: screen.startIteration,
-              ask: ({ iteration, onResult }) => (
-                <ChooseRound
-                  // Iteration 0 is round 1.
-                  roundNumber={iteration + 1}
-                  labels={labels}
-                  payoffs={payoffs}
-                  history={history}
-                  onResult={(res, done) => { setHistory(res.history); onResult(res, done) }}
-                />
-              ),
-              display: ({ iteration, result, onContinue }) => (
-                <RevealRound
-                  roundNumber={iteration + 1}
-                  result={result}
-                  labels={labels}
-                  payoffs={payoffs}
-                  onContinue={onContinue}
-                />
-              ),
-            }),
-          ]}
-          onAllComplete={() => setScreen({ name: 'over' })}
+          screens={screens}
+          startIndex={screen.startIndex}
+          onAllComplete={() => setScreen({ name: 'done' })}
         />
       </PageShell>
     )

@@ -100,6 +100,44 @@ export const pdGetState = () => callFn<PdStateResult>('pdGetState')
 export const pdSubmitRound = (round: number, move: Move) =>
   callFn<PdRoundResult>('pdSubmitRound', { round, move })
 
+// ── Student: knowledge check + debrief ──────────────────────────────────────────
+
+/** One KC question as the client receives it — NO answer key. `correct_value` and
+ *  `explanation` are stripped server-side; the explanation arrives only in the
+ *  response to an answer, which is what makes it impossible to read ahead. */
+export type PdKcQuestionClient = {
+  field: string
+  prompt: string
+  options: { value: string; label: string }[]
+}
+
+export type PdDebriefQuestionClient = {
+  field: string
+  prompt: string
+  placeholder: string
+}
+
+export type PdQuestionsResult = {
+  ok: boolean
+  kc: PdKcQuestionClient[]
+  debrief: PdDebriefQuestionClient
+  /** Fields already answered — drives KC resume (poll's findIndex pattern). */
+  kcAnswered: string[]
+  debriefSubmitted: boolean
+}
+
+/** The KC + debrief question set, plus what this student has already answered. */
+export const pdGetQuestions = () => callFn<PdQuestionsResult>('pdGetQuestions')
+
+/** Answer ONE KC question. Graded, but NOT a gate: a wrong answer is recorded and
+ *  the student proceeds. The verdict and explanation come back post-answer. */
+export const pdSubmitKcAnswer = (field: string, answer: string) =>
+  callFn<{ ok: boolean; correct: boolean; explanation: string }>('pdSubmitKcAnswer', { field, answer })
+
+/** Submit the debrief paragraph. Ungraded. */
+export const pdSubmitDebrief = (answer: string) =>
+  callFn<{ ok: boolean; stored: boolean; answer: string }>('pdSubmitDebrief', { answer })
+
 // ── Instructor: session ─────────────────────────────────────────────────────────
 
 export type InstructorSessionArgs =
