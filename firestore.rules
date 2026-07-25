@@ -81,5 +81,45 @@ service cloud.firestore {
         allow write: if false;
       }
     }
+
+    // ── Repeated Prisoner's Dilemma (game_id: pd) ──────────────────────────────
+
+    match /pd_game_instances/{instanceId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+
+      // Per-instance instructor config (config/main). STUDENT-READABLE, and safe to
+      // be: it holds only the payoff matrix, which the student is shown anyway. The
+      // drawn round count is NOT here — it lives in truth/ below (PD spec §3: the
+      // actual round count is never displayed).
+      match /config/{doc} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+
+      // TRUTH (truth/main → the drawn round count, and anything else the pedagogy
+      // depends on staying hidden). DENY ALL CLIENT ACCESS — read AND write,
+      // unconditionally, with NO exception for the instructor (who reads/writes it
+      // only through an authenticated callable). Same eBay vCommon pattern as
+      // pennies' true_value. Do not relax this rule, ever.
+      match /truth/{doc} {
+        allow read, write: if false;
+      }
+
+      // Participant document — per-INSTANCE subcollection, same structural isolation
+      // as pennies and poll.
+      //
+      // ⚠ DELIBERATE DIVERGENCE FROM pennies/poll: read is DENIED OUTRIGHT, not
+      // scoped to "your own doc". A PD participant doc carries the student's assigned
+      // bot strategy (TFT vs GRIM) and their round history — and the whole pedagogy is
+      // that the student INFERS the strategy from play (PD spec §5). Letting a student
+      // read their own doc would hand them the answer through the Firestore SDK, so
+      // every read goes through a callable that returns only what the student has
+      // already earned. No client writes either (callables only).
+      match /participants/{participantId} {
+        allow read: if false;
+        allow write: if false;
+      }
+    }
   }
 }

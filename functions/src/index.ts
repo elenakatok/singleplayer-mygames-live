@@ -4,6 +4,7 @@ import { makeSinglePlayerBootstrap } from './shared/singlePlayerBootstrap'
 import { makeSinglePlayerInstructorSession } from './shared/singlePlayerInstructorSession'
 import { PENNIES_COLLECTION_PREFIX, PENNIES_CORS_ORIGINS } from './pennies/config'
 import { POLL_COLLECTION_PREFIX, POLL_CORS_ORIGINS } from './poll/config'
+import { PD_COLLECTION_PREFIX, PD_CORS_ORIGINS } from './pd/config'
 
 admin.initializeApp()
 
@@ -55,6 +56,21 @@ export { pollGetConfig, pollUpdateConfig } from './poll/instructorConfig'
 export { pollSyncRoster } from './poll/syncRoster'
 export { pollGetReport } from './poll/report'
 
+// ── Repeated Prisoner's Dilemma (game_id: pd) ─────────────────────────────────
+//
+// SLICE 0 — SCAFFOLD ONLY. Launch + instructor session + health, so the site
+// serves end to end. There is deliberately NO student game callable yet: the
+// round loop, the compute step (bot move + payoffs), the KC, and Score & Record
+// arrive in later slices.
+
+export const pdBootstrap = makeSinglePlayerBootstrap({
+  collectionPrefix: PD_COLLECTION_PREFIX,
+  corsOrigins: PD_CORS_ORIGINS,
+})
+export const pdInstructorSession = makeSinglePlayerInstructorSession({
+  corsOrigins: PD_CORS_ORIGINS,
+})
+
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 
 function makeHealth(game: string, origins: string[]) {
@@ -73,3 +89,4 @@ function makeHealth(game: string, origins: string[]) {
 
 export const penniesHealth = makeHealth('pennies', PENNIES_CORS_ORIGINS)
 export const pollHealth = makeHealth('poll', POLL_CORS_ORIGINS)
+export const pdHealth = makeHealth('pd', PD_CORS_ORIGINS)
