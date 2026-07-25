@@ -15,6 +15,11 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | game_id | Title | Subdomain | Hosting site |
 |---|---|---|---|
 | `pennies` | Jar of Pennies | `pennies.mygames.live` | `pennies` |
+| `poll` | Poll | `poll.mygames.live` | `poll-mygames` |
+| `pd` | Repeated Prisoner's Dilemma | `pd.mygames.live` | `pd-mygames-live` |
+
+> `pd` is **Slice 0 (scaffold)**: launch, instructor session, health, and the four
+> routes. No round loop, no compute step, no KC, no reports yet.
 
 Each game is separated from the others by **collection prefix** (`pennies_…`) and
 its **own hosting site**, all inside the one Firebase project with the one
