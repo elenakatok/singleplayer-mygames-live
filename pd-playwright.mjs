@@ -864,6 +864,56 @@ async function main() {
     check(!(await exists(pageO, '[data-testid="pd-debrief-input"]')), 'and no debrief screen appears')
     await ctxO.close()
 
+    // ── 6f. ⚠ THE INSTRUCTOR SESSION IS EXCHANGED ONCE, NOT PER MOUNT ─────────
+    // Regression for the shipped "jwt expired" bug. The classroom JWT lives 15
+    // minutes and the hook used to re-send it on EVERY mount — and every
+    // Dashboard → Settings → Reports click IS a mount, because the nav links carry
+    // ?token= forward. A quarter of an hour into a working session the next click
+    // threw `jwt expired`.
+    //
+    // The emulator uses the ?_gid= dev bypass, so no JWT is verified here and the
+    // failure cannot be reproduced literally. What CAN be pinned — and is the actual
+    // mechanism — is the exchange COUNT: one per browser session, not one per page.
+    // If the resume guard regresses, this goes to 4 and fails.
+    console.log('\n[6f] Instructor session: exchanged ONCE across navigation + reload')
+    const ctxN = await browser.newContext()
+    const pageN = await ctxN.newPage()
+    const sessionCalls = []
+    pageN.on('response', (res) => {
+      if (res.url().includes('pdInstructorSession')) sessionCalls.push(res.url())
+    })
+    const instrUrl = (path) => `${APP}${path}?game=pd&_gid=${GID}`
+
+    await pageN.goto(instrUrl('/dashboard'))
+    await pageN.waitForSelector('[data-testid="pd-roster"]', { timeout: 45000 })
+    check(sessionCalls.length === 1, `the FIRST load still exchanges the token (${sessionCalls.length})`)
+
+    // In-page navigation, exactly as the nav buttons do it.
+    await pageN.goto(instrUrl('/settings'))
+    await pageN.waitForSelector('[data-testid="pd-settings"]', { timeout: 30000 })
+    check(sessionCalls.length === 1,
+      `⚠ Settings RESUMED the existing session — no second exchange (${sessionCalls.length})`)
+
+    await pageN.goto(instrUrl('/reports'))
+    await pageN.waitForSelector('text=Outcomes — all students', { timeout: 30000 })
+    check(sessionCalls.length === 1,
+      `⚠ Reports RESUMED too (${sessionCalls.length}) — this is the click that used to throw "jwt expired"`)
+
+    // A full reload of the same tab must also resume.
+    await pageN.reload()
+    await pageN.waitForSelector('text=Outcomes — all students', { timeout: 30000 })
+    check(sessionCalls.length === 1, `a full page reload resumes as well (${sessionCalls.length})`)
+
+    // And the pages actually WORK on the resumed session — a resume that produced a
+    // session the callables reject would pass a call-count check and still be broken.
+    await pageN.goto(instrUrl('/dashboard'))
+    await pageN.waitForSelector('[data-testid="pd-roster"]', { timeout: 30000 })
+    const resumedRoster = await pageN.locator('[data-testid="pd-roster"]').innerText()
+    check(resumedRoster.length > 0 && /Completed|Not launched|In progress/.test(resumedRoster),
+      'the resumed session still authenticates the instructor callables (roster loaded)')
+    check(sessionCalls.length === 1, `still one exchange after five page loads (${sessionCalls.length})`)
+    await ctxN.close()
+
     // ── 7. Score & Record over the finished class ─────────────────────────────
     console.log('\n[7] Participation scoring across the browser-played class')
     const sc = await callFn('pdScoreAndRecord', { _dev: { game_instance_id: GID } })
