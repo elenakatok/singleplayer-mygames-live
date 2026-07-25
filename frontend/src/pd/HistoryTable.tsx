@@ -50,9 +50,12 @@ const mine = (extra?: CSSProperties) => ({ ...mineShade, ...extra })
 export function HistoryTable({
   history,
   labels,
+  unit = 'years',
 }: {
   history: PdHistoryRow[]
   labels: PdMoveLabels
+  /** The instance's unit word. Defaulted so existing call sites keep compiling. */
+  unit?: string
 }) {
   if (history.length === 0) {
     return (
@@ -67,6 +70,8 @@ export function HistoryTable({
   // running total — the caption then depends on nothing but what is on screen.
   const studentYears = history.reduce((a, r) => a + r.studentYears, 0)
   const botYears = history.reduce((a, r) => a + r.botYears, 0)
+  // Column heading: the unit word, capitalized. No direction stated.
+  const unitHeading = unit.charAt(0).toUpperCase() + unit.slice(1)
 
   return (
     <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
@@ -84,9 +89,9 @@ export function HistoryTable({
           {/* Row 2 — plain sub-labels, no suffixes. */}
           <tr>
             <th style={mine({ ...th, ...blockSep })}>Move</th>
-            <th style={mine(th)}>Years</th>
+            <th style={mine(th)}>{unitHeading}</th>
             <th style={{ ...th, ...blockSep }}>Move</th>
-            <th style={th}>Years</th>
+            <th style={th}>{unitHeading}</th>
           </tr>
         </thead>
         <tbody>
@@ -105,9 +110,9 @@ export function HistoryTable({
         {/* Averages, not totals — computed here from the per-round years already in
             `history`, so this needs nothing new from the server. Denominator is rounds
             PLAYED (history.length), which is just the rows above. */}
-        Years in prison — lower is better. You are averaging{' '}
+        You are averaging{' '}
         <strong data-testid="pd-your-average">{averagePerRound(studentYears, history.length)}</strong>{' '}
-        years per round so far; the other player is averaging{' '}
+        {unit} per round so far; the other player is averaging{' '}
         <strong data-testid="pd-their-average">{averagePerRound(botYears, history.length)}</strong>.
       </p>
     </div>

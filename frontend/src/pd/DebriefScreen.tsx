@@ -24,11 +24,13 @@ export function DebriefScreen({
   question,
   history,
   labels,
+  unit = 'years',
   onDone,
 }: {
   question: PdDebriefQuestionClient
   history: PdHistoryRow[]
   labels: PdMoveLabels
+  unit?: string
   onDone: () => void
 }) {
   const [value, setValue] = useState('')
@@ -105,7 +107,7 @@ export function DebriefScreen({
         <h2 style={{ margin: '0 0 0.6rem', fontSize: typography.sizeSm, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.03em', color: colors.sectionMuted }}>
           Your history
         </h2>
-        <HistoryTable history={history} labels={labels} />
+        <HistoryTable history={history} labels={labels} unit={unit} />
       </section>
     </div>
   )

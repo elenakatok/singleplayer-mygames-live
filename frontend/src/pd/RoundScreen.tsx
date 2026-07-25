@@ -16,9 +16,12 @@ import { HistoryTable } from './HistoryTable'
 // and a student reading the reveal should see it land in the table.
 //
 // WHAT THE COPY MAY SAY (spec §1, §3) — and this is the whole of it: the same
-// automated player every round, programmed to act realistically, and between 10 and
-// 20 rounds. Never which strategy it is (the student infers that — it is the
+// automated player every round, programmed to act realistically, and the configured
+// round RANGE. Never which strategy it is (the student infers that — it is the
 // pedagogy), and never the actual round count or how many are left.
+//
+// NO DIRECTIONAL FRAMING (Slice 5): payoffs are rendered as a number plus the
+// instance's configured unit, and nothing on this screen says whether more is better.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const card: CSSProperties = {
@@ -31,14 +34,16 @@ const sectionTitle: CSSProperties = {
 }
 
 /** The standing framing (spec §1). Deliberately vague about length and silent about
- *  the opponent's rule — both by design, not by omission. */
-export function Framing() {
+ *  the opponent's rule — both by design, not by omission. The RANGE comes from config
+ *  (Slice 5); the drawn count still never reaches this component, or any other. */
+export function Framing({ minRounds, maxRounds }: { minRounds: number; maxRounds: number }) {
   return (
     <div data-testid="pd-framing" style={{ ...card, background: colors.infoBannerBg, borderColor: colors.infoBannerBorder }}>
       <p style={{ margin: 0, lineHeight: 1.6, color: colors.text }}>
         You are playing against <strong>the same automated player every round</strong>. It is
-        programmed to act realistically. You will play <strong>between 10 and 20 rounds</strong> —
-        you will not be told when the last one is.
+        programmed to act realistically. You will play{' '}
+        <strong>between {minRounds} and {maxRounds} rounds</strong> — you will not be told when
+        the last one is.
       </p>
       <p style={{ margin: '0.6rem 0 0', lineHeight: 1.6, color: colors.text }}>
         Each round you both choose at the same time, without seeing the other&rsquo;s choice.
@@ -54,6 +59,9 @@ export function ChooseRound({
   roundNumber,
   labels,
   payoffs,
+  unit,
+  minRounds,
+  maxRounds,
   history,
   onResult,
 }: {
@@ -61,6 +69,9 @@ export function ChooseRound({
   roundNumber: number
   labels: PdMoveLabels
   payoffs: PdPayoffs
+  unit: string
+  minRounds: number
+  maxRounds: number
   history: PdHistoryRow[]
   onResult: (result: PdRoundResult, done: boolean) => void
 }) {
@@ -115,11 +126,11 @@ export function ChooseRound({
         Round {roundNumber}
       </h1>
 
-      <Framing />
+      <Framing minRounds={minRounds} maxRounds={maxRounds} />
 
       <section style={card}>
         <h2 style={sectionTitle}>The payoffs</h2>
-        <PayoffMatrix payoffs={payoffs} labels={labels} />
+        <PayoffMatrix payoffs={payoffs} labels={labels} unit={unit} />
       </section>
 
       <section style={card}>
@@ -155,7 +166,7 @@ export function ChooseRound({
 
       <section style={card}>
         <h2 style={sectionTitle}>Your history</h2>
-        <HistoryTable history={history} labels={labels} />
+        <HistoryTable history={history} labels={labels} unit={unit} />
       </section>
     </div>
   )
@@ -168,17 +179,22 @@ export function RevealRound({
   result,
   labels,
   payoffs,
+  unit,
   onContinue,
 }: {
   roundNumber: number
   result: PdRoundResult
   labels: PdMoveLabels
   payoffs: PdPayoffs
+  unit: string
   onContinue: () => void
 }) {
   const { studentMove, botMove, studentYears, botYears } = result.round
   const label = (m: Move) => (m === 'C' ? labels.C : labels.D)
-  const yrs = (n: number) => `${n} year${n === 1 ? '' : 's'}`
+  // Best-effort singularization of the configured unit — the same rule the server
+  // uses for the KC option labels (questions.ts unitLabel).
+  const amount = (n: number) =>
+    `${n} ${n === 1 && unit.length > 1 && unit.endsWith('s') ? unit.slice(0, -1) : unit}`
 
   return (
     <div>
@@ -192,14 +208,14 @@ export function RevealRound({
             <div style={{ fontSize: typography.sizeSm, color: colors.textSecondary, marginBottom: '0.2rem' }}>You chose</div>
             <div data-testid="pd-reveal-your-move" style={{ fontSize: '1.15rem', fontWeight: 700, color: colors.text }}>{label(studentMove)}</div>
             <div data-testid="pd-reveal-your-years" style={{ marginTop: '0.35rem', color: colors.text }}>
-              You serve <strong>{yrs(studentYears)}</strong>
+              You get <strong>{amount(studentYears)}</strong>
             </div>
           </div>
           <div>
             <div style={{ fontSize: typography.sizeSm, color: colors.textSecondary, marginBottom: '0.2rem' }}>The other player chose</div>
             <div data-testid="pd-reveal-their-move" style={{ fontSize: '1.15rem', fontWeight: 700, color: colors.text }}>{label(botMove)}</div>
             <div data-testid="pd-reveal-their-years" style={{ marginTop: '0.35rem', color: colors.text }}>
-              They serve <strong>{yrs(botYears)}</strong>
+              They get <strong>{amount(botYears)}</strong>
             </div>
           </div>
         </div>
@@ -221,12 +237,12 @@ export function RevealRound({
 
       <section style={card}>
         <h2 style={sectionTitle}>Your history</h2>
-        <HistoryTable history={result.history} labels={labels} />
+        <HistoryTable history={result.history} labels={labels} unit={unit} />
       </section>
 
       <section style={card}>
         <h2 style={sectionTitle}>The payoffs</h2>
-        <PayoffMatrix payoffs={payoffs} labels={labels} />
+        <PayoffMatrix payoffs={payoffs} labels={labels} unit={unit} />
       </section>
     </div>
   )

@@ -23,12 +23,15 @@ import type { PdMoveLabels, PdPayoffs } from './api'
 //              └────────────┴────────────┘
 //
 // Your move picks the ROW, theirs picks the COLUMN, and the cell they meet in is
-// split by a diagonal: your years below it, theirs above it. Reading your own
+// split by a diagonal: your payoff below it, theirs above it. Reading your own
 // outcome is therefore always the same motion — find your row, read the blue number.
 //
-// ⚠ THESE ARE YEARS IN PRISON — LOSSES. Lower is better everywhere (spec §2), so the
-// caption says so in words rather than relying on students to infer it from a grid
-// where the best cell holds the smallest number.
+// ⚠ NO DIRECTIONAL FRAMING (Slice 5). This component states WHICH NUMBER IS WHOSE and
+// nothing else. It does not say whether a bigger number is better, because the game
+// no longer knows: the unit is configurable and an instructor may run this with
+// points, dollars, or prison years. Whether low is good is their framing to give in
+// the room, not a caption the software asserts. The cell-reading explanation stays —
+// that is about reading the grid, not about direction.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const YOU_COLOR = colors.roleA        // blue — you
@@ -98,7 +101,16 @@ const rowHeadStyle: CSSProperties = {
   whiteSpace: 'nowrap',
 }
 
-export function PayoffMatrix({ payoffs, labels }: { payoffs: PdPayoffs; labels: PdMoveLabels }) {
+export function PayoffMatrix({
+  payoffs,
+  labels,
+  unit = 'years',
+}: {
+  payoffs: PdPayoffs
+  labels: PdMoveLabels
+  /** The instance's unit word. Defaulted so existing call sites keep compiling. */
+  unit?: string
+}) {
   const cells = payoffCells(payoffs)
   const cell = (you: 'C' | 'D', other: 'C' | 'D') =>
     cells.find(c => c.you === you && c.other === other)!
@@ -123,11 +135,6 @@ export function PayoffMatrix({ payoffs, labels }: { payoffs: PdPayoffs; labels: 
 
   return (
     <figure data-testid="pd-payoff-matrix" style={{ margin: 0 }}>
-      <figcaption style={{ fontSize: typography.sizeSm, color: colors.textSecondary, marginBottom: '0.5rem' }}>
-        <strong style={{ color: colors.text }}>Years in prison — lower is better.</strong>{' '}
-        These are losses, not points: you want your total as small as possible.
-      </figcaption>
-
       <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
         <table style={{ borderCollapse: 'collapse', fontFamily: typography.fontFamily }}>
           <thead>
@@ -159,11 +166,12 @@ export function PayoffMatrix({ payoffs, labels }: { payoffs: PdPayoffs; labels: 
         </table>
       </div>
 
+      {/* Cell-reading only: which number belongs to whom. No claim about direction. */}
       <p style={{ fontSize: typography.sizeXs, color: colors.textSecondary, margin: '0.45rem 0 0', lineHeight: 1.5 }}>
         In each square, the <strong style={{ color: YOU_COLOR }}>blue number (lower left)</strong> is
-        the years <strong style={{ color: YOU_COLOR }}>you</strong> serve; the{' '}
-        <strong style={{ color: OTHER_COLOR }}>red number (upper right)</strong> is the years{' '}
-        <strong style={{ color: OTHER_COLOR }}>the other player</strong> serves.
+        the {unit} <strong style={{ color: YOU_COLOR }}>you</strong> get; the{' '}
+        <strong style={{ color: OTHER_COLOR }}>red number (upper right)</strong> is the {unit}{' '}
+        <strong style={{ color: OTHER_COLOR }}>the other player</strong> gets.
       </p>
     </figure>
   )

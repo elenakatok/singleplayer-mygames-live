@@ -52,7 +52,7 @@ const tnum = { fontVariantNumeric: 'tabular-nums' as const }
 
 type RosterKey = 'name' | 'status' | 'rounds' | 'coop' | 'avgYears' | 'strategy' | 'kc'
 
-function OutcomesTable({ rows }: { rows: PdReportParticipant[] }) {
+function OutcomesTable({ rows, unit }: { rows: PdReportParticipant[]; unit: string }) {
   const columns: readonly SortableColumn<PdReportParticipant, RosterKey>[] = [
     { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => (a.name ?? '').localeCompare(b.name ?? '') },
     {
@@ -62,7 +62,7 @@ function OutcomesTable({ rows }: { rows: PdReportParticipant[] }) {
     },
     { key: 'rounds', label: 'Rounds', render: r => <span style={tnum}>{r.rounds_played}</span>, compare: (a, b) => a.rounds_played - b.rounds_played },
     { key: 'coop', label: 'Cooperation', render: r => <span style={tnum}>{pct(r.cooperation_rate)}</span>, nullsLast: true, isNull: r => r.cooperation_rate == null, compare: (a, b) => (a.cooperation_rate ?? 0) - (b.cooperation_rate ?? 0) },
-    { key: 'avgYears', label: 'Avg years / round', render: r => <span style={tnum}>{oneDp(r.avg_years)}</span>, nullsLast: true, isNull: r => r.avg_years == null, compare: (a, b) => (a.avg_years ?? 0) - (b.avg_years ?? 0) },
+    { key: 'avgYears', label: `Avg ${unit} / round`, render: r => <span style={tnum}>{oneDp(r.avg_years)}</span>, nullsLast: true, isNull: r => r.avg_years == null, compare: (a, b) => (a.avg_years ?? 0) - (b.avg_years ?? 0) },
     { key: 'strategy', label: 'Opponent', render: r => (r.strategy ? STRATEGY_LABEL[r.strategy] : '—'), nullsLast: true, isNull: r => r.strategy == null, compare: (a, b) => (a.strategy ?? '').localeCompare(b.strategy ?? '') },
     { key: 'kc', label: 'KC', render: r => <span style={tnum}>{r.knowledge_check_score == null ? '—' : `${Math.round(r.knowledge_check_score * 100)}%`}</span>, nullsLast: true, isNull: r => r.knowledge_check_score == null, compare: (a, b) => (a.knowledge_check_score ?? 0) - (b.knowledge_check_score ?? 0) },
   ]
@@ -73,7 +73,7 @@ function OutcomesTable({ rows }: { rows: PdReportParticipant[] }) {
         initialSortKey="status" initialSortDir="desc" emptyMessage="No students yet." wrapHeaders
       />
       <p style={{ fontSize: '0.78rem', color: colors.textSecondary, marginTop: '0.5rem' }}>
-        Years are an outcome, never a grade (spec §6). Lower average years is better.
+        The {unit} column is an outcome, never a grade (spec §6).
       </p>
     </div>
   )
@@ -191,7 +191,7 @@ export default function Reports() {
       disabled: played.length === 0,
       preview: played.length === 0
         ? <span style={{ color: '#94a3b8' }}>No rounds played yet.</span>
-        : <span>Avg years / round — opened {data.labels.C} vs {data.labels.D}</span>,
+        : <span>Avg {data.unit} / round — opened {data.labels.C} vs {data.labels.D}</span>,
       onOpen: () => setActive('firstmove'),
     },
   ]
@@ -202,7 +202,7 @@ export default function Reports() {
 
       {active === 'outcomes' && (
         <Modal title="Outcomes — all students" onClose={() => setActive(null)}>
-          <OutcomesTable rows={data.participants} />
+          <OutcomesTable rows={data.participants} unit={data.unit} />
         </Modal>
       )}
       {active === 'debrief' && (
@@ -217,7 +217,7 @@ export default function Reports() {
       )}
       {active === 'firstmove' && (
         <Modal title="Outcome by first decision" onClose={() => setActive(null)}>
-          <FirstMoveChartSVG outcomes={data.charts.firstMove} labels={data.labels} />
+          <FirstMoveChartSVG outcomes={data.charts.firstMove} labels={data.labels} unit={data.unit} />
         </Modal>
       )}
     </>,

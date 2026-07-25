@@ -55,10 +55,27 @@ describe('PayoffMatrix — renders from config, in the split-cell layout', () =>
     expect(visibleText(custom)).not.toContain('15')
   })
 
-  it('frames the numbers as losses — years in prison, lower is better', () => {
+  it('⚠ states NO direction — Slice 5 made the game direction-agnostic', () => {
+    // The unit is configurable now, so the software cannot know whether a bigger
+    // number is good. Whether low is better is the instructor's framing, given in the
+    // room — not a caption asserted here.
+    const text = visibleText(html).toLowerCase()
+    for (const phrase of ['lower is better', 'higher is better', 'losses', 'prison', 'worse', 'best']) {
+      expect(text).not.toContain(phrase)
+    }
+  })
+
+  it('keeps the cell-reading explanation — which number is whose', () => {
     const text = visibleText(html)
-    expect(text).toContain('Years in prison')
-    expect(text.toLowerCase()).toContain('lower is better')
+    expect(text).toContain('blue number (lower left)')
+    expect(text).toContain('red number (upper right)')
+  })
+
+  it('renders the configured unit in the cell-reading explanation', () => {
+    const custom = visibleText(renderToStaticMarkup(
+      <PayoffMatrix payoffs={PAYOFFS} labels={LABELS} unit="points" />))
+    expect(custom).toContain('the points you get')
+    expect(custom).not.toContain('years')
   })
 })
 
@@ -103,8 +120,20 @@ describe('HistoryTable — rounds PLAYED, grouped You | Opponent header', () => 
     expect(visibleText(html)).toContain('per round so far')
   })
 
-  it('keeps the lower-is-better framing on the caption', () => {
-    expect(visibleText(html)).toContain('Years in prison — lower is better')
+  it('⚠ the caption states NO direction, only the averages', () => {
+    const text = visibleText(html).toLowerCase()
+    expect(text).toContain('you are averaging')
+    for (const phrase of ['lower is better', 'higher is better', 'in prison', 'losses']) {
+      expect(text).not.toContain(phrase)
+    }
+  })
+
+  it('uses the configured unit in the column headings and the caption', () => {
+    const custom = renderToStaticMarkup(<HistoryTable history={history} labels={LABELS} unit="points" />)
+    const text = visibleText(custom)
+    expect(text).toContain('Points')            // column heading
+    expect(text).toContain('points per round')  // caption
+    expect(text).not.toContain('Years')
   })
 
   it('says nothing about rounds remaining — the whole point of the table', () => {

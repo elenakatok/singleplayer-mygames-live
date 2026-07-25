@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resumeIndex } from './resume'
+import { resumeIndex, screenCount } from './resume'
 
 // Resume is the one place an off-by-one puts a student on the wrong screen — or back
 // through a KC question they already answered, which the server would then refuse
@@ -7,7 +7,7 @@ import { resumeIndex } from './resume'
 //   [KC 0…3] [loop at 4] [debrief at 5]  ⇒  6 means "everything is done".
 
 const at = (kcAnswered: number, gameOver: boolean, debriefSubmitted: boolean) =>
-  resumeIndex({ kcCount: 4, kcAnswered, gameOver, debriefSubmitted })
+  resumeIndex({ kcCount: 4, kcAnswered, gameOver, debriefEnabled: true, debriefSubmitted })
 
 describe('resumeIndex — where the student re-enters the flow', () => {
   it('starts a brand-new student on the first KC question', () => {
@@ -37,9 +37,37 @@ describe('resumeIndex — where the student re-enters the flow', () => {
     expect(at(2, true, false)).toBe(2)
   })
 
-  it('handles a KC of any length (a future admin-defaults doc may change the count)', () => {
-    expect(resumeIndex({ kcCount: 6, kcAnswered: 6, gameOver: false, debriefSubmitted: false })).toBe(6)
-    expect(resumeIndex({ kcCount: 0, kcAnswered: 0, gameOver: false, debriefSubmitted: false })).toBe(0)
-    expect(resumeIndex({ kcCount: 0, kcAnswered: 0, gameOver: true, debriefSubmitted: true })).toBe(2)
+  it('handles a KC of any length — added questions make the count instructor-set', () => {
+    expect(resumeIndex({ kcCount: 6, kcAnswered: 6, gameOver: false, debriefEnabled: true, debriefSubmitted: false })).toBe(6)
+    expect(resumeIndex({ kcCount: 0, kcAnswered: 0, gameOver: false, debriefEnabled: true, debriefSubmitted: false })).toBe(0)
+    expect(resumeIndex({ kcCount: 0, kcAnswered: 0, gameOver: true, debriefEnabled: true, debriefSubmitted: true })).toBe(2)
+  })
+})
+
+describe('resumeIndex — the KC and the debrief can each be switched OFF (Slice 5)', () => {
+  it('with the KC off, a new student starts straight in the round loop', () => {
+    expect(resumeIndex({ kcCount: 0, kcAnswered: 0, gameOver: false, debriefEnabled: true, debriefSubmitted: false })).toBe(0)
+    expect(screenCount(0, true)).toBe(2)
+  })
+
+  it('with the debrief off, finishing the game finishes the WHOLE flow', () => {
+    // debriefSubmitted stays false forever when there is no debrief, so the index has
+    // to come from debriefEnabled — otherwise the student would be parked on a screen
+    // that does not exist.
+    const idx = resumeIndex({ kcCount: 4, kcAnswered: 4, gameOver: true, debriefEnabled: false, debriefSubmitted: false })
+    expect(idx).toBe(5)
+    expect(idx).toBeGreaterThanOrEqual(screenCount(4, false))
+  })
+
+  it('with both off, the whole flow is just the round loop', () => {
+    expect(screenCount(0, false)).toBe(1)
+    expect(resumeIndex({ kcCount: 0, kcAnswered: 0, gameOver: false, debriefEnabled: false, debriefSubmitted: false })).toBe(0)
+    expect(resumeIndex({ kcCount: 0, kcAnswered: 0, gameOver: true, debriefEnabled: false, debriefSubmitted: false })).toBe(1)
+  })
+
+  it('screenCount matches the sequence the flow actually builds', () => {
+    expect(screenCount(4, true)).toBe(6)    // 4 KC + loop + debrief
+    expect(screenCount(4, false)).toBe(5)   // 4 KC + loop
+    expect(screenCount(6, true)).toBe(8)    // 4 derived + 2 added + loop + debrief
   })
 })

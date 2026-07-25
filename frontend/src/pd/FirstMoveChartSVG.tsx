@@ -5,14 +5,14 @@ import type { PdFirstMoveOutcome, PdMoveLabels } from './api'
 // Hand-rolled inline SVG, same house pattern as the cooperation chart.
 //
 // Two groups on the x-axis (opened by cooperating / opened by defecting), two bars in
-// each (tit-for-tat, GRIM). The bar height is MEAN YEARS PER ROUND, so a student who
-// stopped early is comparable to one who finished.
+// each (tit-for-tat, GRIM). The bar height is the MEAN PAYOFF PER ROUND, so a student
+// who stopped early is comparable to one who finished.
 //
-// ⚠ LOWER IS BETTER — these are years in prison, i.e. losses (spec §2). A taller bar
-// is a WORSE outcome, which is the opposite of the usual reading, so the axis says so
-// in words and the caption repeats it. The expected shape: opening with defection
-// costs little against tit-for-tat (it forgives) and a great deal against GRIM (it
-// never does) — that contrast is the point of the chart.
+// NO DIRECTIONAL CLAIM (Slice 5): the unit is configurable, so the chart states what
+// the bars measure and leaves whether taller is better to the instructor's framing.
+// The contrast it exists to show is between the two strategies, not between good and
+// bad: opening with defection lands differently against a bot that forgives than
+// against one that never does.
 //
 // INSTRUCTOR-ONLY: it aggregates the assigned strategy.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -23,9 +23,11 @@ const GRIM_COLOR = '#dc2626'  // red
 export function FirstMoveChartSVG({
   outcomes,
   labels,
+  unit = 'years',
 }: {
   outcomes: PdFirstMoveOutcome[]
   labels: PdMoveLabels
+  unit?: string
 }) {
   const populated = outcomes.filter(o => o.n > 0 && o.avgYearsPerRound != null)
   if (populated.length === 0) {
@@ -63,7 +65,7 @@ export function FirstMoveChartSVG({
     <figure style={{ margin: 0 }}>
       <svg
         viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: W, fontFamily: 'inherit' }}
-        role="img" aria-label="Average years per round by first decision and opponent strategy"
+        role="img" aria-label="Average payoff per round by first decision and opponent strategy"
         data-testid="pd-firstmove-chart"
       >
         {/* Legend */}
@@ -122,18 +124,17 @@ export function FirstMoveChartSVG({
           )
         })}
 
-        {/* Y axis title — states the direction, since taller = worse here. */}
+        {/* Y axis title — what the bars measure. No direction claimed. */}
         <text
           transform={`translate(14, ${padT + plotH / 2}) rotate(-90)`}
           textAnchor="middle" fontSize="11" fill="#555"
         >
-          Avg years / round (lower is better)
+          {`Avg ${unit} / round`}
         </text>
       </svg>
       <figcaption style={{ fontSize: '0.78rem', color: '#555', marginTop: '0.4rem', lineHeight: 1.5 }}>
-        Mean years served per round, grouped by the student&rsquo;s <strong>first</strong> move.
-        These are losses — <strong>a taller bar is a worse outcome</strong>. Per-round means, so
-        students who stopped early stay comparable with those who finished.
+        Mean {unit} per round, grouped by the student&rsquo;s <strong>first</strong> move.
+        Per-round means, so students who stopped early stay comparable with those who finished.
       </figcaption>
     </figure>
   )

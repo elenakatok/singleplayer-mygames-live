@@ -21,9 +21,10 @@ import {
 // an instructor session, served by pdGetReport alone. No student screen can obtain it
 // (see api.ts). The no-leak rule governs student play, not the instructor's roster.
 //
-// CUMULATIVE PRISON-YEARS ARE NOT GRADED (spec §6) — "Avg years / round" is an
-// OUTCOME column sitting BESIDE, never inside, the participation score. Both are on
-// screen precisely so the instructor can see the two are independent.
+// THE PAYOFF TOTAL IS NOT GRADED (spec §6) — the "Avg <unit> / round" column is an
+// OUTCOME sitting BESIDE, never inside, the participation score. Both are on screen
+// precisely so the instructor can see the two are independent. The column is labelled
+// with the instance's configured unit, and states no direction.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const pct = (v: number | null) => (v == null ? '—' : `${Math.round(v * 100)}%`)
@@ -39,7 +40,7 @@ type SortKey = 'name' | 'status' | 'rounds' | 'coop' | 'avgYears' | 'strategy' |
 const num = (v: number | null) => v ?? 0
 const tnum = { fontVariantNumeric: 'tabular-nums' as const }
 
-const columns: readonly SortableColumn<PdReportParticipant, SortKey>[] = [
+const buildColumns = (unit: string): readonly SortableColumn<PdReportParticipant, SortKey>[] => [
   {
     key: 'name', label: 'Name',
     render: r => r.name ?? '—',
@@ -64,7 +65,7 @@ const columns: readonly SortableColumn<PdReportParticipant, SortKey>[] = [
     compare: (a, b) => num(a.cooperation_rate) - num(b.cooperation_rate),
   },
   {
-    key: 'avgYears', label: 'Avg years / round',
+    key: 'avgYears', label: `Avg ${unit} / round`,
     render: r => <span style={tnum}>{oneDp(r.avg_years)}</span>,
     nullsLast: true,
     isNull: r => r.avg_years == null,
@@ -103,13 +104,14 @@ export default function Dashboard() {
   const session = useInstructorSession(pdInstructorSession)
   const navigate = useNavigate()
   const [rows, setRows] = useState<PdReportParticipant[] | null>(null)
+  const [unit, setUnit] = useState('years')
   const [loadError, setLoadError] = useState<string | null>(null)
   const [scoring, setScoring] = useState(false)
   const [scoreMsg, setScoreMsg] = useState<string | null>(null)
 
   const load = useCallback(() => {
     pdGetReport()
-      .then(res => setRows(res.participants))
+      .then(res => { setRows(res.participants); setUnit(res.unit) })
       .catch(err => setLoadError(err instanceof Error ? err.message : 'Failed to load roster.'))
   }, [])
 
@@ -193,7 +195,7 @@ export default function Dashboard() {
         <div data-testid="pd-roster">
           <SortableTable<PdReportParticipant, SortKey>
             rows={rows}
-            columns={columns}
+            columns={buildColumns(unit)}
             getRowKey={r => r.participant_id}
             initialSortKey="status"
             initialSortDir="desc"
@@ -201,8 +203,8 @@ export default function Dashboard() {
             wrapHeaders
           />
           <p style={{ fontSize: '0.78rem', color: colors.textSecondary, marginTop: '0.6rem' }}>
-            Years are an OUTCOME, never a grade — participation is scored on finishing the
-            game (spec §6). Lower average years is the better outcome.
+            The {unit} column is an OUTCOME, never a grade — participation is scored on
+            finishing the game (spec §6).
           </p>
         </div>
       )}

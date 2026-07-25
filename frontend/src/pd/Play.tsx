@@ -10,7 +10,7 @@ import { SequenceRunner, loopScreen, type SequenceScreen } from '../shared/seque
 import { ChooseRound, RevealRound } from './RoundScreen'
 import { KcScreen } from './KcScreen'
 import { DebriefScreen } from './DebriefScreen'
-import { resumeIndex } from './resume'
+import { resumeIndex, screenCount } from './resume'
 import { HistoryTable } from './HistoryTable'
 import { useStudentSession, typography, colors } from '@mygames/game-ui'
 import type { BootstrapArgs } from '@mygames/game-ui'
@@ -36,10 +36,15 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 // ═══════════════════════════════════════════════════════════════════════════════
 
 type Loaded = {
+  /** derived-then-added, flattened ONLY for rendering order — the server keeps the
+   *  two sources apart and grades each on its own path (see api.ts). */
   kc: PdKcQuestionClient[]
-  debrief: PdDebriefQuestionClient
+  debrief: PdDebriefQuestionClient | null
   payoffs: PdPayoffs
   labels: PdMoveLabels
+  unit: string
+  minRounds: number
+  maxRounds: number
 }
 
 type Screen =
@@ -48,7 +53,7 @@ type Screen =
   | { name: 'flow'; startIndex: number }
   | { name: 'done' }
 
-function DoneScreen({ history, labels }: { history: PdHistoryRow[]; labels: PdMoveLabels }) {
+function DoneScreen({ history, labels, unit }: { history: PdHistoryRow[]; labels: PdMoveLabels; unit: string }) {
   const last = history[history.length - 1]
   return (
     <div>
@@ -57,13 +62,13 @@ function DoneScreen({ history, labels }: { history: PdHistoryRow[]; labels: PdMo
       </h1>
       <p style={{ lineHeight: 1.6, color: colors.text }}>
         Your answers and your game have been recorded. You played{' '}
-        <strong>{history.length}</strong> round{history.length === 1 ? '' : 's'} and served a total of{' '}
-        <strong>{last ? last.studentTotal : 0}</strong> year{last && last.studentTotal === 1 ? '' : 's'} in prison;
-        the other player served <strong>{last ? last.botTotal : 0}</strong>. You can close this tab.
+        <strong>{history.length}</strong> round{history.length === 1 ? '' : 's'} for a total of{' '}
+        <strong>{last ? last.studentTotal : 0}</strong> {unit}; the other player got{' '}
+        <strong>{last ? last.botTotal : 0}</strong>. You can close this tab.
       </p>
       {history.length > 0 && (
         <div style={{ marginTop: '1.25rem' }}>
-          <HistoryTable history={history} labels={labels} />
+          <HistoryTable history={history} labels={labels} unit={unit} />
         </div>
       )}
     </div>
@@ -102,21 +107,27 @@ export default function Play() {
     Promise.all([pdGetState(), pdGetQuestions()])
       .then(([state, questions]) => {
         if (cancelled) return
+        // Rendered order: the derived four, THEN the instructor's additions.
+        const kc = [...questions.kc.derived, ...questions.kc.added]
         setLoaded({
-          kc: questions.kc,
+          kc,
           debrief: questions.debrief,
           payoffs: state.payoffs,
           labels: state.labels,
+          unit: state.unit,
+          minRounds: state.minRounds,
+          maxRounds: state.maxRounds,
         })
         setHistory(state.history)
         const start = resumeIndex({
-          kcCount: questions.kc.length,
+          kcCount: kc.length,
           kcAnswered: questions.kcAnswered.length,
           gameOver: state.gameOver,
+          debriefEnabled: questions.debriefEnabled,
           debriefSubmitted: questions.debriefSubmitted,
         })
         // Past the last screen ⇒ everything is done.
-        if (start >= questions.kc.length + 2) setScreen({ name: 'done' })
+        if (start >= screenCount(kc.length, questions.debriefEnabled)) setScreen({ name: 'done' })
         else setScreen({ name: 'flow', startIndex: start })
       })
       .catch(err => {
@@ -149,17 +160,27 @@ export default function Play() {
   }
 
   if (screen.name === 'error') return <PageShell><p style={{ color: '#c00' }}>{screen.message}</p></PageShell>
-  if (screen.name === 'done') return <PageShell><DoneScreen history={history} labels={loaded?.labels ?? { C: 'Cooperate', D: 'Defect' }} /></PageShell>
+  if (screen.name === 'done') {
+    return (
+      <PageShell>
+        <DoneScreen
+          history={history}
+          labels={loaded?.labels ?? { C: 'Cooperate', D: 'Defect' }}
+          unit={loaded?.unit ?? 'years'}
+        />
+      </PageShell>
+    )
+  }
 
   if (screen.name === 'flow' && loaded !== null) {
-    const { kc, debrief, payoffs, labels } = loaded
+    const { kc, debrief, payoffs, labels, unit, minRounds, maxRounds } = loaded
 
     const screens: SequenceScreen[] = [
       // ── The knowledge check: one graded screen per question, no gate ──────────
       ...kc.map((q, i) => ({
         id: q.field,
         render: ({ onDone }: { onDone: () => void }) => (
-          <KcScreen question={q} index={i} total={kc.length} payoffs={payoffs} labels={labels} onDone={onDone} />
+          <KcScreen question={q} index={i} total={kc.length} payoffs={payoffs} labels={labels} unit={unit} onDone={onDone} />
         ),
       })),
 
@@ -172,6 +193,9 @@ export default function Play() {
             roundNumber={iteration + 1}
             labels={labels}
             payoffs={payoffs}
+            unit={unit}
+            minRounds={minRounds}
+            maxRounds={maxRounds}
             history={history}
             onResult={(res, done) => { setHistory(res.history); onResult(res, done) }}
           />
@@ -182,18 +206,19 @@ export default function Play() {
             result={result}
             labels={labels}
             payoffs={payoffs}
+            unit={unit}
             onContinue={onContinue}
           />
         ),
       }),
 
-      // ── The debrief paragraph ────────────────────────────────────────────────
-      {
+      // ── The debrief paragraph, IF the instructor left it on ──────────────────
+      ...(debrief ? [{
         id: debrief.field,
         render: ({ onDone }: { onDone: () => void }) => (
-          <DebriefScreen question={debrief} history={history} labels={labels} onDone={onDone} />
+          <DebriefScreen question={debrief} history={history} labels={labels} unit={unit} onDone={onDone} />
         ),
-      },
+      }] : []),
     ]
 
     return (

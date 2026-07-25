@@ -9,8 +9,8 @@ import type { PdCooperationPoint, PdFirstMoveOutcome, PdMoveLabels } from './api
 // Static-markup tests for the two Tier-3 charts. Both are pure presentation (types-only
 // imports from api.ts), so renderToStaticMarkup reaches them without jsdom. The MATHS
 // they draw is tested server-side in pdReportStats.test.ts; what is asserted here is
-// that the components render the series they were given, keep the lower-is-better
-// framing, and degrade sensibly when a group is empty.
+// that the components render the series they were given, label them with the
+// instance's unit, claim no direction, and degrade sensibly when a group is empty.
 
 const LABELS: PdMoveLabels = { C: 'Cooperate', D: 'Defect' }
 const visible = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
@@ -107,10 +107,20 @@ describe('FirstMoveChartSVG — Tier 3b', () => {
     expect(text).toContain('n=4')
   })
 
-  it('states the direction — taller is WORSE here', () => {
+  it('⚠ states NO direction — the unit is configurable, so the chart cannot know', () => {
     const text = visible(html).toLowerCase()
-    expect(text).toContain('lower is better')
-    expect(text).toContain('taller bar is a worse outcome')
+    for (const phrase of ['lower is better', 'higher is better', 'worse outcome', 'losses']) {
+      expect(text).not.toContain(phrase)
+    }
+    // It still says what the bars MEASURE.
+    expect(text).toContain('per round')
+  })
+
+  it('labels the axis with the configured unit', () => {
+    const custom = visible(renderToStaticMarkup(
+      <FirstMoveChartSVG outcomes={outcomes} labels={LABELS} unit="points" />))
+    expect(custom).toContain('Avg points / round')
+    expect(custom).not.toContain('years')
   })
 
   it('shows the GRIM-punishes-defectors contrast when the data has it', () => {
