@@ -58,10 +58,9 @@ export { pollGetReport } from './poll/report'
 
 // ── Repeated Prisoner's Dilemma (game_id: pd) ─────────────────────────────────
 //
-// SLICE 0 — SCAFFOLD ONLY. Launch + instructor session + health, so the site
-// serves end to end. There is deliberately NO student game callable yet: the
-// round loop, the compute step (bot move + payoffs), the KC, and Score & Record
-// arrive in later slices.
+// SLICE 2 — the round loop. Launch, instructor session, health, and the two
+// student game callables (where am I / play one round). The KC, Score & Record,
+// and the reports arrive in later slices.
 
 export const pdBootstrap = makeSinglePlayerBootstrap({
   collectionPrefix: PD_COLLECTION_PREFIX,
@@ -70,6 +69,10 @@ export const pdBootstrap = makeSinglePlayerBootstrap({
 export const pdInstructorSession = makeSinglePlayerInstructorSession({
   corsOrigins: PD_CORS_ORIGINS,
 })
+
+// Student.
+export { pdGetState } from './pd/getState'
+export { pdSubmitRound } from './pd/submitRound'
 
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 
