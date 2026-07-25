@@ -11,7 +11,7 @@ import { ChooseRound, RevealRound } from './RoundScreen'
 import { KcScreen } from './KcScreen'
 import { DebriefScreen } from './DebriefScreen'
 import { resumeIndex, screenCount } from './resume'
-import { HistoryTable } from './HistoryTable'
+import { HistoryTable, averagePerRound } from './HistoryTable'
 import { useStudentSession, typography, colors } from '@mygames/game-ui'
 import type { BootstrapArgs } from '@mygames/game-ui'
 
@@ -54,17 +54,26 @@ type Screen =
   | { name: 'done' }
 
 function DoneScreen({ history, labels, unit }: { history: PdHistoryRow[]; labels: PdMoveLabels; unit: string }) {
-  const last = history[history.length - 1]
+  // AVERAGES, not totals — the same convention the in-play history caption uses
+  // (Slice 4), via the same helper, so the last screen a student sees does not
+  // contradict the one they just spent the whole game reading. Summed from the
+  // per-round values already on this screen and divided by rounds PLAYED.
+  const studentTotal = history.reduce((a, r) => a + r.studentYears, 0)
+  const botTotal = history.reduce((a, r) => a + r.botYears, 0)
   return (
     <div>
       <h1 data-testid="pd-all-done" style={{ marginTop: 0, fontSize: '1.6rem', color: colors.text }}>
         All done — thank you
       </h1>
       <p style={{ lineHeight: 1.6, color: colors.text }}>
+        {/* The round COUNT is fine to state here: the hidden-horizon rule is a
+            during-play rule, and the game is over. */}
         Your answers and your game have been recorded. You played{' '}
-        <strong>{history.length}</strong> round{history.length === 1 ? '' : 's'} for a total of{' '}
-        <strong>{last ? last.studentTotal : 0}</strong> {unit}; the other player got{' '}
-        <strong>{last ? last.botTotal : 0}</strong>. You can close this tab.
+        <strong>{history.length}</strong> round{history.length === 1 ? '' : 's'} and averaged{' '}
+        <strong data-testid="pd-done-your-average">{averagePerRound(studentTotal, history.length)}</strong>{' '}
+        {unit} per round; the other player averaged{' '}
+        <strong data-testid="pd-done-their-average">{averagePerRound(botTotal, history.length)}</strong>.
+        You can close this tab.
       </p>
       {history.length > 0 && (
         <div style={{ marginTop: '1.25rem' }}>

@@ -417,6 +417,25 @@ async function main() {
     await pageA.waitForSelector('[data-testid="pd-all-done"]')
     check(true, 'the debrief submits and the student lands on the all-done screen')
 
+    // The end screen reports AVERAGES per round, matching the history caption's
+    // convention (Slice 4) rather than the cumulative totals it used to show.
+    if (tftRun) {
+      const wantYour = (tftRun.studentTotal / tftRun.rounds).toFixed(1)
+      const wantTheir = (tftRun.botTotal / tftRun.rounds).toFixed(1)
+      const gotYour = await text(pageA, '[data-testid="pd-done-your-average"]')
+      const gotTheir = await text(pageA, '[data-testid="pd-done-their-average"]')
+      check(gotYour === wantYour && gotTheir === wantTheir,
+        `the end screen averages are right to 1dp (want ${wantYour}/${wantTheir}, got ${gotYour}/${gotTheir})`)
+      const doneText = await pageA.locator('body').innerText()
+      check(/averaged/.test(doneText) && /per round/.test(doneText),
+        'the end screen says "averaged … per round"')
+      check(!/a total of|served a total/.test(doneText),
+        'the end screen no longer reports a cumulative TOTAL')
+      check(new RegExp(`played\\s+${tftRun.rounds}\\s+round`).test(doneText),
+        `the end screen still states the round count (${tftRun.rounds}) — legitimate post-game`)
+      check(/You can close this tab/.test(doneText), 'and still says you can close the tab')
+    }
+
     // ── 3. What actually landed in Firestore ──────────────────────────────────
     console.log('\n[3] Stored state after the TFT student finished')
     const docA = await getDoc(`pd_game_instances/${GID}/participants/${students.tft.pid}`)
@@ -804,6 +823,16 @@ async function main() {
     check(true, 'the game ended after exactly 3 rounds — the configured range drove the draw')
     check((await text(pageE, '[data-testid="pd-debrief-prompt"]')) === 'What was your plan and why?',
       'the debrief asks the CONFIGURED prompt')
+
+    // Finish, so the END SCREEN can be checked against the configured unit.
+    await pageE.fill('[data-testid="pd-debrief-input"]', 'I shared most rounds.')
+    await pageE.click('[data-testid="pd-debrief-submit"]')
+    await pageE.waitForSelector('[data-testid="pd-all-done"]', { timeout: 20000 })
+    const doneCfg = await pageE.locator('body').innerText()
+    check(/averaged[\s\S]*points per round/.test(doneCfg),
+      'the end screen counts in the CONFIGURED unit, not a hardcoded one')
+    check(!/\byears\b/i.test(doneCfg), 'and no hardcoded "years" survives on the end screen')
+    check(/played\s+3\s+rounds/.test(doneCfg), 'the end screen states the 3 rounds played')
 
     // ⚠ Still no leak, on a reconfigured instance.
     const cfgBody = await pageE.locator('body').innerText()
