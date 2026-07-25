@@ -331,13 +331,33 @@ async function playRounds(page, strategy, moveFor, label, truthRounds) {
     botTotal += wantBotYears
 
     // The history table on the reveal screen now includes this round.
+    // Columns after the Slice-4 cleanup: round │ your move, your years │ their move,
+    // their years. NO cumulative Total columns — the running figures moved into the
+    // caption as AVERAGES.
     const rows = await page.locator('[data-testid^="pd-history-row-"]').count()
     const lastRow = await cells(page, `[data-testid="pd-history-row-${n}"]`)
-    if (rows !== n || lastRow[0] !== String(n)
-      || lastRow[2] !== String(wantStudentYears) || lastRow[3] !== String(studentTotal)
-      || lastRow[5] !== String(wantBotYears) || lastRow[6] !== String(botTotal)) {
-      check(false, `${label}: round ${n} history row (want years ${wantStudentYears}/${wantBotYears}, totals ${studentTotal}/${botTotal}) — got ${JSON.stringify(lastRow)} across ${rows} rows`)
+    if (rows !== n || lastRow.length !== 5 || lastRow[0] !== String(n)
+      || lastRow[2] !== String(wantStudentYears) || lastRow[4] !== String(wantBotYears)) {
+      check(false, `${label}: round ${n} history row (want 5 cells, years ${wantStudentYears}/${wantBotYears}) — got ${JSON.stringify(lastRow)} across ${rows} rows`)
       return null
+    }
+
+    // The caption's averages, recomputed independently and rounded the same way.
+    const wantAvgS = (studentTotal / n).toFixed(1)
+    const wantAvgB = (botTotal / n).toFixed(1)
+    const gotAvgS = await text(page, '[data-testid="pd-your-average"]')
+    const gotAvgB = await text(page, '[data-testid="pd-their-average"]')
+    if (gotAvgS !== wantAvgS || gotAvgB !== wantAvgB) {
+      check(false, `${label}: round ${n} averages (want ${wantAvgS}/${wantAvgB}, got ${gotAvgS}/${gotAvgB})`)
+      return null
+    }
+
+    if (n === 1) {
+      const caption = await text(page, '[data-testid="pd-history"] ~ p, [data-testid="pd-history"]')
+      void caption
+      const bodyNow = await page.locator('body').innerText()
+      check(!bodyNow.includes('Total'), `${label}: the history table has no Total column`)
+      check(/averaging/.test(bodyNow), `${label}: the caption reports averages, not a running total`)
     }
 
     // Submit-and-lock, in the UI: the reveal offers no way back to the choice.
@@ -467,8 +487,10 @@ async function main() {
     const rowsAfterReload = await pageC.locator('[data-testid^="pd-history-row-"]').count()
     check(rowsAfterReload === 3, `the history survived the reload (${rowsAfterReload} rows)`)
     const row3 = await cells(pageC, '[data-testid="pd-history-row-3"]')
-    check(row3[3] === String(PAYOFFS.both_cooperate * 3),
-      'the cumulative total carried across the reload')
+    check(row3.length === 5 && row3[2] === String(PAYOFFS.both_cooperate),
+      'the per-round years survived the reload (and there are still no Total columns)')
+    check(await text(pageC, '[data-testid="pd-your-average"]') === PAYOFFS.both_cooperate.toFixed(1),
+      'the average carried across the reload')
 
     // Submit-and-lock across a reload: replaying round 4 is the only thing on offer;
     // rounds 1–3 are gone from the UI entirely.
@@ -552,6 +574,92 @@ async function main() {
     check(!kcPayloads.includes('explanation'), 'pdGetQuestions never shipped the explanations ahead of answering')
 
     await ctxD.close()
+
+    // ── 6b. The INSTRUCTOR pages, in the browser ───────────────────────────────
+    // Slice 4 replaced PD's scaffold dashboard with the pennies-shaped one. In DEV the
+    // instructor session is bootstrapped from ?_gid=, exactly as pennies/poll do.
+    console.log('\n[6b] Instructor dashboard + reports (browser)')
+    const ctxI = await browser.newContext()
+    const pageI = await ctxI.newPage()
+    const instructorUrl = (path) => `${APP}${path}?game=pd&_gid=${GID}`
+
+    await pageI.goto(instructorUrl('/dashboard'))
+    await pageI.waitForSelector('[data-testid="pd-roster"]', { timeout: 45000 })
+    check(true, 'the dashboard renders the roster table (not the Slice-0 scaffold)')
+    check(!(await pageI.locator('body').innerText()).includes('Scaffold'),
+      'the scaffold copy is gone')
+
+    // The Tier-1 columns the Reports Contract asks for.
+    const header = await pageI.locator('thead').first().innerText()
+    for (const col of ['Name', 'Status', 'Rounds played', 'Cooperation rate', 'Avg years / round', 'Opponent faced', 'KC score', 'Participation']) {
+      check(header.includes(col), `roster column "${col}"`)
+    }
+
+    // The two students who played are on it, with their real figures.
+    const rosterText = await pageI.locator('[data-testid="pd-roster"]').innerText()
+    check(rosterText.includes('Completed'), 'a completed student is shown as Completed')
+    check(/Tit-for-tat/.test(rosterText) && /GRIM/.test(rosterText),
+      'the roster names each student’s opponent (instructor-only, and correct here)')
+
+    // Score & Record, through the button rather than the callable.
+    check(await exists(pageI, '[data-testid="pd-score-and-record"]'), 'the Score & Record button exists')
+    await pageI.click('[data-testid="pd-score-and-record"]')
+    await pageI.waitForSelector('[data-testid="pd-score-msg"]', { timeout: 30000 })
+    const scoreMsg = await text(pageI, '[data-testid="pd-score-msg"]')
+    check(/Scored \d+ student/.test(scoreMsg), `the button reports the result ("${scoreMsg}")`)
+    check(/gradebook|callback/.test(scoreMsg), 'the message states the PUSH outcome, not just "scored"')
+    // Participation lands in the table on reload of the rows.
+    await pageI.waitForFunction(
+      () => (document.querySelector('[data-testid="pd-roster"]')?.textContent ?? '').includes('-2')
+        || (document.querySelector('[data-testid="pd-roster"]')?.textContent ?? '').includes('0'),
+      { timeout: 20000 },
+    )
+    check(true, 'the roster refreshes with participation scores after scoring')
+
+    // Reports: four tiles, each opening a real report.
+    await pageI.goto(instructorUrl('/reports'))
+    await pageI.waitForSelector('text=Outcomes — all students', { timeout: 45000 })
+    const reportsText = await pageI.locator('body').innerText()
+    for (const tile of ['Outcomes — all students', 'Debrief paragraphs (by opponent)', 'Cooperation rate by round', 'Outcome by first decision']) {
+      check(reportsText.includes(tile), `report tile "${tile}"`)
+    }
+
+    await pageI.click('text=Outcomes — all students')
+    await pageI.waitForSelector('[data-testid="pd-report-outcomes"]')
+    check(true, 'Tier 1: the outcomes table opens')
+    await pageI.click('text=Close')
+
+    await pageI.click('text=Debrief paragraphs (by opponent)')
+    await pageI.waitForSelector('[data-testid="pd-report-debrief"]')
+    check(await exists(pageI, '[data-testid="pd-debrief-group-tft"]'),
+      'Tier 2: the debrief is GROUPED — a tit-for-tat group')
+    const debriefText = await pageI.locator('[data-testid="pd-report-debrief"]').innerText()
+    check(debriefText.includes('I cooperated'), 'Tier 2: the student’s own paragraph is shown')
+    check(debriefText.includes('Faced tit-for-tat'), 'Tier 2: the group is labelled by opponent')
+    // The show/hide-names toggle actually anonymizes.
+    await pageI.uncheck('[data-testid="pd-debrief-shownames"]')
+    const anon = await pageI.locator('[data-testid="pd-report-debrief"]').innerText()
+    check(anon.includes('Respondent 1'), 'Tier 2: hiding names replaces them with Respondent N')
+    await pageI.click('text=Close')
+
+    await pageI.click('text=Cooperation rate by round')
+    await pageI.waitForSelector('[data-testid="pd-cooperation-chart"]')
+    check(await exists(pageI, '[data-testid="pd-coop-line-tft"]'), 'Tier 3a: the tit-for-tat line is drawn')
+    check(await exists(pageI, '[data-testid="pd-coop-line-grim"]'), 'Tier 3a: the GRIM line is drawn')
+    // textContent, not innerText: the chart is an <svg>, and Playwright's innerText
+    // only works on HTMLElements.
+    const coopText = (await pageI.locator('[data-testid="pd-cooperation-chart"]').textContent()) ?? ''
+    check(coopText.includes('Round'), 'Tier 3a: the x axis is rounds')
+    check(coopText.includes('100%') && coopText.includes('0%'), 'Tier 3a: the y axis is a percentage scale')
+    await pageI.click('text=Close')
+
+    await pageI.click('text=Outcome by first decision')
+    await pageI.waitForSelector('[data-testid="pd-firstmove-chart"]')
+    const bars = await pageI.locator('[data-testid^="pd-firstmove-bar-"]').count()
+    check(bars >= 2, `Tier 3b: grouped bars drawn (${bars})`)
+    const fmText = await pageI.locator('body').innerText()
+    check(/lower is better/i.test(fmText), 'Tier 3b: keeps the lower-is-better framing')
+    await ctxI.close()
 
     // ── 7. Score & Record over the finished class ─────────────────────────────
     console.log('\n[7] Participation scoring across the browser-played class')

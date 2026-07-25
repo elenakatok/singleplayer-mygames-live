@@ -656,13 +656,79 @@ async function main() {
   })
   check(rerun.ok && rerun.result.finishers === 1, 'a re-run reproduces the same result exactly')
 
-  // ── 13. The pd play screen ships in the bundle ──────────────────────────────
+  // ── 13. pdGetReport — the instructor's single data source ───────────────────
+  // The browser harness opens the tiles; this owns the CONTRACT: the roster fields,
+  // the two chart datasets, and the fact that this callable — unlike every student
+  // one — is ALLOWED to carry the strategy and the round count.
+  console.log('\n[13] pdGetReport (instructor)')
+  const rep = await callFn('pdGetReport', { _dev: { game_instance_id: GID8 } })
+  check(rep.ok, `pdGetReport succeeds (${rep.error ?? 'ok'})`)
+  const R = rep.result
+
+  check(R.participants.length === 3, `one row per rostered student (${R.participants?.length})`)
+  const finRow = R.participants.find(p => p.participant_id === finisher)
+  const quitRow = R.participants.find(p => p.participant_id === quitter)
+  const absRow = R.participants.find(p => p.participant_id === 'pd-absent')
+
+  check(finRow.completed === true && finRow.rounds_played === scoreTruth.rounds,
+    `the finisher: completed, ${finRow?.rounds_played} rounds`)
+  check(quitRow.completed === false && quitRow.rounds_played === 2, 'the quitter: not completed, 2 rounds')
+  check(absRow.launched === false && absRow.rounds_played === 0, 'the absentee: never launched, 0 rounds')
+
+  // Tier-1 derived columns, checked against an independent recomputation.
+  // The finisher played D on every 3rd round (see §12), C otherwise.
+  const finMoves = Array.from({ length: scoreTruth.rounds }, (_, i) => ((i + 1) % 3 === 0 ? 'D' : 'C'))
+  const wantCoop = finMoves.filter(m => m === 'C').length / finMoves.length
+  check(Math.abs(finRow.cooperation_rate - wantCoop) < 1e-9,
+    `cooperation rate is over rounds played (${finRow.cooperation_rate?.toFixed(3)} = ${wantCoop.toFixed(3)})`)
+  check(Math.abs(finRow.avg_years - finRow.student_years_total / finRow.rounds_played) < 1e-9,
+    'avg years = total years ÷ rounds played (per-round normalized)')
+  check(finRow.first_move === 'C', 'first_move is the student’s opening move')
+  check(quitRow.cooperation_rate !== null && absRow.cooperation_rate === null,
+    'a student who never played has a NULL rate, not 0 — absence is not defection')
+
+  // ⚠ The instructor-only fields. This is the ONE callable allowed to carry them.
+  check(finRow.strategy === 'tft' || finRow.strategy === 'grim',
+    `the roster carries the strategy faced (${finRow?.strategy}) — instructor-only, by design`)
+  check(R.roundCount === scoreTruth.rounds, `carries the drawn round count (${R.roundCount}) for the chart x-axis`)
+  check(finRow.participation_score === 0 && quitRow.participation_score === -2,
+    'participation scores are reflected after Score & Record')
+  check(typeof finRow.debrief === 'string' || finRow.debrief === null, 'the debrief paragraph is carried for Tier 2')
+
+  // Tier 3a — one point per round, both series, denominators included.
+  const coop = R.charts.cooperation
+  check(coop.length === R.roundCount, `cooperation chart has one point per round (${coop.length})`)
+  check(coop.every(p => 'tft' in p && 'grim' in p && 'tftN' in p && 'grimN' in p),
+    'each point carries both series and both denominators')
+  check(coop[0].tftN + coop[0].grimN === 2, 'round 1 counts the two students who played it')
+  const lastRoundPt = coop[coop.length - 1]
+  check(lastRoundPt.tftN + lastRoundPt.grimN === 1,
+    'the final round counts only the finisher — the quitter thins the tail, not drags it down')
+
+  // Tier 3b — always four cells, in a stable order.
+  const fm = R.charts.firstMove
+  check(fm.length === 4, 'first-move chart always has four cells')
+  check(fm.map(o => `${o.firstMove}${o.strategy}`).join(',') === 'Ctft,Cgrim,Dtft,Dgrim',
+    '…in a stable order, so bars never move between renders')
+  check(fm.reduce((a, o) => a + o.n, 0) === 2, 'both players are counted exactly once across the cells')
+  check(fm.every(o => o.n > 0 ? typeof o.avgYearsPerRound === 'number' : o.avgYearsPerRound === null),
+    'a populated cell has a value; an empty one is null, not 0')
+
+  // A student-side callable must STILL refuse to carry any of this.
+  const studentState = await callFn('pdGetState', asStudent(GID8, finisher))
+  const studentJson = JSON.stringify(studentState.result).toLowerCase()
+  check(!studentJson.includes('tft') && !studentJson.includes('grim') && !studentJson.includes('strategy'),
+    '⚠ the STUDENT callable still carries none of it — the report is a different audience, not a relaxed rule')
+  check(studentState.result.roundCount === undefined && studentState.result.charts === undefined,
+    '⚠ …and no round count or chart data leaked into the student payload')
+
+  // ── 14. The pd play screen ships in the bundle ──────────────────────────────
   // One Vite bundle serves every game and picks by hostname, so "the pd route is
   // built and shipped" is what can be asserted here. This is a BUILD-ARTIFACT check,
   // not a DOM render — the repo has no jsdom/testing-library, so the components'
   // markup is covered by the static-render tests in frontend/src/pd/ instead.
   // `npm run build` in frontend/ must have run first.
-  console.log('\n[13] pd play screen present in the shipped bundle')
+  console.log('\n[14] pd play screen present in the shipped bundle')
   const distDir = path.join(ROOT, 'frontend', 'dist', 'assets')
   if (!fs.existsSync(distDir)) {
     check(false, `frontend/dist/assets missing — run \`npm run build\` in frontend/ first`)
@@ -682,12 +748,42 @@ async function main() {
     check(js.includes('between 10 and 20 rounds'), 'framing: between 10 and 20 rounds (the range, not the draw)')
     check(js.includes('Years in prison'), 'the matrix is framed as years in prison (losses)')
 
-    // ⚠ The CLIENT-SIDE half of the no-leak constraint: the strategy library must not
-    // exist in the bundle at all. A student who reads the shipped JS should find no
-    // bot rule to read — only the moves they themselves made.
-    check(!/\btit.for.tat\b/i.test(js), 'the bundle never names tit-for-tat')
-    check(!/\bgrim\b/i.test(js), 'the bundle never names GRIM')
-    check(!/\btft\b/i.test(js), 'the bundle carries no tft identifier')
+    // ⚠ THE CLIENT-SIDE HALF OF THE NO-LEAK CONSTRAINT — restated for Slice 4.
+    //
+    // Through Slice 3 this asserted that the strings "tit-for-tat"/"GRIM"/"tft"
+    // appeared NOWHERE in the bundle. That check is no longer meaningful and has been
+    // replaced rather than deleted: Slice 4 added the instructor dashboard and reports,
+    // which legitimately DISPLAY the strategy faced, and ONE Vite bundle serves both
+    // the student and the instructor routes (App.tsx picks by hostname). So those
+    // strings are now necessarily present — as instructor-page labels.
+    //
+    // What must still hold, and is asserted instead:
+    //   1. the bundle carries no BOT DECISION LOGIC — a student reading the shipped JS
+    //      still cannot compute the opponent's next move (that lives server-side, in
+    //      functions/src/pd/strategy.ts, and must never be imported by the frontend);
+    //   2. no student RESPONSE carries the strategy — §10 above, unchanged;
+    //   3. the student PAGE never renders it — asserted at the DOM level in
+    //      pd-playwright.mjs, unchanged, and that is the real guarantee.
+    // Only the crude bundle-wide grep is gone; nothing that constrains the student is.
+    // (1) is checked against the SOURCE, not the bundle: minification renames
+    // parameters and inlines functions, so a bundle grep for the strategy's shape
+    // would pass vacuously and prove nothing. `botMove` in particular CANNOT be
+    // grepped for in the bundle — it is also the legitimate client field name for the
+    // move the student is shown after committing. What is worth asserting is that no
+    // frontend module reaches into the server's strategy library at all.
+    const feFiles = fs.readdirSync(path.join(ROOT, 'frontend', 'src', 'pd'))
+      .filter(f => f.endsWith('.ts') || f.endsWith('.tsx'))
+      .map(f => fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'pd', f), 'utf8'))
+    check(feFiles.every(src => !/from\s+['"].*functions\//.test(src)),
+      'no frontend module imports anything from functions/ (the strategy library stays server-side)')
+    check(feFiles.every(src => !/function\s+botMove|=>\s*studentHistory/.test(src)),
+      'no frontend module implements a bot decision function of its own')
+
+    // The strategy names appear ONLY as instructor-page furniture — assert the
+    // instructor markers that account for them are present, so a future stray
+    // occurrence in student copy is a visible diff rather than a silent pass.
+    check(js.includes('Opponent faced') && js.includes('Faced tit-for-tat'),
+      'the strategy names in the bundle are accounted for by the instructor pages')
     check(!/rounds?\s+remaining|rounds?\s+left/i.test(js), 'the bundle has no rounds-remaining copy')
     check(!/round\s*\{?\s*\w*\s*\}?\s*of\s*\{/i.test(js), 'the bundle has no "round N of M" template')
   }

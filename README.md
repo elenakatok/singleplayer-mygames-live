@@ -18,9 +18,9 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | `poll` | Poll | `poll.mygames.live` | `poll-mygames` |
 | `pd` | Repeated Prisoner's Dilemma | `pd.mygames.live` | `pd-mygames-live` |
 
-> `pd` is at **Slice 3 (complete student flow)**: knowledge check → round loop →
-> debrief, plus participation scoring and the gradebook push. Only the reports
-> (Slice 4) are outstanding.
+> `pd` is **FEATURE-COMPLETE** (Slice 4): knowledge check → round loop → debrief,
+> participation scoring + gradebook push, and the instructor dashboard + all three
+> report tiers.
 >
 > ⚠ **PD's two invariants, in code:** the instance's round count and the student's
 > bot strategy are server-side truth (`truth/…`, rules-denied) and appear in **no**
