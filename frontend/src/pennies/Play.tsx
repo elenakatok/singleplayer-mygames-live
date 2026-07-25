@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { auth } from '../firebase'
-import { penniesBootstrap, penniesGetScreen, CLASSROOM_URL, type JarQuestion } from '../api'
+import { penniesBootstrap, penniesGetScreen, STUDENT_CLASSROOM_URL, type JarQuestion } from '../api'
 import { PageShell } from '../shared/PageShell'
 import { SequenceRunner } from '../shared/sequence'
 import { JarScreen } from './JarScreen'
@@ -83,7 +83,7 @@ export default function Play() {
       <main style={{ padding: '2rem', fontFamily: typography.fontFamily, maxWidth: '480px', margin: '2rem auto' }}>
         <h2 style={{ marginBottom: '0.75rem' }}>Jar of Pennies</h2>
         <p>Please launch Jar of Pennies from the classroom to begin.</p>
-        <p style={{ marginTop: '1.5rem' }}><a href={CLASSROOM_URL}>← Go to classroom</a></p>
+        <p style={{ marginTop: '1.5rem' }}><a href={STUDENT_CLASSROOM_URL}>← Go to my classroom</a></p>
       </main>
     )
   }
@@ -92,7 +92,7 @@ export default function Play() {
     return (
       <main style={{ padding: '2rem', fontFamily: typography.fontFamily }}>
         <p style={{ color: '#c00' }}>{session.message}</p>
-        <p><a href={CLASSROOM_URL}>← Return to classroom</a></p>
+        <p><a href={STUDENT_CLASSROOM_URL}>← Return to my classroom</a></p>
       </main>
     )
   }

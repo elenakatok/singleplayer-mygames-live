@@ -13,9 +13,21 @@ async function callFn<T>(name: string, data: object = {}): Promise<T> {
   return result.data
 }
 
+/** The classroom root — the INSTRUCTOR view (behind RequireAuth). Use this only on
+ *  instructor screens. */
 export const CLASSROOM_URL = import.meta.env.DEV
   ? 'http://localhost:5173'
   : 'https://classroom.mygames.live'
+
+/**
+ * Where a STUDENT goes when their session fails — the student login/portal, never the
+ * instructor courses page. `/` is behind RequireAuth and redirects a student to a login
+ * they cannot use; sending them there from a failsafe screen strands them. Doubly wrong
+ * for a launcher-opened student window, which has its own session.
+ *
+ * Applies to EVERY student session failure, not just an expired token.
+ */
+export const STUDENT_CLASSROOM_URL = `${CLASSROOM_URL}/student`
 
 export function isAuthError(err: unknown): boolean {
   if (!(err instanceof FirebaseError)) return false
