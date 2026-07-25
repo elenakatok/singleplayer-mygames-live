@@ -172,11 +172,17 @@ export function parseAddedKcQuestion(raw: unknown): PdAddedKcQuestion | null {
   // the matrix instead of the instructor's key).
   if (id.startsWith('kc_')) return null
 
+  // ⚠ OPTIONAL FIELDS ARE OMITTED, NEVER SET TO undefined. These objects are written
+  // straight into Firestore, which REJECTS an undefined value outright — so an
+  // explanation-less question would fail the whole save rather than store cleanly.
+  const explanation = typeof q.explanation === 'string' && q.explanation.trim()
+    ? q.explanation.trim() : null
+
   const type: 'mc' | 'text' = q.type === 'mc' ? 'mc' : 'text'
   if (type === 'text') {
     // Free text cannot be auto-graded, so it is recorded and left UNGRADED — it
     // never enters the KC score's numerator or denominator.
-    return { id, type, prompt, explanation: typeof q.explanation === 'string' ? q.explanation : undefined }
+    return { id, type, prompt, ...(explanation ? { explanation } : {}) }
   }
 
   const optionsRaw = Array.isArray(q.options) ? q.options : []
@@ -193,11 +199,12 @@ export function parseAddedKcQuestion(raw: unknown): PdAddedKcQuestion | null {
   const key = typeof q.correct_value === 'string' ? q.correct_value : ''
   // A key that names no offered option is dropped rather than kept: it would mark
   // every student wrong, silently.
-  const correct_value = options.some(o => o.value === key) ? key : undefined
+  const hasKey = options.some(o => o.value === key)
 
   return {
-    id, type, prompt, options, correct_value,
-    explanation: typeof q.explanation === 'string' ? q.explanation : undefined,
+    id, type, prompt, options,
+    ...(hasKey ? { correct_value: key } : {}),
+    ...(explanation ? { explanation } : {}),
   }
 }
 

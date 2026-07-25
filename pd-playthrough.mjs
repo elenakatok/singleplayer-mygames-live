@@ -465,7 +465,12 @@ async function main() {
   const KPID = 'pd-leak-stu'
   const leak = await openInstance(GID6, KPID, 'seed-leak')
 
+  // Slice 5 added three legitimate student-facing settings: the unit word and the
+  // configured round RANGE. The range is the ONE thing about the schedule a student
+  // may be told (spec §3) — the DRAW still never appears, which §10 proves below by
+  // stripping the two declared bounds and sweeping what is left.
   const ALLOWED_STATE_KEYS = ['ok', 'labels', 'payoffs', 'history', 'gameOver',
+    'unit', 'minRounds', 'maxRounds',
     'C', 'D', 'both_cooperate', 'sucker', 'temptation', 'both_defect',
     'round', 'studentMove', 'botMove', 'studentYears', 'botYears', 'studentTotal', 'botTotal']
   const ALLOWED_SUBMIT_KEYS = ['ok', 'round', 'history', 'gameOver',
@@ -483,13 +488,18 @@ async function main() {
     const hit = forbidden.filter(w => json.includes(w))
     check(hit.length === 0, `${where}: no forbidden word in the payload (found: ${JSON.stringify(hit)})`)
 
-    // The round count is an integer in [10,20]; every payoff in this instance is < 10
-    // and only ONE round has been played, so every legitimate number in the payload is
-    // < 10. Any number ≥ 10 therefore could only be the round count, under ANY key name.
-    const nums = deepValues(payload).filter(v => typeof v === 'number')
+    // The round count is an integer ≥ 10; every payoff in this instance is < 10 and
+    // only ONE round has been played, so every legitimate number left is < 10 ONCE the
+    // two declared range bounds are removed. Any survivor ≥ 10 could only be the draw,
+    // under ANY key name. Stripping minRounds/maxRounds is sound precisely because the
+    // key allowlist above proves the range cannot appear anywhere else.
+    const stripped = JSON.parse(JSON.stringify(payload))
+    delete stripped.minRounds
+    delete stripped.maxRounds
+    const nums = deepValues(stripped).filter(v => typeof v === 'number')
     const suspicious = nums.filter(v => v >= 10)
     check(suspicious.length === 0,
-      `${where}: no number ≥ 10 anywhere (the draw is ${leak.rounds}; found: ${JSON.stringify(suspicious)})`)
+      `${where}: no number ≥ 10 outside the declared range (the draw is ${leak.rounds}; found: ${JSON.stringify(suspicious)})`)
   }
 
   auditNoLeak(leak.state.result, ALLOWED_STATE_KEYS, 'pdGetState (before any round)')
@@ -532,9 +542,11 @@ async function main() {
 
   const qs = await callFn('pdGetQuestions', asStudent(GID7, QPID))
   check(qs.ok, 'pdGetQuestions succeeds')
-  check(qs.result.kc.length === 4, 'serves the four KC questions (spec §7)')
-  check(qs.result.kc.every(q => Object.keys(q).sort().join() === 'field,options,prompt'),
-    'each KC question carries only field, prompt, options')
+  check(qs.result.kc.derived.length === 4, 'serves the four DERIVED KC questions (spec §7)')
+  check(Array.isArray(qs.result.kc.added) && qs.result.kc.added.length === 0,
+    'and an empty ADDED list — the two sources arrive separately, never merged')
+  check(qs.result.kc.derived.every(q => Object.keys(q).sort().join() === 'field,options,prompt'),
+    'each derived question carries only field, prompt, options')
   const qsJson = JSON.stringify(qs.result)
   check(!qsJson.includes('correct_value'), '⚠ the answer key is NOT served to the student')
   check(!qsJson.includes('explanation'), '⚠ the explanations are NOT served ahead of answering')
@@ -545,7 +557,7 @@ async function main() {
   // The KC options are THIS instance's payoff values (config-driven), and the correct
   // answer follows the same matrix — a student is never graded against a matrix they
   // were not shown.
-  const optionValues = qs.result.kc[0].options.map(o => o.value).sort()
+  const optionValues = qs.result.kc.derived[0].options.map(o => o.value).sort()
   check(optionValues.join() === ['0', '1', '6', '9'].sort().join(),
     `KC options come from the instance matrix (${optionValues.join('/')})`)
 
@@ -722,13 +734,149 @@ async function main() {
   check(studentState.result.roundCount === undefined && studentState.result.charts === undefined,
     '⚠ …and no round count or chart data leaked into the student payload')
 
-  // ── 14. The pd play screen ships in the bundle ──────────────────────────────
+  // ── 14. Settings: pdGetConfig / pdUpdateConfig (Slice 5) ────────────────────
+  console.log('\n[14] Instructor settings')
+  const GIDS = `pd-settings-${stamp}`
+  const SPID = 'pd-settings-stu'
+
+  // A fresh instance defaults everything.
+  const cfg0 = await callFn('pdGetConfig', asDev(GIDS))
+  check(cfg0.ok, 'pdGetConfig succeeds on an untouched instance')
+  check(cfg0.result.minRounds === 10 && cfg0.result.maxRounds === 20, 'defaults to the shipped [10,20] range')
+  check(cfg0.result.unit === 'years', 'defaults to the shipped unit')
+  check(cfg0.result.kcEnabled === true && cfg0.result.debriefEnabled === true, 'KC and debrief default ON')
+  check(cfg0.result.roundsDrawn === false, 'reports that the round count has NOT been drawn yet')
+  check(cfg0.result.derivedKcPreview.length === 4, 'previews the four derived KC questions')
+  check(cfg0.result.rounds === undefined && !JSON.stringify(cfg0.result).includes('"rounds"'),
+    '⚠ even the INSTRUCTOR settings page never receives the drawn count — only whether it exists')
+
+  // ── Validation ────────────────────────────────────────────────────────────
+  const badRange = await callFn('pdUpdateConfig', { ...asDev(GIDS), minRounds: 9, maxRounds: 4 })
+  check(!badRange.ok, 'rejects min > max')
+  const badMin = await callFn('pdUpdateConfig', { ...asDev(GIDS), minRounds: 0, maxRounds: 4 })
+  check(!badMin.ok, 'rejects a minimum below 1')
+  const badFloat = await callFn('pdUpdateConfig', { ...asDev(GIDS), minRounds: 2.5, maxRounds: 4 })
+  check(!badFloat.ok, 'rejects a non-integer bound')
+  const badPayoff = await callFn('pdUpdateConfig', { ...asDev(GIDS), payoffs: { both_cooperate: -1, sucker: 9, temptation: 0, both_defect: 6 } })
+  check(!badPayoff.ok, 'rejects a negative payoff')
+  const badLabel = await callFn('pdUpdateConfig', { ...asDev(GIDS), labels: { C: '', D: 'Defect' } })
+  check(!badLabel.ok, 'rejects an empty move label')
+  const badUnit = await callFn('pdUpdateConfig', { ...asDev(GIDS), unit: '  ' })
+  check(!badUnit.ok, 'rejects a blank unit')
+  const reservedId = await callFn('pdUpdateConfig', {
+    ...asDev(GIDS),
+    addedKcQuestions: [{ id: 'kc_cc', type: 'mc', prompt: 'Sneaky', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }], correct_value: 'a' }],
+  })
+  check(!reservedId.ok, '⚠ rejects an added question claiming a reserved kc_ id')
+
+  // ── A real edit, and its effect on the DERIVED four ───────────────────────
+  const saved = await callFn('pdUpdateConfig', {
+    ...asDev(GIDS),
+    payoffs: { both_cooperate: 2, sucker: 8, temptation: 1, both_defect: 5 },
+    labels: { C: 'Share', D: 'Take' },
+    unit: 'points',
+    minRounds: 3,
+    maxRounds: 4,
+    debriefPrompt: 'What was your plan?',
+  })
+  check(saved.ok, 'a valid settings save succeeds')
+  check(saved.result.unit === 'points' && saved.result.minRounds === 3 && saved.result.maxRounds === 4,
+    'the save returns the stored values')
+  // ⚠ THE NO-DRIFT PROPERTY: the derived four followed the new matrix, labels AND unit.
+  const preview = saved.result.derivedKcPreview
+  check(preview.map(q => q.correct_value).join() === '2,8,1,5',
+    `the derived four re-derived their answers from the new matrix (${preview.map(q => q.correct_value).join('/')})`)
+  check(preview[0].prompt.includes('Share') && preview[0].prompt.includes('points'),
+    'the derived prompts picked up the new labels AND unit')
+  check(preview[0].options.every(o => /point/.test(o.label)), 'the derived options are labelled in the new unit')
+
+  // The student sees the same thing.
+  await callFn('pdBootstrap', asStudent(GIDS, SPID))
+  const sState = await callFn('pdGetState', asStudent(GIDS, SPID))
+  check(sState.result.unit === 'points', 'the student is served the new unit')
+  check(sState.result.minRounds === 3 && sState.result.maxRounds === 4, 'the student is served the new RANGE')
+  check(sState.result.payoffs.sucker === 8, 'the student is served the new matrix')
+  check(sState.result.labels.C === 'Share', 'the student is served the new labels')
+  const sQs = await callFn('pdGetQuestions', asStudent(GIDS, SPID))
+  check(sQs.result.kc.derived[0].prompt.includes('Share'), 'the student\'s KC uses the new labels')
+  check(!JSON.stringify(sQs.result).includes('correct_value'), '…and still ships no answer key')
+
+  // ── ⚠ A RANGE EDIT MUST NOT REDRAW AN INITIALIZED INSTANCE ────────────────
+  const drawnTruth = await getDoc(`pd_game_instances/${GIDS}/truth/main`)
+  const drawn = Number(drawnTruth?.rounds?.integerValue)
+  check(drawn >= 3 && drawn <= 4, `the draw used the configured range (${drawn} ∈ [3,4])`)
+  const cfgAfterDraw = await callFn('pdGetConfig', asDev(GIDS))
+  check(cfgAfterDraw.result.roundsDrawn === true, 'settings now reports the count as drawn')
+
+  await callFn('pdUpdateConfig', { ...asDev(GIDS), minRounds: 15, maxRounds: 20 })
+  await callFn('pdGetState', asStudent(GIDS, SPID))   // a touch that could have redrawn
+  const truthAfterRangeChange = await getDoc(`pd_game_instances/${GIDS}/truth/main`)
+  check(Number(truthAfterRangeChange?.rounds?.integerValue) === drawn,
+    `⚠ widening the range did NOT redraw the count (still ${drawn}) — a mid-game student keeps their horizon`)
+
+  // ── Added KC questions: separate source, separate grading ─────────────────
+  const GIDA = `pd-added-${stamp}`
+  const APID = 'pd-added-stu'
+  const addedMc = { id: 'akc_one', type: 'mc', prompt: 'Which move did you use most?',
+    options: [{ value: 'a', label: 'Cooperate' }, { value: 'b', label: 'Defect' }], correct_value: 'b' }
+  const addedText = { id: 'akc_two', type: 'text', prompt: 'Why?' }
+  const addSave = await callFn('pdUpdateConfig', { ...asDev(GIDA), addedKcQuestions: [addedMc, addedText] })
+  check(addSave.ok && addSave.result.addedKcQuestions.length === 2, 'two added questions saved')
+
+  await callFn('pdBootstrap', asStudent(GIDA, APID))
+  const aQs = await callFn('pdGetQuestions', asStudent(GIDA, APID))
+  check(aQs.result.kc.derived.length === 4 && aQs.result.kc.added.length === 2,
+    '⚠ the two sources arrive SEPARATELY (4 derived + 2 added), never flattened')
+  check(aQs.result.kc.added[0].field === 'akc_one' && aQs.result.kc.added[0].type === 'mc',
+    'the added question carries its own id and type')
+  check(!JSON.stringify(aQs.result.kc.added).includes('correct_value'),
+    'the added question\'s key is NOT served either')
+
+  // The added mc grades on ITS OWN key, not the matrix.
+  const aWrong = await callFn('pdSubmitKcAnswer', asStudent(GIDA, APID, { field: 'akc_one', answer: 'a' }))
+  check(aWrong.ok && aWrong.result.correct === false && aWrong.result.graded === true,
+    'an added mc question grades against its stored key')
+  const aRight = await callFn('pdSubmitKcAnswer', asStudent(GIDA, APID, { field: 'akc_one', answer: 'b' }))
+  check(aRight.ok && aRight.result.correct === false,
+    '…and is locked on first answer, like every other question')
+  const aText = await callFn('pdSubmitKcAnswer', asStudent(GIDA, APID, { field: 'akc_two', answer: 'Because.' }))
+  check(aText.ok && aText.result.graded === false,
+    'an added FREE-TEXT question is recorded but UNGRADED — never marked wrong')
+
+  // Denominator: 4 derived + 1 graded added = 5. The free-text one is in neither.
+  const derivedKey = { kc_cc: '1', kc_cd: '15', kc_dc: '0', kc_dd: '10' }
+  for (const [f, v] of Object.entries(derivedKey)) {
+    await callFn('pdSubmitKcAnswer', asStudent(GIDA, APID, { field: f, answer: v }))
+  }
+  const aDoc = await getDoc(`pd_game_instances/${GIDA}/participants/${APID}`)
+  const aScore = Number(aDoc?.knowledge_check_score?.doubleValue ?? aDoc?.knowledge_check_score?.integerValue)
+  check(Math.abs(aScore - 0.8) < 1e-9,
+    `4 derived right + 1 added wrong = 0.8 — the graded added question IS in the denominator, the free-text one is NOT (got ${aScore})`)
+
+  // ── The toggles actually remove the screens ───────────────────────────────
+  const GIDT = `pd-toggles-${stamp}`
+  const TPID = 'pd-toggle-stu'
+  await callFn('pdUpdateConfig', { ...asDev(GIDT), kcEnabled: false, debriefEnabled: false })
+  await callFn('pdBootstrap', asStudent(GIDT, TPID))
+  const tQs = await callFn('pdGetQuestions', asStudent(GIDT, TPID))
+  check(tQs.result.kcEnabled === false && tQs.result.kc.derived.length === 0 && tQs.result.kc.added.length === 0,
+    'KC off ⇒ no questions served at all')
+  check(tQs.result.debriefEnabled === false && tQs.result.debrief === null, 'debrief off ⇒ no debrief served')
+  const tKc = await callFn('pdSubmitKcAnswer', asStudent(GIDT, TPID, { field: 'kc_cc', answer: '1' }))
+  check(!tKc.ok, 'and the KC callable REFUSES an answer when the KC is off')
+  const tDb = await callFn('pdSubmitDebrief', asStudent(GIDT, TPID, { answer: 'x' }))
+  check(!tDb.ok, 'and the debrief callable refuses when the debrief is off')
+  // The game itself still plays.
+  const tRound = await callFn('pdSubmitRound', asStudent(GIDT, TPID, { round: 1, move: 'C' }))
+  check(tRound.ok, 'the round loop still plays with both extras switched off')
+
+  // ── 15. The pd play screen ships in the bundle ──────────────────────────────
   // One Vite bundle serves every game and picks by hostname, so "the pd route is
   // built and shipped" is what can be asserted here. This is a BUILD-ARTIFACT check,
   // not a DOM render — the repo has no jsdom/testing-library, so the components'
   // markup is covered by the static-render tests in frontend/src/pd/ instead.
   // `npm run build` in frontend/ must have run first.
-  console.log('\n[14] pd play screen present in the shipped bundle')
+  console.log('\n[15] pd play screen present in the shipped bundle')
   const distDir = path.join(ROOT, 'frontend', 'dist', 'assets')
   if (!fs.existsSync(distDir)) {
     check(false, `frontend/dist/assets missing — run \`npm run build\` in frontend/ first`)
@@ -745,8 +893,20 @@ async function main() {
     // The framing copy the spec allows — and nothing sharper than it.
     check(js.includes('the same automated player every round'), 'framing: the same automated player every round')
     check(js.includes('programmed to act realistically'), 'framing: programmed to act realistically')
-    check(js.includes('between 10 and 20 rounds'), 'framing: between 10 and 20 rounds (the range, not the draw)')
-    check(js.includes('Years in prison'), 'the matrix is framed as years in prison (losses)')
+    // The range is now templated from config, so the literal "between 10 and 20" is
+    // gone; what must still be true is that the framing states a RANGE and nothing
+    // sharper. The bounds themselves come from config at runtime.
+    check(js.includes('between ') && js.includes(' rounds'),
+      'framing: states a round RANGE (now templated from config, not hardcoded)')
+    check(js.includes('you will not be told when'), 'framing: still refuses to say when the last round is')
+
+    // ⚠ INVERTED IN SLICE 5. This used to assert the matrix said "Years in prison";
+    // the directional framing was DELETED because the unit is now configurable and
+    // the software cannot know whether a bigger number is better. The check now
+    // guards the removal, so the copy cannot creep back.
+    check(!/lower is better|higher is better/i.test(js), 'no directional framing ships in the bundle')
+    check(!/years in prison/i.test(js), 'no "years in prison" copy ships in the bundle')
+    check(!/these are losses/i.test(js), 'no "these are losses" copy ships in the bundle')
 
     // ⚠ THE CLIENT-SIDE HALF OF THE NO-LEAK CONSTRAINT — restated for Slice 4.
     //

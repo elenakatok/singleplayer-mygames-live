@@ -59,7 +59,7 @@ export const pdGetConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) => 
      * show the instructor the four questions their payoff edits just produced.
      * Instructor-side, so the answer key may be included here.
      */
-    derivedKcPreview: resolveKcQuestions(config.payoffs, config.unit).map(q => ({
+    derivedKcPreview: resolveKcQuestions(config.payoffs, config.unit, config.labels).map(q => ({
       field: q.field,
       prompt: q.prompt,
       options: q.options ?? [],
@@ -206,7 +206,7 @@ export const pdUpdateConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
     addedKcQuestions: config.addedKcQuestions,
     debriefEnabled: config.debriefEnabled,
     debriefPrompt: config.debriefPrompt,
-    derivedKcPreview: resolveKcQuestions(config.payoffs, config.unit).map(q => ({
+    derivedKcPreview: resolveKcQuestions(config.payoffs, config.unit, config.labels).map(q => ({
       field: q.field,
       prompt: q.prompt,
       options: q.options ?? [],

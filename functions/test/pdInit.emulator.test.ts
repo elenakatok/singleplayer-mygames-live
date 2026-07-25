@@ -4,7 +4,7 @@ import type { Firestore } from 'firebase-admin/firestore'
 import { initPdParticipant, drawRoundCount, drawStrategy } from '../src/pd/init'
 import {
   INSTANCES_COLLECTION, CONFIG_DOC, TRUTH_DOC, truthParticipantDoc,
-  MIN_ROUNDS, MAX_ROUNDS,
+  DEFAULT_MIN_ROUNDS as MIN_ROUNDS, DEFAULT_MAX_ROUNDS as MAX_ROUNDS,
 } from '../src/pd/config'
 import { isStrategy } from '../src/pd/strategy'
 
@@ -159,7 +159,7 @@ describe('seeded instances are reproducible end to end', () => {
 
     const r = await initPdParticipant(db, iid, 'stu-a')
     expect(r.config.seed).toBe('harness-1')
-    expect(r.rounds).toBe(drawRoundCount('harness-1', iid))
+    expect(r.rounds).toBe(drawRoundCount('harness-1', iid, MIN_ROUNDS, MAX_ROUNDS))
     expect(r.strategy).toBe(drawStrategy('harness-1', 'stu-a'))
   })
 
@@ -173,7 +173,7 @@ describe('seeded instances are reproducible end to end', () => {
     // Same seed + same participant ⇒ same strategy …
     expect(a.strategy).toBe(b.strategy)
     // … but the round count is keyed by instance, so the instances are independent.
-    expect(a.rounds).toBe(drawRoundCount('same', iidA))
-    expect(b.rounds).toBe(drawRoundCount('same', iidB))
+    expect(a.rounds).toBe(drawRoundCount('same', iidA, MIN_ROUNDS, MAX_ROUNDS))
+    expect(b.rounds).toBe(drawRoundCount('same', iidB, MIN_ROUNDS, MAX_ROUNDS))
   })
 })

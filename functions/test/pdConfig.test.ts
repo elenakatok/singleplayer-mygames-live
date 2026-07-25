@@ -128,3 +128,38 @@ describe('unitLabel — best-effort singularization of an arbitrary unit', () =>
     expect(unitLabel('1', 'kg')).toBe('1 kg')
   })
 })
+
+describe('parseAddedKcQuestion — ⚠ never emits undefined (Firestore rejects it)', () => {
+  // These objects are written straight into Firestore, which refuses an undefined
+  // value outright. A question with no explanation used to carry `explanation:
+  // undefined` and made the WHOLE settings save fail — omit the key instead.
+  const hasUndefined = (o: object) => Object.values(o).some(v => v === undefined)
+
+  it('omits explanation rather than setting it undefined (free text)', () => {
+    const q = parseAddedKcQuestion({ id: 'akc_t', type: 'text', prompt: 'Why?' })!
+    expect('explanation' in q).toBe(false)
+    expect(hasUndefined(q)).toBe(false)
+  })
+
+  it('omits explanation AND correct_value rather than setting them undefined (mc)', () => {
+    const q = parseAddedKcQuestion({
+      id: 'akc_m', type: 'mc', prompt: 'Which?',
+      options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }],
+      // no correct_value at all
+    })!
+    expect('correct_value' in q).toBe(false)
+    expect('explanation' in q).toBe(false)
+    expect(hasUndefined(q)).toBe(false)
+  })
+
+  it('keeps them when they are genuinely present', () => {
+    const q = parseAddedKcQuestion({
+      id: 'akc_m', type: 'mc', prompt: 'Which?',
+      options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }],
+      correct_value: 'a', explanation: 'Because A.',
+    })!
+    expect(q.correct_value).toBe('a')
+    expect(q.explanation).toBe('Because A.')
+    expect(hasUndefined(q)).toBe(false)
+  })
+})

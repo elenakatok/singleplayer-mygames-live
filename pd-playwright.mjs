@@ -535,14 +535,20 @@ async function main() {
     //     harness asks, but what arrived in the page.
     const ALLOWED = {
       pdBootstrap: ['ok', 'participant_id', 'game_instance_id', 'customToken'],
+      // Slice 5: `unit` and the configured round RANGE are legitimate student-facing
+      // settings. The RANGE is the one schedule fact a student may be told (spec §3);
+      // the DRAW still appears nowhere, which the DOM sweep below re-proves by
+      // stripping the framing sentence that carries the bounds.
       pdGetState: ['ok', 'labels', 'payoffs', 'history', 'gameOver', 'C', 'D',
+        'unit', 'minRounds', 'maxRounds',
         'both_cooperate', 'sucker', 'temptation', 'both_defect',
         'round', 'studentMove', 'botMove', 'studentYears', 'botYears', 'studentTotal', 'botTotal'],
       pdSubmitRound: ['ok', 'round', 'history', 'gameOver', 'studentMove', 'botMove',
         'studentYears', 'botYears', 'studentTotal', 'botTotal'],
-      pdGetQuestions: ['ok', 'kc', 'field', 'prompt', 'options', 'value', 'label',
-        'debrief', 'placeholder', 'kcAnswered', 'debriefSubmitted'],
-      pdSubmitKcAnswer: ['ok', 'correct', 'explanation'],
+      pdGetQuestions: ['ok', 'kcEnabled', 'kc', 'derived', 'added', 'type',
+        'field', 'prompt', 'options', 'value', 'label',
+        'debriefEnabled', 'debrief', 'placeholder', 'kcAnswered', 'debriefSubmitted'],
+      pdSubmitKcAnswer: ['ok', 'correct', 'graded', 'explanation'],
       pdSubmitDebrief: ['ok', 'stored', 'answer'],
     }
 
@@ -657,9 +663,177 @@ async function main() {
     await pageI.waitForSelector('[data-testid="pd-firstmove-chart"]')
     const bars = await pageI.locator('[data-testid^="pd-firstmove-bar-"]').count()
     check(bars >= 2, `Tier 3b: grouped bars drawn (${bars})`)
+    // ⚠ INVERTED IN SLICE 5: the directional framing was deleted, because the unit is
+    // configurable and the software cannot know whether taller is better.
     const fmText = await pageI.locator('body').innerText()
-    check(/lower is better/i.test(fmText), 'Tier 3b: keeps the lower-is-better framing')
+    check(!/lower is better|worse outcome/i.test(fmText), 'Tier 3b: states NO direction')
+    check(/per round/i.test(fmText), 'Tier 3b: still says what the bars measure')
     await ctxI.close()
+
+    // ── 6c. The SETTINGS page, driven through the UI (Slice 5) ────────────────
+    console.log('\n[6c] Instructor settings (browser)')
+    const SGID = `bw-settings-${stamp}`
+    const SPID = 'bw-settings-stu'
+    const ctxS = await browser.newContext()
+    const pageS = await ctxS.newPage()
+    await pageS.goto(`${APP}/settings?game=pd&_gid=${SGID}`)
+    await pageS.waitForSelector('[data-testid="pd-settings"]', { timeout: 45000 })
+    check(true, 'the settings page renders (not the Slice-0 scaffold)')
+    check(!(await pageS.locator('body').innerText()).includes('not built yet'),
+      'the scaffold copy is gone')
+
+    // The derived four are shown READ-ONLY, with the answers the current matrix gives.
+    check(await exists(pageS, '[data-testid="pd-set-derived-kc"]'),
+      'the four derived KC questions are previewed')
+    const derivedBefore = await pageS.locator('[data-testid="pd-set-derived-kc"]').innerText()
+    check(/Answer: 1\b/.test(derivedBefore), 'the preview shows the CURRENT matrix answers')
+    check(await pageS.locator('[data-testid="pd-set-derived-kc"] input').count() === 0,
+      '⚠ and they are NOT editable — no inputs, because they are derived from the matrix')
+
+    // Edit the matrix, labels, unit and range, and save.
+    const setNum = async (tid, v) => { await pageS.fill(`[data-testid="${tid}"]`, String(v)) }
+    await setNum('pd-set-both_cooperate', 2)
+    await setNum('pd-set-sucker', 8)
+    await setNum('pd-set-temptation', 1)
+    await setNum('pd-set-both_defect', 5)
+    await pageS.fill('[data-testid="pd-set-label-c"]', 'Share')
+    await pageS.fill('[data-testid="pd-set-label-d"]', 'Take')
+    await pageS.fill('[data-testid="pd-set-unit"]', 'points')
+    await setNum('pd-set-min-rounds', 3)
+    await setNum('pd-set-max-rounds', 3)
+    await pageS.fill('[data-testid="pd-set-debrief-prompt"]', 'What was your plan and why?')
+
+    // The live preview updates BEFORE saving — it is the students' own component.
+    const previewCell = (await pageS.locator('[data-testid="pd-matrix-CD"]').innerText()).replace(/\s+/g, ' ')
+    check(previewCell === '1 8', `the live matrix preview follows the form (${previewCell})`)
+
+    // Add one graded question and one free-text question.
+    await pageS.fill('[data-testid="pd-set-new-prompt"]', 'Did you plan ahead?')
+    await pageS.fill('[data-testid="pd-set-new-option-0"]', 'Yes')
+    await pageS.fill('[data-testid="pd-set-new-option-1"]', 'No')
+    await pageS.click('[data-testid="pd-set-new-correct-0"]')
+    await pageS.click('[data-testid="pd-set-add-question"]')
+    await pageS.selectOption('[data-testid="pd-set-new-type"]', 'text')
+    await pageS.fill('[data-testid="pd-set-new-prompt"]', 'Anything else?')
+    await pageS.click('[data-testid="pd-set-add-question"]')
+
+    await pageS.click('[data-testid="pd-set-save"]')
+    await pageS.waitForSelector('[data-testid="pd-set-saved"]', { timeout: 30000 })
+    check(true, 'the settings save succeeds')
+
+    // ⚠ THE NO-DRIFT PROPERTY, on screen: the derived four followed the new matrix.
+    const derivedAfter = await pageS.locator('[data-testid="pd-set-derived-kc"]').innerText()
+    check(/Answer: 2\b/.test(derivedAfter) && /Answer: 8\b/.test(derivedAfter),
+      'the derived four re-derived from the new matrix after saving')
+    check(derivedAfter.includes('Share') && derivedAfter.includes('points'),
+      'the derived prompts picked up the new labels and unit')
+
+    // Range validation blocks the save rather than storing nonsense.
+    await setNum('pd-set-min-rounds', 9)
+    await setNum('pd-set-max-rounds', 4)
+    check(await exists(pageS, '[data-testid="pd-set-range-error"]'), 'min > max shows an error')
+    check(await pageS.locator('[data-testid="pd-set-save"]').isDisabled(), '…and disables Save')
+    await setNum('pd-set-min-rounds', 3)
+    check(!(await pageS.locator('[data-testid="pd-set-save"]').isDisabled()), 'fixing the range re-enables Save')
+    await ctxS.close()
+
+    // ── 6d. A STUDENT plays the reconfigured instance ─────────────────────────
+    console.log('\n[6d] The student sees the new configuration')
+    const ctxE = await browser.newContext()
+    const pageE = await ctxE.newPage()
+    await pageE.goto(studentUrl(SGID, SPID))
+    await pageE.waitForSelector('[data-testid="pd-kc-prompt"]', { timeout: 45000 })
+
+    const kcText = await pageE.locator('body').innerText()
+    check(kcText.includes('Share') && kcText.includes('points'),
+      'the KC uses the configured labels and unit')
+    check(!/\byears\b/i.test(kcText), 'and no hardcoded "years" survives on the KC screen')
+
+    // Answer all four derived, then BOTH added questions — added come last.
+    const answerKey = { 2: 0, 8: 1, 1: 2, 5: 3 }
+    void answerKey
+    for (const v of ['2', '8', '1', '5']) {
+      await pageE.waitForSelector('[data-testid="pd-kc-prompt"]')
+      await pageE.click(`[data-testid="pd-kc-option-${v}"]`)
+      await pageE.click('[data-testid="pd-kc-submit"]')
+      await pageE.waitForSelector('[data-testid="pd-kc-correct"]', { timeout: 20000 })
+      await pageE.click('[data-testid="pd-kc-continue"]')
+    }
+    // Question 5 — the instructor's graded MC, rendered AFTER the derived four.
+    await pageE.waitForSelector('[data-testid="pd-kc-prompt"]')
+    check((await text(pageE, '[data-testid="pd-kc-prompt"]')) === 'Did you plan ahead?',
+      '⚠ the ADDED question is asked after the derived four, in order')
+    const addedOpts = await pageE.locator('[data-testid^="pd-kc-option-"]').all()
+    await addedOpts[0].click()
+    await pageE.click('[data-testid="pd-kc-submit"]')
+    await pageE.waitForSelector('[data-testid="pd-kc-correct"]', { timeout: 20000 })
+    check(true, 'the added MC question grades against the instructor\'s OWN key')
+    await pageE.click('[data-testid="pd-kc-continue"]')
+
+    // Question 6 — the free-text one, recorded but not graded.
+    await pageE.waitForSelector('[data-testid="pd-kc-text-input"]', { timeout: 20000 })
+    await pageE.fill('[data-testid="pd-kc-text-input"]', 'Not really, I improvised.')
+    await pageE.click('[data-testid="pd-kc-submit"]')
+    await pageE.waitForSelector('[data-testid="pd-kc-recorded"]', { timeout: 20000 })
+    check(true, 'the added FREE-TEXT question is RECORDED, not marked right or wrong')
+    await pageE.click('[data-testid="pd-kc-continue"]')
+
+    // Into the game: framing states the configured range, and the unit is everywhere.
+    await pageE.waitForSelector('[data-testid="pd-round-heading"]', { timeout: 30000 })
+    const framingS = await pageE.locator('[data-testid="pd-framing"]').innerText()
+    check(framingS.includes('between 3 and 3 rounds'), `framing states the CONFIGURED range ("${framingS.match(/between[^—]*/)?.[0]?.trim()}")`)
+
+    await pageE.click('[data-testid="pd-choice-C"]')
+    await pageE.click('[data-testid="pd-submit-round"]')
+    await pageE.waitForSelector('[data-testid="pd-reveal"]', { timeout: 20000 })
+    const revealS = await pageE.locator('[data-testid="pd-reveal"]').innerText()
+    check(/point/.test(revealS) && !/year/i.test(revealS), 'the reveal counts in the configured unit')
+    check(revealS.includes('Share'), 'the reveal names the configured move label')
+    await pageE.click('[data-testid="pd-continue"]')
+
+    // A 3-round instance ends after exactly 3 — the configured range took effect.
+    for (const n of [2, 3]) {
+      await pageE.waitForSelector('[data-testid="pd-round-heading"]')
+      check((await text(pageE, '[data-testid="pd-round-heading"]')) === `Round ${n}`, `round ${n} of the 3-round game`)
+      await pageE.click('[data-testid="pd-choice-C"]')
+      await pageE.click('[data-testid="pd-submit-round"]')
+      await pageE.waitForSelector('[data-testid="pd-reveal"]', { timeout: 20000 })
+      await pageE.click('[data-testid="pd-continue"]')
+    }
+    await pageE.waitForSelector('[data-testid="pd-debrief-prompt"]', { timeout: 20000 })
+    check(true, 'the game ended after exactly 3 rounds — the configured range drove the draw')
+    check((await text(pageE, '[data-testid="pd-debrief-prompt"]')) === 'What was your plan and why?',
+      'the debrief asks the CONFIGURED prompt')
+
+    // ⚠ Still no leak, on a reconfigured instance.
+    const cfgBody = await pageE.locator('body').innerText()
+    check(!/\btft\b|\bgrim\b|strateg/i.test(cfgBody), 'no strategy leaks on the reconfigured instance')
+    check(!/round\s+\d+\s+of\s+\d+/i.test(cfgBody), 'no "round N of M" on the reconfigured instance')
+    await ctxE.close()
+
+    // ── 6e. Both extras switched OFF ──────────────────────────────────────────
+    console.log('\n[6e] KC and debrief switched off')
+    const OGID = `bw-off-${stamp}`
+    const OPID = 'bw-off-stu'
+    await callFn('pdUpdateConfig', { _dev: { game_instance_id: OGID }, kcEnabled: false, debriefEnabled: false, minRounds: 2, maxRounds: 2 })
+    const ctxO = await browser.newContext()
+    const pageO = await ctxO.newPage()
+    await pageO.goto(studentUrl(OGID, OPID))
+    await pageO.waitForSelector('[data-testid="pd-round-heading"]', { timeout: 45000 })
+    check(!(await exists(pageO, '[data-testid="pd-kc-prompt"]')),
+      'with the KC off the student lands STRAIGHT in the round loop')
+    for (const n of [1, 2]) {
+      void n
+      await pageO.waitForSelector('[data-testid="pd-round-heading"]')
+      await pageO.click('[data-testid="pd-choice-C"]')
+      await pageO.click('[data-testid="pd-submit-round"]')
+      await pageO.waitForSelector('[data-testid="pd-reveal"]', { timeout: 20000 })
+      await pageO.click('[data-testid="pd-continue"]')
+    }
+    await pageO.waitForSelector('[data-testid="pd-all-done"]', { timeout: 20000 })
+    check(true, 'with the debrief off the last round goes straight to the all-done screen')
+    check(!(await exists(pageO, '[data-testid="pd-debrief-input"]')), 'and no debrief screen appears')
+    await ctxO.close()
 
     // ── 7. Score & Record over the finished class ─────────────────────────────
     console.log('\n[7] Participation scoring across the browser-played class')
