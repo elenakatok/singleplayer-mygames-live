@@ -58,9 +58,8 @@ export { pollGetReport } from './poll/report'
 
 // ── Repeated Prisoner's Dilemma (game_id: pd) ─────────────────────────────────
 //
-// SLICE 2 — the round loop. Launch, instructor session, health, and the two
-// student game callables (where am I / play one round). The KC, Score & Record,
-// and the reports arrive in later slices.
+// SLICE 3 — the complete student flow: KC → round loop → debrief, plus
+// participation scoring and the gradebook push. The reports arrive in Slice 4.
 
 export const pdBootstrap = makeSinglePlayerBootstrap({
   collectionPrefix: PD_COLLECTION_PREFIX,
@@ -73,6 +72,13 @@ export const pdInstructorSession = makeSinglePlayerInstructorSession({
 // Student.
 export { pdGetState } from './pd/getState'
 export { pdSubmitRound } from './pd/submitRound'
+export { pdGetQuestions } from './pd/getQuestions'
+export { pdSubmitKcAnswer } from './pd/submitKcAnswer'
+export { pdSubmitDebrief } from './pd/submitDebrief'
+
+// Instructor.
+export { pdSyncRoster } from './pd/syncRoster'
+export { pdScoreAndRecord } from './pd/scoreAndRecord'
 
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 
