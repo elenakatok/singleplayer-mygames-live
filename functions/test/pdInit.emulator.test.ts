@@ -1,0 +1,179 @@
+import { afterAll, beforeAll, describe, it, expect } from 'vitest'
+import * as admin from 'firebase-admin'
+import type { Firestore } from 'firebase-admin/firestore'
+import { initPdParticipant, drawRoundCount, drawStrategy } from '../src/pd/init'
+import {
+  INSTANCES_COLLECTION, CONFIG_DOC, TRUTH_DOC, truthParticipantDoc,
+  MIN_ROUNDS, MAX_ROUNDS,
+} from '../src/pd/config'
+import { isStrategy } from '../src/pd/strategy'
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PD first-touch init against a REAL Firestore (emulator). Runs via
+// `npm run test:rules`, which boots the Firestore emulator.
+//
+// This file exists because the once-only guarantee is a CONCURRENCY property, and a
+// hand-rolled fake transaction cannot prove it — it would only re-assert my own
+// assumptions. The load-bearing test is "fire N first-touches at once and exactly
+// ONE of them draws"; that is a claim about Firestore's transaction semantics, so
+// it has to run against Firestore.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const PROJECT_ID = 'demo-singleplayer'
+
+let db: Firestore
+
+beforeAll(() => {
+  // The emulator host is exported by `firebase emulators:exec`; guard the app
+  // singleton because vitest may load this module more than once in a worker.
+  const app = admin.apps.length ? admin.app() : admin.initializeApp({ projectId: PROJECT_ID })
+  db = admin.firestore(app)
+})
+
+afterAll(async () => { await Promise.all(admin.apps.map(a => a?.delete())) })
+
+const instanceRef = (iid: string) => db.collection(INSTANCES_COLLECTION).doc(iid)
+const readRounds = async (iid: string) =>
+  (await instanceRef(iid).collection('truth').doc(TRUTH_DOC).get()).data()?.rounds
+const readStrategy = async (iid: string, pid: string) =>
+  (await instanceRef(iid).collection('truth').doc(truthParticipantDoc(pid)).get()).data()?.strategy
+
+let n = 0
+const freshId = (label: string) => `pd-${label}-${Date.now()}-${n++}`
+
+describe('first touch draws; every later touch returns the stored value', () => {
+  it('draws both on first touch and reports having drawn them', async () => {
+    const iid = freshId('first')
+    const r = await initPdParticipant(db, iid, 'stu-a')
+
+    expect(r.drewRounds).toBe(true)
+    expect(r.drewStrategy).toBe(true)
+    expect(r.rounds).toBeGreaterThanOrEqual(MIN_ROUNDS)
+    expect(r.rounds).toBeLessThanOrEqual(MAX_ROUNDS)
+    expect(isStrategy(r.strategy)).toBe(true)
+  })
+
+  it('stores them at the rules-denied paths, and NOWHERE else', async () => {
+    const iid = freshId('paths')
+    const r = await initPdParticipant(db, iid, 'stu-a')
+
+    // truth/main → the round count. truth/participant_stu-a → the strategy.
+    expect(await readRounds(iid)).toBe(r.rounds)
+    expect(await readStrategy(iid, 'stu-a')).toBe(r.strategy)
+
+    // NOT on the student-facing participant doc, and NOT in student-readable config.
+    const pSnap = await instanceRef(iid).collection('participants').doc('stu-a').get()
+    expect(pSnap.data()?.strategy).toBeUndefined()
+    expect(pSnap.data()?.rounds).toBeUndefined()
+    const cSnap = await instanceRef(iid).collection('config').doc(CONFIG_DOC).get()
+    expect(cSnap.data()?.rounds).toBeUndefined()
+    expect(cSnap.data()?.strategy).toBeUndefined()
+  })
+
+  it('re-touching NEVER changes an already-set value', async () => {
+    const iid = freshId('retouch')
+    const first = await initPdParticipant(db, iid, 'stu-a')
+
+    for (let i = 0; i < 5; i++) {
+      const again = await initPdParticipant(db, iid, 'stu-a')
+      expect(again.rounds).toBe(first.rounds)
+      expect(again.strategy).toBe(first.strategy)
+      expect(again.drewRounds).toBe(false)
+      expect(again.drewStrategy).toBe(false)
+    }
+    expect(await readRounds(iid)).toBe(first.rounds)
+    expect(await readStrategy(iid, 'stu-a')).toBe(first.strategy)
+  })
+
+  it('a second student joins an initialized instance: keeps rounds, draws only their own strategy', async () => {
+    const iid = freshId('second')
+    const a = await initPdParticipant(db, iid, 'stu-a')
+    const b = await initPdParticipant(db, iid, 'stu-b')
+
+    expect(b.rounds).toBe(a.rounds)
+    expect(b.drewRounds).toBe(false)   // the instance was already initialized
+    expect(b.drewStrategy).toBe(true)  // but this student had not been
+    expect(await readStrategy(iid, 'stu-a')).toBe(a.strategy)
+    expect(await readStrategy(iid, 'stu-b')).toBe(b.strategy)
+  })
+
+  it('students are isolated across instances — the same id re-draws per instance', async () => {
+    const iidA = freshId('isoA'), iidB = freshId('isoB')
+    await initPdParticipant(db, iidA, 'shared-stu')
+    const inB = await initPdParticipant(db, iidB, 'shared-stu')
+    expect(inB.drewStrategy).toBe(true) // not carried over from instance A
+  })
+})
+
+describe('once-only under CONCURRENCY (the real guarantee)', () => {
+  // ARTIFICIAL WORST CASE, deliberately kept: N transactions contending on the SAME
+  // two documents serialize into a retry storm, so this is slow (seconds, not ms) and
+  // needs a raised timeout. It does not model production — one student means one
+  // browser; the realistic burst is many DIFFERENT students, which is the next test
+  // and is fast because each has its own strategy doc. This test is here for
+  // CORRECTNESS under contention, not for performance.
+  it('N simultaneous first-touches for ONE student: exactly one draws, all agree', { timeout: 60_000 }, async () => {
+    const iid = freshId('race-one')
+    const N = 15
+
+    const results = await Promise.all(
+      Array.from({ length: N }, () => initPdParticipant(db, iid, 'stu-a')),
+    )
+
+    // Exactly one transaction performed each draw; the rest observed the committed
+    // value on retry. This is the compare-and-set property, not a coincidence.
+    expect(results.filter(r => r.drewStrategy)).toHaveLength(1)
+    expect(results.filter(r => r.drewRounds)).toHaveLength(1)
+
+    // And every caller agrees on the outcome.
+    expect(new Set(results.map(r => r.strategy)).size).toBe(1)
+    expect(new Set(results.map(r => r.rounds)).size).toBe(1)
+    expect(await readStrategy(iid, 'stu-a')).toBe(results[0].strategy)
+    expect(await readRounds(iid)).toBe(results[0].rounds)
+  })
+
+  it('N students racing into a FRESH instance: the round count is drawn exactly once', async () => {
+    const iid = freshId('race-many')
+    const N = 12
+
+    const results = await Promise.all(
+      Array.from({ length: N }, (_, i) => initPdParticipant(db, iid, `stu-${i}`)),
+    )
+
+    // One instance-level draw total, shared by everyone …
+    expect(results.filter(r => r.drewRounds)).toHaveLength(1)
+    expect(new Set(results.map(r => r.rounds)).size).toBe(1)
+    // … while each student drew their OWN strategy exactly once (no contention).
+    expect(results.filter(r => r.drewStrategy)).toHaveLength(N)
+
+    for (let i = 0; i < N; i++) {
+      expect(await readStrategy(iid, `stu-${i}`)).toBe(results[i].strategy)
+    }
+  })
+})
+
+describe('seeded instances are reproducible end to end', () => {
+  it('a seed in config/main drives both draws to the pure functions’ values', async () => {
+    const iid = freshId('seeded')
+    await instanceRef(iid).collection('config').doc(CONFIG_DOC).set({ seed: 'harness-1' })
+
+    const r = await initPdParticipant(db, iid, 'stu-a')
+    expect(r.config.seed).toBe('harness-1')
+    expect(r.rounds).toBe(drawRoundCount('harness-1', iid))
+    expect(r.strategy).toBe(drawStrategy('harness-1', 'stu-a'))
+  })
+
+  it('two instances on the same seed differ (the draw keys on the instance too)', async () => {
+    const iidA = freshId('seedA'), iidB = freshId('seedB')
+    for (const iid of [iidA, iidB]) {
+      await instanceRef(iid).collection('config').doc(CONFIG_DOC).set({ seed: 'same' })
+    }
+    const a = await initPdParticipant(db, iidA, 'stu-a')
+    const b = await initPdParticipant(db, iidB, 'stu-a')
+    // Same seed + same participant ⇒ same strategy …
+    expect(a.strategy).toBe(b.strategy)
+    // … but the round count is keyed by instance, so the instances are independent.
+    expect(a.rounds).toBe(drawRoundCount('same', iidA))
+    expect(b.rounds).toBe(drawRoundCount('same', iidB))
+  })
+})

@@ -50,6 +50,9 @@ beforeAll(async () => {
     await fs.doc(`pd_game_instances/${IID}/config/main`).set({ payoff_cc: 1 })
     // The undisclosed round count lives here, never in config.
     await fs.doc(`pd_game_instances/${IID}/truth/main`).set({ rounds: 14 })
+    // Per-student truth: the assigned bot strategy, one doc per student, in the
+    // SAME truth/ collection (see config.ts truthParticipantDoc).
+    await fs.doc(`pd_game_instances/${IID}/truth/participant_${STU_A}`).set({ participant_id: STU_A, strategy: 'grim' })
     // A participant doc as later slices will shape it: strategy + history.
     await fs.doc(`pd_game_instances/${IID}/participants/${STU_A}`).set({ participant_id: STU_A, strategy: 'grim' })
     await fs.doc(`pd_game_instances/${IID}/participants/${STU_B}`).set({ participant_id: STU_B, strategy: 'tft' })
@@ -91,6 +94,31 @@ describe('truth/ denied to ALL clients — including an authenticated instructor
   })
   it('unauthenticated DENIED read', async () => {
     await assertFails(testEnv.unauthenticatedContext().firestore().doc(truth).get())
+  })
+})
+
+describe('per-student truth (the assigned bot strategy) is denied to everyone', () => {
+  // truth/participant_{pid} — the strategy assignment. The pedagogy is that the
+  // student INFERS which bot they face, so this must be unreadable by the student
+  // it belongs to, by their classmates, and by the instructor's browser alike.
+  // It sits in truth/ precisely so the existing `match /truth/{doc}` block covers
+  // it; these tests keep that coverage honest if the block is ever narrowed.
+  const own = `pd_game_instances/${IID}/truth/participant_${STU_A}`
+
+  it('the student it belongs to CANNOT read their own strategy', async () => {
+    await assertFails(student(STU_A, IID).doc(own).get())
+  })
+  it('another student CANNOT read it', async () => {
+    await assertFails(student(STU_B, IID).doc(own).get())
+  })
+  it('an authenticated instructor CANNOT read it', async () => {
+    await assertFails(testEnv.authenticatedContext('instructor-1').firestore().doc(own).get())
+  })
+  it('an unauthenticated client CANNOT read it', async () => {
+    await assertFails(testEnv.unauthenticatedContext().firestore().doc(own).get())
+  })
+  it('nobody may write it from a client (server/callable only)', async () => {
+    await assertFails(student(STU_A, IID).doc(own).set({ strategy: 'tft' }, { merge: true }))
   })
 })
 
