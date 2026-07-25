@@ -18,8 +18,18 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | `poll` | Poll | `poll.mygames.live` | `poll-mygames` |
 | `pd` | Repeated Prisoner's Dilemma | `pd.mygames.live` | `pd-mygames-live` |
 
-> `pd` is **Slice 0 (scaffold)**: launch, instructor session, health, and the four
-> routes. No round loop, no compute step, no KC, no reports yet.
+> `pd` is at **Slice 2 (the round loop)**: launch, instructor session, health, the
+> four routes, and the playable game — `pdGetState` / `pdSubmitRound`, the compute
+> step (bot move + payoffs), the play screen, the history table, and the payoff
+> matrix. No KC, no debrief, no scoring, no reports yet.
+>
+> ⚠ **PD's two invariants, in code:** the instance's round count and the student's
+> bot strategy are server-side truth (`truth/…`, rules-denied) and appear in **no**
+> callable response — both callables return hand-built whitelists, and
+> `pd-playthrough.mjs` §10 audits every response tree for stray keys, forbidden
+> words, and any number that could be the round count. Rounds also
+> **submit-and-lock**: a resubmit for a played round returns the stored round and
+> writes nothing.
 
 Each game is separated from the others by **collection prefix** (`pennies_…`) and
 its **own hosting site**, all inside the one Firebase project with the one
