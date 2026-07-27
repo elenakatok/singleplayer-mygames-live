@@ -19,10 +19,11 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | `pd` | Repeated Prisoner's Dilemma | `pd.mygames.live` | `pd-mygames-live` |
 | `pricing` | Pricing Game (Cheyenne Shipping) | `pricing.mygames.live` | `pricing-mygames-live` |
 
-> `pricing` is at **Slice 1 (server-side round loop)**: the market model in both
-> modes, the competitor strategy library, the per-student hidden horizon, and the two
-> student callables (`pricingGetState`, `pricingSubmitPrice`). No screens, no KC, no
-> debrief, no scoring, no reports yet — and **nothing deployed**. It is **one game,
+> `pricing` is at **Slice 2 (student screens)**: the market model in both modes, the
+> competitor strategy library, the per-student hidden horizon, the two student
+> callables (`pricingGetState`, `pricingSubmitPrice`), and the round loop on screen —
+> price entry → round result → end screen, in Standard and PMG. No KC, no debrief, no
+> scoring, no reports yet — and **nothing deployed**. It is **one game,
 > two course instances** — Standard and PMG are the same `game_id` switched by a
 > per-instance config flag, never a second prefix or a second hosting site.
 >
@@ -106,11 +107,13 @@ ADDITIONAL coverage — the HTTP harnesses still own the server contract.
 
 ```sh
 npm install && npx playwright install chromium   # once, for the browser harness
-npm run harness:pd          # HTTP  — server contract
-npm run harness:pd:browser  # BROWSER — the whole game, clicked through
+npm run harness:pd               # HTTP    — server contract
+npm run harness:pd:browser       # BROWSER — the whole game, clicked through
 npm run harness:pennies
 npm run harness:poll
-npm run harness:pricing     # HTTP  — scaffold + the Slice 1 round loop
+npm run harness:pricing          # HTTP    — scaffold + the round loop
+npm run harness:pricing:browser  # BROWSER — both modes, clicked through
+HEADED=1 npm run harness:pricing:browser   # …and watch it play
 ```
 
 The browser harness boots the Vite **dev** server itself (dev mode is what enables the
