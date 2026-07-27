@@ -5,10 +5,10 @@ import { DEFAULT_PAYOFFS, parsePayoffs, type PayoffConfig } from './payoff'
 // string literals) so a future admin-defaults screen and the callables share one
 // source. Mirrors pennies/config.ts.
 //
-// Holds identity, collection paths, CORS, and the shape of the two per-instance
-// documents: config/main (student-readable) and truth/main (rules-denied). The
-// payoff VALUES live in payoff.ts, the strategies in strategy.ts, and the
-// once-only draws in init.ts.
+// Holds identity, collection paths, CORS, and the shape of the per-instance
+// documents: config/main (student-readable) and truth/participant_* (rules-denied,
+// one per student — PD writes no instance-level truth doc). The payoff VALUES live
+// in payoff.ts, the strategies in strategy.ts, and the once-only draws in init.ts.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** game_id — lowercase, never displayed. Drives the collection prefix + fn names. */
@@ -30,35 +30,44 @@ export const PARTICIPANTS_SUBCOLLECTION = 'participants'
  *  (the payoff matrix, which students are shown anyway). */
 export const CONFIG_DOC = 'main'
 
-/** pd_game_instances/{id}/truth/main — rules-denied to every client, forever.
- *  Holds the drawn round count (spec §3: never displayed). */
-export const TRUTH_DOC = 'main'
-
 /**
- * Doc id for ONE student's rules-denied truth, in the SAME truth/ collection:
- *   pd_game_instances/{iid}/truth/participant_{pid}   → { participant_id, strategy }
+ * Doc id for ONE student's rules-denied truth, in the truth/ collection:
+ *   pd_game_instances/{iid}/truth/participant_{pid}
+ *     → { participant_id, strategy, rounds }
  *
- * WHY HERE and not on the participant doc: the assigned bot strategy must never be
- * client-readable — the whole pedagogy is that the student INFERS it from play
- * (spec §5). The participant doc is already read-denied in rules, but truth/ is the
- * family's declared home for "never leaves the server", and putting it here means
- * the EXISTING `match /truth/{doc} { allow read, write: if false }` block covers it
- * with no rules change at all.
+ * ⚠ THIS IS THE ONLY TRUTH DOC PD WRITES. There is deliberately no instance-level
+ * `truth/main`: the round count used to live there, shared by the whole class, and
+ * that was a leak — PD is played async across an assignment week, so the first
+ * student to finish could hand everyone else a KNOWN last round, which is exactly
+ * the backward induction the hidden horizon exists to prevent (spec §3). Both draws
+ * are now per student. Nothing reads an instance-level count; if you find code that
+ * does, it is stale, not a fallback.
  *
- * WHY ONE DOC PER STUDENT and not a map on truth/main: a shared map would put every
- * student's first-touch assignment in contention on a single document at class
- * start. Per-student docs make the assignment transaction contend with nobody.
+ * WHY HERE and not on the participant doc: neither the assigned bot strategy nor the
+ * round count may be client-readable — the whole pedagogy is that the student INFERS
+ * the strategy from play (spec §5) and never knows when the game ends (spec §3). The
+ * participant doc is already read-denied in rules, but truth/ is the family's
+ * declared home for "never leaves the server", and putting it here means the
+ * EXISTING `match /truth/{doc} { allow read, write: if false }` block covers it with
+ * no rules change at all.
  *
- * The `participant_` prefix keeps the id space disjoint from TRUTH_DOC ('main'), so
- * a student whose participant_id is literally "main" cannot collide with it.
+ * WHY ONE DOC PER STUDENT and not a shared map: a shared map would put every
+ * student's first-touch draw in contention on a single document at class start.
+ * Per-student docs make the transaction contend with nobody.
+ *
+ * The `participant_` prefix keeps the id space disjoint from any future
+ * instance-level doc, so a student whose participant_id is literally "main" cannot
+ * collide with one.
  */
 export function truthParticipantDoc(participantId: string): string {
   return `participant_${participantId}`
 }
 
 // ── Round count (spec §3) ──────────────────────────────────────────────────────
-// Drawn uniformly in the instance's [minRounds, maxRounds] per instance, ONCE, and
-// stored in truth/main. Students are told the RANGE and never the draw.
+// Drawn uniformly in the instance's [minRounds, maxRounds] per PARTICIPANT, ONCE,
+// and stored in that student's truth/participant_{pid}. Students are told the RANGE
+// and never the draw — and, because the draw is per student, knowing a classmate's
+// count tells them nothing about their own.
 //
 // The RANGE is instructor-configurable (Slice 5); these are only the shipped
 // defaults. HARD_MIN/HARD_MAX bound what any config may set — a range of [0, 5000]
@@ -129,11 +138,11 @@ export interface PdConfig {
   debriefPrompt: string
   /**
    * Optional determinism seed (architecture §8, Newsvendor notes). Blank/absent =
-   * real randomness. Set = every draw is derived from (seed, instance) and
-   * (seed, participant_id), so a harness run is reproducible while draws stay
-   * independent across students. Non-secret: knowing the seed reveals nothing a
-   * student could act on without also knowing the derivation, and the values it
-   * drives (round count, strategy) live in truth/ regardless.
+   * real randomness. Set = both draws are derived from (seed, participant_id), so a
+   * harness run is reproducible while draws stay independent across students.
+   * Non-secret: knowing the seed reveals nothing a student could act on without also
+   * knowing the derivation, and the values it drives (round count, strategy) live in
+   * truth/ regardless.
    */
   seed: string | null
 }

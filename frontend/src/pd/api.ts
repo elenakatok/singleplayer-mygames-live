@@ -217,8 +217,9 @@ export type PdFirstMoveOutcome = {
 export type PdReportData = {
   ok: boolean
   scored: boolean
-  /** The drawn round count — the cooperation chart's x-axis. Instructor-only. */
-  roundCount: number
+  /** The longest game played in this instance — the cooperation chart's x-axis.
+   *  NOT a horizon: each student draws their own and none of them is reported. */
+  maxRoundsPlayed: number
   payoffs: PdPayoffs
   labels: PdMoveLabels
   /** The instance's unit word, so the roster and charts label their numbers the same
@@ -277,9 +278,10 @@ export type PdConfigResult = {
   /** Read-only preview of what the CURRENT matrix derives — instructor-side, so it
    *  may include the answer key. Not editable: change the matrix instead. */
   derivedKcPreview: { field: string; prompt: string; options: { value: string; label: string }[]; correct_value?: string }[]
-  /** Whether the hidden round count has been drawn yet. A BOOLEAN — never the number,
-   *  even here. Drives the "range edits will not move this instance" notice. */
-  roundsDrawn: boolean
+  /** Whether ANY student has drawn their hidden round count yet — i.e. whether
+   *  anyone has launched. A BOOLEAN — never a number, even here. Drives the "range
+   *  edits will not reach students already playing" notice. */
+  anyRoundsDrawn: boolean
 }
 
 /** Every editable setting for the instance. */

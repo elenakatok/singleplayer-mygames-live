@@ -48,11 +48,14 @@ beforeAll(async () => {
     const fs = ctx.firestore()
     await fs.doc(`pd_game_instances/${IID}`).set({ created_at: 1 })
     await fs.doc(`pd_game_instances/${IID}/config/main`).set({ payoff_cc: 1 })
-    // The undisclosed round count lives here, never in config.
+    // A stray instance-level doc. PD no longer writes one — both draws are per
+    // student — but the rule covers the WHOLE truth/ collection, and this pins that:
+    // anything anyone ever puts there is denied, named `main` or not.
     await fs.doc(`pd_game_instances/${IID}/truth/main`).set({ rounds: 14 })
-    // Per-student truth: the assigned bot strategy, one doc per student, in the
-    // SAME truth/ collection (see config.ts truthParticipantDoc).
-    await fs.doc(`pd_game_instances/${IID}/truth/participant_${STU_A}`).set({ participant_id: STU_A, strategy: 'grim' })
+    // Per-student truth: this student's bot strategy AND their drawn round count,
+    // one doc per student, in the truth/ collection (see config.ts
+    // truthParticipantDoc). Both are what the pedagogy depends on staying hidden.
+    await fs.doc(`pd_game_instances/${IID}/truth/participant_${STU_A}`).set({ participant_id: STU_A, strategy: 'grim', rounds: 14 })
     // A participant doc as later slices will shape it: strategy + history.
     await fs.doc(`pd_game_instances/${IID}/participants/${STU_A}`).set({ participant_id: STU_A, strategy: 'grim' })
     await fs.doc(`pd_game_instances/${IID}/participants/${STU_B}`).set({ participant_id: STU_B, strategy: 'tft' })
@@ -97,15 +100,16 @@ describe('truth/ denied to ALL clients — including an authenticated instructor
   })
 })
 
-describe('per-student truth (the assigned bot strategy) is denied to everyone', () => {
-  // truth/participant_{pid} — the strategy assignment. The pedagogy is that the
-  // student INFERS which bot they face, so this must be unreadable by the student
-  // it belongs to, by their classmates, and by the instructor's browser alike.
+describe('per-student truth (bot strategy + drawn round count) is denied to everyone', () => {
+  // truth/participant_{pid} — the strategy assignment AND this student's drawn round
+  // count. The pedagogy is that the student INFERS which bot they face and never
+  // knows when the game ends, so this must be unreadable by the student it belongs
+  // to, by their classmates, and by the instructor's browser alike.
   // It sits in truth/ precisely so the existing `match /truth/{doc}` block covers
   // it; these tests keep that coverage honest if the block is ever narrowed.
   const own = `pd_game_instances/${IID}/truth/participant_${STU_A}`
 
-  it('the student it belongs to CANNOT read their own strategy', async () => {
+  it('the student it belongs to CANNOT read their own strategy or horizon', async () => {
     await assertFails(student(STU_A, IID).doc(own).get())
   })
   it('another student CANNOT read it', async () => {

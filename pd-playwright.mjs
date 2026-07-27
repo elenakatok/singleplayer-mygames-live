@@ -193,9 +193,10 @@ async function openInstance(gid, pid, seed) {
   })
   await callFn('pdBootstrap', asStudent(gid, pid))
   await callFn('pdGetState', asStudent(gid, pid))
-  const truth = await getDoc(`pd_game_instances/${gid}/truth/main`)
+  // Both draws are per student now — one rules-denied doc holds this student's
+  // horizon AND their strategy. There is no instance-level truth doc to read.
   const stu = await getDoc(`pd_game_instances/${gid}/truth/participant_${pid}`)
-  return { rounds: Number(truth?.rounds?.integerValue), strategy: stu?.strategy?.stringValue }
+  return { rounds: Number(stu?.rounds?.integerValue), strategy: stu?.strategy?.stringValue }
 }
 
 /** First-touches students until one of each strategy is found. */

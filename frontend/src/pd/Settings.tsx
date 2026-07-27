@@ -272,14 +272,17 @@ export default function Settings() {
         )}
         <p style={hint}>
           The actual number of rounds is drawn at random inside this range, once per
-          instance, and is <strong>never shown to students</strong> — they are told the
-          range and nothing more. Set both to the same number for a fixed-length game.
+          <strong> student</strong>, and is <strong>never shown to students</strong> —
+          they are told the range and nothing more. Because each student draws their
+          own, one who finishes early cannot tell the class how long the game is. Set
+          both to the same number for a fixed-length game.
         </p>
-        {cfg.roundsDrawn && (
+        {cfg.anyRoundsDrawn && (
           <p data-testid="pd-set-rounds-drawn" style={{ ...hint, color: colors.warnBannerText }}>
-            ⚠ This instance has already drawn its number of rounds. Changing the range
-            here will <strong>not</strong> change it — students already playing keep the
-            game they started. Use a fresh instance to apply a new range.
+            ⚠ Students have already started, and each has drawn their number of rounds.
+            Changing the range here will <strong>not</strong> change theirs — students
+            already playing keep the game they started. A new range applies to students
+            who have not launched yet.
           </p>
         )}
       </Section>

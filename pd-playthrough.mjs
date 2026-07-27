@@ -243,9 +243,10 @@ async function main() {
   const PAYOFFS = { both_cooperate: 1, sucker: 9, temptation: 0, both_defect: 6 }
 
   /** Seeds config/main, then first-touches `pid` and reports the SERVER'S TRUTH for
-   *  the instance — read straight from the rules-denied truth/ docs, which is the only
-   *  place it exists. The harness knows the round count and the strategy; the student
-   *  never does, and §11 is what proves that. */
+   *  THAT STUDENT — read straight from their rules-denied truth/participant_* doc,
+   *  which is the only place it exists. Both the round count and the strategy are
+   *  per student now; the harness knows them, the student never does, and §10 is what
+   *  proves that. */
   async function openInstance(gid, pid, seed) {
     await putDoc(`pd_game_instances/${gid}/config/main`, {
       seed: { stringValue: seed },
@@ -253,11 +254,10 @@ async function main() {
     })
     await callFn('pdBootstrap', asStudent(gid, pid))
     const state = await callFn('pdGetState', asStudent(gid, pid))
-    const truth = await getDoc(`pd_game_instances/${gid}/truth/main`)
     const stu = await getDoc(`pd_game_instances/${gid}/truth/participant_${pid}`)
     return {
       state,
-      rounds: Number(truth?.rounds?.integerValue),
+      rounds: Number(stu?.rounds?.integerValue),
       strategy: stu?.strategy?.stringValue,
     }
   }
@@ -282,7 +282,7 @@ async function main() {
 
   check(opened.state.ok, 'pdGetState succeeds on a student who has never played')
   check(Number.isInteger(opened.rounds) && opened.rounds >= 10 && opened.rounds <= 20,
-    `first touch drew the instance round count into truth/main (${opened.rounds} ∈ [10,20])`)
+    `first touch drew THIS STUDENT'S round count into truth/participant_* (${opened.rounds} ∈ [10,20])`)
   check(opened.strategy === 'tft' || opened.strategy === 'grim',
     `first touch assigned a strategy into truth/participant_* (${opened.strategy})`)
 
@@ -295,10 +295,28 @@ async function main() {
 
   // A second call must not redraw anything — once-only is the whole init contract.
   await callFn('pdGetState', asStudent(GID2, FIRST))
-  const truthAgain = await getDoc(`pd_game_instances/${GID2}/truth/main`)
   const stuAgain = await getDoc(`pd_game_instances/${GID2}/truth/participant_${FIRST}`)
-  check(Number(truthAgain?.rounds?.integerValue) === opened.rounds, 'a second pdGetState does NOT redraw the round count')
+  check(Number(stuAgain?.rounds?.integerValue) === opened.rounds, 'a second pdGetState does NOT redraw the round count')
   check(stuAgain?.strategy?.stringValue === opened.strategy, 'a second pdGetState does NOT reassign the strategy')
+
+  // ⚠ THE LEAK FIX, at the top of the loop coverage: the horizon is drawn PER
+  // STUDENT, so classmates in ONE instance do not share a last round. It used to be
+  // an instance-level draw, and the first student to finish could hand the class a
+  // known horizon — restoring exactly the backward induction spec §3 exists to
+  // prevent. The legacy instance-level doc must not exist at all: a fallback read
+  // path would silently mask a consumer this fix missed.
+  const classHorizons = new Set()
+  for (let i = 0; i < 10; i++) {
+    const pid = `pd-horizon-${i}`
+    await callFn('pdGetState', asStudent(GID2, pid))
+    const t = await getDoc(`pd_game_instances/${GID2}/truth/participant_${pid}`)
+    classHorizons.add(Number(t?.rounds?.integerValue))
+  }
+  check(classHorizons.size > 1,
+    `students in ONE instance draw DIFFERENT horizons (${[...classHorizons].join(', ')})`)
+  const legacyTruth = await getDoc(`pd_game_instances/${GID2}/truth/main`)
+  check(legacyTruth === null,
+    'and the legacy instance-level truth/main is never written (no fallback read path)')
 
   // ── 6/7. Full playthroughs to game over, against BOTH strategies ────────────
   const GID3 = `pd-play-${stamp}`
@@ -455,10 +473,12 @@ async function main() {
   check(finishedState.result.history.length === lockOpen.rounds, 'and gets their full final history')
 
   // ── 10. ⚠ THE LEAK ASSERTIONS — the spec's hard constraint ──────────────────
-  // The round count and the strategy are server-side truth. If either can be
-  // recovered from any response, the pedagogy is broken: the student would know when
-  // the last round is (and so defect on it), or know which bot they face without
-  // inferring it. These checks are the reason the callables return whitelists.
+  // The round count and the strategy are server-side truth, and both are now drawn
+  // PER STUDENT. If either can be recovered from any response, the pedagogy is
+  // broken: the student would know when their last round is (and so defect on it), or
+  // know which bot they face without inferring it. These checks are the reason the
+  // callables return whitelists. The per-student draw closes the OTHER route to the
+  // same knowledge — a classmate who has already finished (see §5).
   console.log('\n[10] ⚠ No leak: not the round count, not the strategy, ever')
 
   const GID6 = `pd-leak-${stamp}`
@@ -477,7 +497,7 @@ async function main() {
     'studentMove', 'botMove', 'studentYears', 'botYears', 'studentTotal', 'botTotal']
 
   /** The whole-tree audit: exact key allowlist, no forbidden word anywhere in the
-   *  serialized payload, and no number that could be the drawn round count. */
+   *  serialized payload, and no number that could be THIS STUDENT'S drawn count. */
   function auditNoLeak(payload, allowedKeys, where) {
     const keys = [...deepKeys(payload)]
     const extra = keys.filter(k => !allowedKeys.includes(k))
@@ -488,11 +508,12 @@ async function main() {
     const hit = forbidden.filter(w => json.includes(w))
     check(hit.length === 0, `${where}: no forbidden word in the payload (found: ${JSON.stringify(hit)})`)
 
-    // The round count is an integer ≥ 10; every payoff in this instance is < 10 and
-    // only ONE round has been played, so every legitimate number left is < 10 ONCE the
-    // two declared range bounds are removed. Any survivor ≥ 10 could only be the draw,
-    // under ANY key name. Stripping minRounds/maxRounds is sound precisely because the
-    // key allowlist above proves the range cannot appear anywhere else.
+    // The count is an integer ≥ 10; every payoff in this instance is < 10 and only ONE
+    // round has been played, so every legitimate number left is < 10 ONCE the two
+    // declared range bounds are removed. Any survivor ≥ 10 could only be this
+    // student's draw, under ANY key name. Stripping minRounds/maxRounds is sound
+    // precisely because the key allowlist above proves the range cannot appear
+    // anywhere else.
     const stripped = JSON.parse(JSON.stringify(payload))
     delete stripped.minRounds
     delete stripped.maxRounds
@@ -528,6 +549,8 @@ async function main() {
   const leakTruth = await getDoc(`pd_game_instances/${GID6}/truth/participant_${KPID}`)
   check(leakTruth?.strategy?.stringValue === leak.strategy,
     'the strategy lives in the rules-denied truth/ doc (never on the participant doc)')
+  check(Number(leakTruth?.rounds?.integerValue) === leak.rounds,
+    'and so does this student’s round count — same rules-denied doc, same denial')
   const leakParticipant = await getDoc(`pd_game_instances/${GID6}/participants/${KPID}`)
   check(leakParticipant?.strategy === undefined, 'the participant doc carries no strategy field at all')
 
@@ -702,14 +725,21 @@ async function main() {
   // ⚠ The instructor-only fields. This is the ONE callable allowed to carry them.
   check(finRow.strategy === 'tft' || finRow.strategy === 'grim',
     `the roster carries the strategy faced (${finRow?.strategy}) — instructor-only, by design`)
-  check(R.roundCount === scoreTruth.rounds, `carries the drawn round count (${R.roundCount}) for the chart x-axis`)
+  // ⚠ NOT a drawn horizon any more: horizons are per student, so the chart's x-axis
+  // is the LONGEST GAME ACTUALLY PLAYED. Here that is the finisher's game (the
+  // quitter stopped at 2), so it coincides with their count — but it is derived from
+  // the games, not read from any truth doc.
+  check(R.maxRoundsPlayed === scoreTruth.rounds,
+    `carries the longest game played (${R.maxRoundsPlayed}) for the chart x-axis`)
+  check(R.roundCount === undefined,
+    '⚠ and the old instance-level roundCount field is GONE, not merely unused')
   check(finRow.participation_score === 0 && quitRow.participation_score === -2,
     'participation scores are reflected after Score & Record')
   check(typeof finRow.debrief === 'string' || finRow.debrief === null, 'the debrief paragraph is carried for Tier 2')
 
   // Tier 3a — one point per round, both series, denominators included.
   const coop = R.charts.cooperation
-  check(coop.length === R.roundCount, `cooperation chart has one point per round (${coop.length})`)
+  check(coop.length === R.maxRoundsPlayed, `cooperation chart has one point per round played (${coop.length})`)
   check(coop.every(p => 'tft' in p && 'grim' in p && 'tftN' in p && 'grimN' in p),
     'each point carries both series and both denominators')
   check(coop[0].tftN + coop[0].grimN === 2, 'round 1 counts the two students who played it')
@@ -731,7 +761,9 @@ async function main() {
   const studentJson = JSON.stringify(studentState.result).toLowerCase()
   check(!studentJson.includes('tft') && !studentJson.includes('grim') && !studentJson.includes('strategy'),
     '⚠ the STUDENT callable still carries none of it — the report is a different audience, not a relaxed rule')
-  check(studentState.result.roundCount === undefined && studentState.result.charts === undefined,
+  check(studentState.result.roundCount === undefined
+    && studentState.result.maxRoundsPlayed === undefined
+    && studentState.result.charts === undefined,
     '⚠ …and no round count or chart data leaked into the student payload')
 
   // ── 14. Settings: pdGetConfig / pdUpdateConfig (Slice 5) ────────────────────
@@ -745,7 +777,7 @@ async function main() {
   check(cfg0.result.minRounds === 10 && cfg0.result.maxRounds === 20, 'defaults to the shipped [10,20] range')
   check(cfg0.result.unit === 'years', 'defaults to the shipped unit')
   check(cfg0.result.kcEnabled === true && cfg0.result.debriefEnabled === true, 'KC and debrief default ON')
-  check(cfg0.result.roundsDrawn === false, 'reports that the round count has NOT been drawn yet')
+  check(cfg0.result.anyRoundsDrawn === false, 'reports that NO student has drawn a round count yet')
   check(cfg0.result.derivedKcPreview.length === 4, 'previews the four derived KC questions')
   check(cfg0.result.rounds === undefined && !JSON.stringify(cfg0.result).includes('"rounds"'),
     '⚠ even the INSTRUCTOR settings page never receives the drawn count — only whether it exists')
@@ -801,18 +833,30 @@ async function main() {
   check(sQs.result.kc.derived[0].prompt.includes('Share'), 'the student\'s KC uses the new labels')
   check(!JSON.stringify(sQs.result).includes('correct_value'), '…and still ships no answer key')
 
-  // ── ⚠ A RANGE EDIT MUST NOT REDRAW AN INITIALIZED INSTANCE ────────────────
-  const drawnTruth = await getDoc(`pd_game_instances/${GIDS}/truth/main`)
+  // ── ⚠ A RANGE EDIT MUST NOT REDRAW AN ALREADY-LAUNCHED STUDENT ────────────
+  // Slice 5's no-redraw rule, now enforced at PARTICIPANT level: the student who has
+  // already launched keeps their horizon, and the new range reaches only students who
+  // have not.
+  const drawnTruth = await getDoc(`pd_game_instances/${GIDS}/truth/participant_${SPID}`)
   const drawn = Number(drawnTruth?.rounds?.integerValue)
   check(drawn >= 3 && drawn <= 4, `the draw used the configured range (${drawn} ∈ [3,4])`)
   const cfgAfterDraw = await callFn('pdGetConfig', asDev(GIDS))
-  check(cfgAfterDraw.result.roundsDrawn === true, 'settings now reports the count as drawn')
+  check(cfgAfterDraw.result.anyRoundsDrawn === true, 'settings now reports that someone has started')
 
   await callFn('pdUpdateConfig', { ...asDev(GIDS), minRounds: 15, maxRounds: 20 })
   await callFn('pdGetState', asStudent(GIDS, SPID))   // a touch that could have redrawn
-  const truthAfterRangeChange = await getDoc(`pd_game_instances/${GIDS}/truth/main`)
+  const truthAfterRangeChange = await getDoc(`pd_game_instances/${GIDS}/truth/participant_${SPID}`)
   check(Number(truthAfterRangeChange?.rounds?.integerValue) === drawn,
-    `⚠ widening the range did NOT redraw the count (still ${drawn}) — a mid-game student keeps their horizon`)
+    `⚠ widening the range did NOT redraw the launched student (still ${drawn}) — they keep their horizon`)
+
+  // …and a student who had NOT launched draws inside the NEW range.
+  const LATE = 'pd-settings-latecomer'
+  await callFn('pdBootstrap', asStudent(GIDS, LATE))
+  await callFn('pdGetState', asStudent(GIDS, LATE))
+  const lateTruth = await getDoc(`pd_game_instances/${GIDS}/truth/participant_${LATE}`)
+  const lateDrawn = Number(lateTruth?.rounds?.integerValue)
+  check(lateDrawn >= 15 && lateDrawn <= 20,
+    `a student who launches AFTER the edit draws in the new range (${lateDrawn} ∈ [15,20])`)
 
   // ── Added KC questions: separate source, separate grading ─────────────────
   const GIDA = `pd-added-${stamp}`

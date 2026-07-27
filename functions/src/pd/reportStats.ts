@@ -71,8 +71,10 @@ export function cooperationRate(row: PdGameRow): number | null {
  * lower, and `tftN`/`grimN` are returned so the chart can say so.
  *
  * @param rows       every participant's game
- * @param roundCount the instance's drawn round count — the x-axis length. Instructor
- *                   -side, so naming it here is fine.
+ * @param roundCount how many rounds the x-axis spans — the LONGEST game played in
+ *                   this instance. Horizons are drawn per student (init.ts), so
+ *                   there is no instance-wide count to pass here; the caller derives
+ *                   this from the games themselves.
  */
 export function cooperationByRound(rows: readonly PdGameRow[], roundCount: number): CooperationPoint[] {
   const out: CooperationPoint[] = []

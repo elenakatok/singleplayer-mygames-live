@@ -2,7 +2,7 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { extractInstructorGameId } from '@mygames/game-server'
 import {
-  PD_CORS_ORIGINS, INSTANCES_COLLECTION, CONFIG_DOC, TRUTH_DOC,
+  PD_CORS_ORIGINS, INSTANCES_COLLECTION, CONFIG_DOC,
   HARD_MIN_ROUNDS, HARD_MAX_ROUNDS, loadPdConfig, parseAddedKcQuestion,
   type PdAddedKcQuestion,
 } from './config'
@@ -21,10 +21,11 @@ import { resolveKcQuestions } from './questions'
 //              are RETURNED here read-only so the settings page can preview what the
 //              current matrix produces.
 //   fixed      the bot strategies (TFT/GRIM) — not configurable, by decision
-//   truth      the DRAWN round count — never returned here, never editable. Only its
-//              range is. Editing the range does not redraw an initialized instance
-//              (init.ts); `roundsDrawn` below tells the instructor which state they
-//              are in without revealing the number.
+//   truth      the DRAWN round counts — never returned here, never editable. Only
+//              their range is. Each STUDENT draws their own on first launch
+//              (init.ts) and a range edit never redraws a student already playing;
+//              `anyRoundsDrawn` below tells the instructor whether anyone has
+//              started, without revealing any student's number.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const pdGetConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) => {
@@ -36,9 +37,13 @@ export const pdGetConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) => 
 
   const db = admin.firestore()
   const instanceRef = db.collection(INSTANCES_COLLECTION).doc(gameInstanceId)
-  const [configSnap, truthSnap] = await Promise.all([
+  const [configSnap, drawnSnap] = await Promise.all([
     instanceRef.collection('config').doc(CONFIG_DOC).get(),
-    instanceRef.collection('truth').doc(TRUTH_DOC).get(),
+    // "Has ANY student drawn a horizon yet?" — one indexed hit, not a scan, and
+    // deliberately not a read of a specific document: horizons are per student
+    // (init.ts), so there is no instance-level count to look at. Only participant
+    // truth docs carry a numeric `rounds`, so a single match answers the question.
+    instanceRef.collection('truth').where('rounds', '>', 0).limit(1).get(),
   ])
 
   const config = loadPdConfig(configSnap.data())
@@ -65,11 +70,11 @@ export const pdGetConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) => 
       options: q.options ?? [],
       correct_value: q.correct_value,
     })),
-    /** Has the hidden round count already been drawn for this instance? A BOOLEAN —
-     *  never the number, even for the instructor's settings page (they have the
-     *  reports for that). Drives the "range edits will not affect this instance"
-     *  warning. */
-    roundsDrawn: typeof truthSnap.data()?.rounds === 'number',
+    /** Has ANY student drawn their hidden round count yet — i.e. has anyone
+     *  launched? A BOOLEAN — never a number, and never a count of students, even for
+     *  the instructor's settings page. Drives the "range edits will not reach
+     *  students already playing" warning. */
+    anyRoundsDrawn: !drawnSnap.empty,
   }
 })
 
@@ -189,9 +194,13 @@ export const pdUpdateConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
 
   // Return the re-read effective config, so the page shows what was actually stored
   // (including any defaulting) rather than what it hoped it sent.
-  const [configSnap, truthSnap] = await Promise.all([
+  const [configSnap, drawnSnap] = await Promise.all([
     instanceRef.collection('config').doc(CONFIG_DOC).get(),
-    instanceRef.collection('truth').doc(TRUTH_DOC).get(),
+    // "Has ANY student drawn a horizon yet?" — one indexed hit, not a scan, and
+    // deliberately not a read of a specific document: horizons are per student
+    // (init.ts), so there is no instance-level count to look at. Only participant
+    // truth docs carry a numeric `rounds`, so a single match answers the question.
+    instanceRef.collection('truth').where('rounds', '>', 0).limit(1).get(),
   ])
   const config = loadPdConfig(configSnap.data())
 
@@ -212,6 +221,6 @@ export const pdUpdateConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
       options: q.options ?? [],
       correct_value: q.correct_value,
     })),
-    roundsDrawn: typeof truthSnap.data()?.rounds === 'number',
+    anyRoundsDrawn: !drawnSnap.empty,
   }
 })

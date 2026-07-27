@@ -7,20 +7,25 @@ import { STRATEGIES } from '../src/pd/strategy'
 // Pure draw + config-load tests (no emulator). Runs under `npm test`.
 // The TRANSACTIONAL once-only behaviour is covered in pdInit.emulator.test.ts,
 // against a real Firestore — a fake transaction could not prove serializability.
+//
+// ⚠ THE ROUND COUNT IS KEYED ON THE PARTICIPANT, not the instance. It used to be an
+// instance-level draw, which leaked the horizon: PD is played async across a week,
+// so the first student to finish could hand the class a KNOWN last round. These
+// tests therefore check independence ACROSS STUDENTS as hard as reproducibility.
 
 describe('drawRoundCount — always a legal round count', () => {
   it('unseeded draws stay in [10, 20] inclusive, over many draws', () => {
     for (let i = 0; i < 5000; i++) {
-      const n = drawRoundCount(null, `inst-${i}`, MIN_ROUNDS, MAX_ROUNDS)
+      const n = drawRoundCount(null, `stu-${i}`, MIN_ROUNDS, MAX_ROUNDS)
       expect(Number.isInteger(n)).toBe(true)
       expect(n).toBeGreaterThanOrEqual(MIN_ROUNDS)
       expect(n).toBeLessThanOrEqual(MAX_ROUNDS)
     }
   })
 
-  it('seeded draws stay in [10, 20] inclusive, over many instances', () => {
+  it('seeded draws stay in [10, 20] inclusive, over many students', () => {
     for (let i = 0; i < 5000; i++) {
-      const n = drawRoundCount('seed-1', `inst-${i}`, MIN_ROUNDS, MAX_ROUNDS)
+      const n = drawRoundCount('seed-1', `stu-${i}`, MIN_ROUNDS, MAX_ROUNDS)
       expect(n).toBeGreaterThanOrEqual(MIN_ROUNDS)
       expect(n).toBeLessThanOrEqual(MAX_ROUNDS)
     }
@@ -28,27 +33,45 @@ describe('drawRoundCount — always a legal round count', () => {
 
   it('reaches BOTH endpoints — the range is inclusive, not off by one', () => {
     const seen = new Set<number>()
-    for (let i = 0; i < 5000; i++) seen.add(drawRoundCount('endpoints', `inst-${i}`, MIN_ROUNDS, MAX_ROUNDS))
+    for (let i = 0; i < 5000; i++) seen.add(drawRoundCount('endpoints', `stu-${i}`, MIN_ROUNDS, MAX_ROUNDS))
     expect(seen.has(MIN_ROUNDS)).toBe(true)
     expect(seen.has(MAX_ROUNDS)).toBe(true)
     expect(Math.min(...seen)).toBe(MIN_ROUNDS)
     expect(Math.max(...seen)).toBe(MAX_ROUNDS)
   })
 
-  it('same seed + same instance → same draw (reproducible harness runs)', () => {
-    for (const iid of ['a', 'b', 'instance-42']) {
-      const first = drawRoundCount('fixed-seed', iid, MIN_ROUNDS, MAX_ROUNDS)
-      for (let i = 0; i < 100; i++) expect(drawRoundCount('fixed-seed', iid, MIN_ROUNDS, MAX_ROUNDS)).toBe(first)
+  it('same seed + same STUDENT → same draw (reproducible harness runs)', () => {
+    for (const pid of ['a', 'b', 'student-42']) {
+      const first = drawRoundCount('fixed-seed', pid, MIN_ROUNDS, MAX_ROUNDS)
+      for (let i = 0; i < 100; i++) expect(drawRoundCount('fixed-seed', pid, MIN_ROUNDS, MAX_ROUNDS)).toBe(first)
     }
   })
 
-  it('different seeds generally give different draws for one instance', () => {
-    const draws = new Set(Array.from({ length: 200 }, (_, i) => drawRoundCount(`seed-${i}`, 'inst-1', MIN_ROUNDS, MAX_ROUNDS)))
+  it('⚠ DIFFERENT STUDENTS under ONE seed get different counts — the leak fix', () => {
+    // The whole point of the per-participant draw: a classmate's horizon says nothing
+    // about your own. An instance-level draw would collapse this set to one value.
+    const draws = new Set(Array.from({ length: 200 }, (_, i) =>
+      drawRoundCount('one-seed', `stu-${i}`, MIN_ROUNDS, MAX_ROUNDS)))
+    expect(draws.size).toBeGreaterThan(5)
+  })
+
+  it('and they spread across the whole range rather than clustering', () => {
+    const counts = new Map<number, number>()
+    for (let i = 0; i < 2000; i++) {
+      const n = drawRoundCount('spread', `stu-${i}`, MIN_ROUNDS, MAX_ROUNDS)
+      counts.set(n, (counts.get(n) ?? 0) + 1)
+    }
+    expect(counts.size).toBe(MAX_ROUNDS - MIN_ROUNDS + 1)
+    for (const c of counts.values()) expect(c).toBeGreaterThan(60)  // ~182 expected each
+  })
+
+  it('different seeds generally give different draws for one student', () => {
+    const draws = new Set(Array.from({ length: 200 }, (_, i) => drawRoundCount(`seed-${i}`, 'stu-1', MIN_ROUNDS, MAX_ROUNDS)))
     expect(draws.size).toBeGreaterThan(1)
   })
 
   it('unseeded is NOT deterministic (real randomness when no seed is set)', () => {
-    const draws = new Set(Array.from({ length: 500 }, () => drawRoundCount(null, 'inst-1', MIN_ROUNDS, MAX_ROUNDS)))
+    const draws = new Set(Array.from({ length: 500 }, () => drawRoundCount(null, 'stu-1', MIN_ROUNDS, MAX_ROUNDS)))
     expect(draws.size).toBeGreaterThan(1)
   })
 })
@@ -137,8 +160,8 @@ describe('loadPdConfig — stored over defaults', () => {
   it('a numeric seed normalizes to its string form — 7 and "7" draw alike', () => {
     expect(loadPdConfig({ seed: 7 }).seed).toBe('7')
     expect(loadPdConfig({ seed: '7' }).seed).toBe('7')
-    expect(drawRoundCount(loadPdConfig({ seed: 7 }).seed, 'i', MIN_ROUNDS, MAX_ROUNDS))
-      .toBe(drawRoundCount(loadPdConfig({ seed: '7' }).seed, 'i', MIN_ROUNDS, MAX_ROUNDS))
+    expect(drawRoundCount(loadPdConfig({ seed: 7 }).seed, 'stu-1', MIN_ROUNDS, MAX_ROUNDS))
+      .toBe(drawRoundCount(loadPdConfig({ seed: '7' }).seed, 'stu-1', MIN_ROUNDS, MAX_ROUNDS))
   })
 
   it('custom labels are kept; blank ones fall back', () => {
@@ -157,7 +180,7 @@ describe('loadPdConfig — stored over defaults', () => {
 describe('drawRoundCount — the range is CONFIGURABLE (Slice 5)', () => {
   it('draws inside whatever range it is given, not the shipped default', () => {
     for (let i = 0; i < 500; i++) {
-      const n = drawRoundCount(null, `inst-${i}`, 3, 5)
+      const n = drawRoundCount(null, `stu-${i}`, 3, 5)
       expect(n).toBeGreaterThanOrEqual(3)
       expect(n).toBeLessThanOrEqual(5)
     }
@@ -165,11 +188,11 @@ describe('drawRoundCount — the range is CONFIGURABLE (Slice 5)', () => {
 
   it('reaches both endpoints of a custom range', () => {
     const seen = new Set<number>()
-    for (let i = 0; i < 3000; i++) seen.add(drawRoundCount('custom', `inst-${i}`, 4, 7))
+    for (let i = 0; i < 3000; i++) seen.add(drawRoundCount('custom', `stu-${i}`, 4, 7))
     expect([...seen].sort((a, b) => a - b)).toEqual([4, 5, 6, 7])
   })
 
   it('handles a single-value range (min === max) without dividing by zero', () => {
-    for (let i = 0; i < 50; i++) expect(drawRoundCount(null, `i-${i}`, 12, 12)).toBe(12)
+    for (let i = 0; i < 50; i++) expect(drawRoundCount(null, `stu-${i}`, 12, 12)).toBe(12)
   })
 })

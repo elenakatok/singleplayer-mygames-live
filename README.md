@@ -31,8 +31,8 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 > **no** callable response — both callables return hand-built whitelists, and
 > `pricing-playthrough.mjs` §10 audits every response tree for stray keys, forbidden
 > words, and any number that could be the horizon, then §10b greps the source that
-> builds those responses. Unlike PD the horizon is drawn **per student**, so the
-> first student to finish cannot tell the class how long the game is. Rounds also
+> builds those responses. The horizon is drawn **per student** (as PD's now is), so
+> the first student to finish cannot tell the class how long the game is. Rounds also
 > **submit-and-lock**: a resubmit for a played round returns the stored round and
 > writes nothing.
 
@@ -40,11 +40,13 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 > participation scoring + gradebook push, and the instructor dashboard + all three
 > report tiers.
 >
-> ⚠ **PD's two invariants, in code:** the instance's round count and the student's
-> bot strategy are server-side truth (`truth/…`, rules-denied) and appear in **no**
-> callable response — both callables return hand-built whitelists, and
+> ⚠ **PD's two invariants, in code:** the student's round count and their bot
+> strategy are server-side truth (`truth/participant_*`, rules-denied) and appear in
+> **no** callable response — both callables return hand-built whitelists, and
 > `pd-playthrough.mjs` §10 audits every response tree for stray keys, forbidden
-> words, and any number that could be the round count. Rounds also
+> words, and any number that could be the round count. **Both are drawn per
+> student**, so a classmate who finishes first cannot hand the class a known
+> horizon; PD writes no instance-level truth doc at all. Rounds also
 > **submit-and-lock**: a resubmit for a played round returns the stored round and
 > writes nothing.
 
@@ -108,7 +110,7 @@ npm run harness:pd          # HTTP  — server contract
 npm run harness:pd:browser  # BROWSER — the whole game, clicked through
 npm run harness:pennies
 npm run harness:poll
-npm run harness:pricing   # HTTP — Slice 0 scaffold contract
+npm run harness:pricing     # HTTP  — scaffold + the Slice 1 round loop
 ```
 
 The browser harness boots the Vite **dev** server itself (dev mode is what enables the

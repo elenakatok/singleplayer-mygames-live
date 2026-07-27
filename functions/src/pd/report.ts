@@ -2,7 +2,7 @@ import { onCall } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { extractInstructorGameId } from '@mygames/game-server'
 import {
-  PD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC, TRUTH_DOC,
+  PD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC,
   truthParticipantDoc, loadPdConfig,
 } from './config'
 import { isStrategy, type Strategy } from './strategy'
@@ -62,15 +62,13 @@ export const pdGetReport = onCall({ cors: PD_CORS_ORIGINS }, async (request) => 
   const db = admin.firestore()
   const instanceRef = db.collection(INSTANCES_COLLECTION).doc(gameInstanceId)
 
-  const [participantsSnap, truthSnap, configSnap, instanceSnap] = await Promise.all([
+  const [participantsSnap, configSnap, instanceSnap] = await Promise.all([
     instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).get(),
-    instanceRef.collection('truth').doc(TRUTH_DOC).get(),
     instanceRef.collection('config').doc(CONFIG_DOC).get(),
     instanceRef.get(),
   ])
 
   const config = loadPdConfig(configSnap.data())
-  const roundCount = typeof truthSnap.data()?.rounds === 'number' ? (truthSnap.data()!.rounds as number) : 0
   const scored = instanceSnap.data()?.finalized === true
 
   // Each student's strategy lives in its OWN truth doc (init.ts), so fetch them in one
@@ -117,16 +115,29 @@ export const pdGetReport = onCall({ cors: PD_CORS_ORIGINS }, async (request) => 
     }
   })
 
+  /**
+   * The cooperation chart's x-axis length: the LONGEST game anyone actually played.
+   *
+   * ⚠ It used to be the instance's drawn round count, read from truth/main. That
+   * document is gone: the horizon is drawn PER STUDENT now (init.ts), so there is no
+   * single instance-wide number to put on an axis — students in one instance
+   * legitimately finish at different rounds. Deriving it from the data is both the
+   * honest answer and the one that cannot go stale: the axis spans exactly the
+   * rounds there is something to plot for, and it never reveals an unplayed horizon.
+   */
+  const maxRoundsPlayed = gameRows.reduce((max, r) => Math.max(max, r.moves.length), 0)
+
   const charts: { cooperation: CooperationPoint[]; firstMove: FirstMoveOutcome[] } = {
-    cooperation: cooperationByRound(gameRows, roundCount),
+    cooperation: cooperationByRound(gameRows, maxRoundsPlayed),
     firstMove: outcomeByFirstMove(gameRows),
   }
 
   return {
     ok: true as const,
     scored,
-    /** The drawn round count — the cooperation chart's x-axis. Instructor-only. */
-    roundCount,
+    /** The longest game played in this instance — the cooperation chart's x-axis.
+     *  NOT a drawn horizon: horizons are per student and nobody's is reported. */
+    maxRoundsPlayed,
     payoffs: config.payoffs,
     labels: config.labels,
     /** The instance's unit word, so the roster/charts label their numbers the same

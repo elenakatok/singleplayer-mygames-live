@@ -182,7 +182,7 @@ export default function Reports() {
       disabled: played.length === 0,
       preview: played.length === 0
         ? <span style={{ color: '#94a3b8' }}>No rounds played yet.</span>
-        : <span>{data.roundCount} rounds — tit-for-tat vs GRIM</span>,
+        : <span>{data.maxRoundsPlayed} rounds — tit-for-tat vs GRIM</span>,
       onOpen: () => setActive('cooperation'),
     },
     {
