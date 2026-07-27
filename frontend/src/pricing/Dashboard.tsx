@@ -25,9 +25,9 @@ import { formatPrice, formatProfitM } from './format'
 // so a dashboard that did not say which one you were looking at would be genuinely
 // ambiguous. The rule is instructor-only and correct to show here (spec §10).
 //
-// PROFIT IS NOT GRADED (spec §7) — the profit columns are OUTCOMES sitting BESIDE,
-// never inside, the participation score. Both are on screen precisely so the
-// instructor can see the two are independent.
+// PROFIT IS NOT GRADED (spec §7) — the average-profit column is an OUTCOME, and the
+// participation score is deliberately NOT on this page at all, so the two can never
+// read as one number. Grading lives on the Reports page; this page is for chasing.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const tnum = { fontVariantNumeric: 'tabular-nums' as const }
@@ -44,7 +44,13 @@ const statusText = (r: PricingReportParticipant) =>
       : r.launched ? `In progress (${r.rounds_played} round${r.rounds_played === 1 ? '' : 's'})`
         : 'Not started'
 
-type SortKey = 'name' | 'status' | 'rounds' | 'avgPrice' | 'avgProfit' | 'total' | 'kc' | 'participation'
+// ⚠ FIVE COLUMNS, DELIBERATELY. Total profit, the KC score and the participation
+// score were here and were REMOVED: this page answers one mid-week question — who
+// still has not done it — and three more numeric columns pushed the status and the
+// progress off the readable width without helping answer it. Nothing was deleted from
+// the DATA: all three are still in pricingGetReport and still render in the Tier-1
+// report, which is where an instructor goes to grade rather than to chase.
+type SortKey = 'name' | 'status' | 'rounds' | 'avgPrice' | 'avgProfit'
 
 const num = (v: number | null) => v ?? 0
 
@@ -75,28 +81,6 @@ const COLUMNS: readonly SortableColumn<PricingReportParticipant, SortKey>[] = [
     render: r => <span style={tnum}>{profit(r.average_profit)}</span>,
     nullsLast: true, isNull: r => r.average_profit == null,
     compare: (a, b) => num(a.average_profit) - num(b.average_profit),
-  },
-  {
-    key: 'total', label: 'Total profit',
-    render: r => <span style={tnum}>{r.rounds_played === 0 ? '—' : formatProfitM(r.total_profit)}</span>,
-    nullsLast: true, isNull: r => r.rounds_played === 0,
-    compare: (a, b) => a.total_profit - b.total_profit,
-  },
-  {
-    key: 'kc', label: 'KC score',
-    render: r => (
-      <span style={tnum}>
-        {r.knowledge_check_score == null ? '—' : `${Math.round(r.knowledge_check_score * 100)}%`}
-      </span>
-    ),
-    nullsLast: true, isNull: r => r.knowledge_check_score == null,
-    compare: (a, b) => num(a.knowledge_check_score) - num(b.knowledge_check_score),
-  },
-  {
-    key: 'participation', label: 'Participation',
-    render: r => <span style={tnum}>{r.participation_score == null ? '—' : r.participation_score}</span>,
-    nullsLast: true, isNull: r => r.participation_score == null,
-    compare: (a, b) => num(a.participation_score) - num(b.participation_score),
   },
 ]
 
@@ -207,8 +191,9 @@ export default function Dashboard() {
             wrapHeaders
           />
           <p style={{ fontSize: '0.78rem', color: colors.textSecondary, marginTop: '0.6rem' }}>
-            The profit columns are OUTCOMES, never grades — participation is scored on
-            finishing the game (spec §7).
+            The profit column is an OUTCOME, never a grade — participation is scored on
+            finishing the game (spec §7). Total profit, knowledge-check scores and
+            participation scores are on the <strong>Reports</strong> page.
           </p>
         </div>
       )}

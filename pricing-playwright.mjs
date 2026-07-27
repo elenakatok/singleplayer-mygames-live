@@ -35,6 +35,9 @@
 //   • a ROBOT COHORT (spec §11) — every shipped play style driven through the real UI
 //     to a finished game, in both modes, then Score & Record over the cohort with the
 //     gradebook push signature-checked;
+//   • the LAUNCHER SPAWN PATH — the shipped driver run as a child process with the
+//     exact arguments the launcher's /launch-robots passes it, ending in a scorable
+//     cohort;
 //   • the INSTRUCTOR dashboard and all three report tiers against a deliberately
 //     MIXED population (finished / mid-game / never started, in both modes), with
 //     the Tier-1 rows and the Tier-3 per-round averages and denominators checked
@@ -830,8 +833,27 @@ async function main() {
     check(finRow.includes(wantAvgProfit),
       `Tier 1: …and their average profit per round is ${wantAvgProfit}`)
     const neverRow = rosterRows.find(r => /Not started/.test(r)) ?? ''
-    check((neverRow.match(/—/g) ?? []).length >= 3,
-      'Tier 1: a student who never started shows dashes, not zeros')
+    check((neverRow.match(/—/g) ?? []).length === 2,
+      'the never-started student shows a dash for BOTH averages, not zeros')
+
+    // ⚠ THE DASHBOARD IS FIVE COLUMNS. Total profit, KC score and participation were
+    // removed from this page on purpose — it answers "who still has not done it", and
+    // the grading numbers live on Reports. The data is untouched: the Tier-1 assertions
+    // further down read all three out of the same callable.
+    const headerRow = rosterRows[0] ?? ''
+    for (const gone of ['Total profit', 'KC score', 'Participation']) {
+      check(!headerRow.includes(gone), `the dashboard no longer shows a "${gone}" column`)
+    }
+    for (const kept of ['Name', 'Status', 'Rounds played', 'Avg posted price', 'Avg profit / round']) {
+      check(headerRow.includes(kept), `…and still shows "${kept}"`)
+    }
+
+    // …and the three removed values are still in the DATA, on the Reports page.
+    const reportForCols = await callFn('pricingGetReport', { _dev: { game_instance_id: GID_R } })
+    const finRep = reportForCols.result.participants.find(p => p.participant_id === 'pw-r-finisher')
+    check(finRep && typeof finRep.total_profit === 'number'
+      && finRep.knowledge_check_score !== undefined && 'participation_score' in finRep,
+      '⚠ total profit, KC score and participation are STILL in the report data — display-only change')
 
     // ── The reports page: three tiles, mode-labelled ──────────────────────────
     await pageI.goto(instrUrl('/reports', GID_R))
@@ -1068,6 +1090,67 @@ async function main() {
       check(rep.result.charts.prices.length >= 10 && rep.result.charts.prices[0].n === styles.length,
         `${modeName}: the class chart has every robot in round 1 (n=${rep.result.charts.prices[0]?.n})`)
     }
+
+
+    // ── 8. The launcher spawn path ─────────────────────────────────────────────
+    // The cohort above drives the styles; this drives the DRIVER — spawned as a child
+    // process with the same flags the launcher's /launch-robots hands it
+    // (--instance/--seats/--pace/--launcher), so the thing under test is the command
+    // Elena's button actually runs. Only the identity source differs: --emulator swaps
+    // the classroom-minted token for the dev ?_pid/_gid params, so nothing production
+    // is touched.
+    console.log('\n[8] Launcher spawn path — the shipped driver, as /launch-robots runs it')
+
+    const GID_L = `pw-launcher-${stamp}`
+    const LAUNCH_N = 3
+    for (let i = 1; i <= LAUNCH_N; i++) {
+      await openInstance(GID_L, `robot-${i}`, 'seed-launcher', false)
+    }
+
+    const driverPath = path.join(ROOT, 'bot', 'pricing-robot-driver.mjs')
+    const driverExit = await new Promise((resolveExit) => {
+      const child = spawn('node', [
+        driverPath,
+        '--instance', GID_L,
+        // --seats is what the launcher passes every driver (the flag name is uniform
+        // across the families); the pricing driver accepts it as an alias for
+        // --students, which is what it MEANS here.
+        '--seats', String(LAUNCH_N),
+        '--pace', 'fast',
+        '--emulator',
+        '--app', APP,
+        '--headless',
+      ], { cwd: path.dirname(driverPath), stdio: ['ignore', 'pipe', 'pipe'] })
+      let out = ''
+      child.stdout.on('data', d => { out += d })
+      child.stderr.on('data', d => { out += d })
+      child.on('exit', code => resolveExit({ code, out }))
+      child.on('error', e => resolveExit({ code: -1, out: e.message }))
+    })
+
+    check(driverExit.code === 0,
+      `the driver the launcher spawns runs to completion (exit ${driverExit.code})`)
+    if (driverExit.code !== 0) console.error(driverExit.out.slice(-1500))
+    check(/instance mode: Standard/.test(driverExit.out),
+      'it read the instance MODE off its own screen (Standard) rather than being told')
+    check(/3\/3 robots completed their game/.test(driverExit.out),
+      `all ${LAUNCH_N} robots finished their own game`)
+
+    // Scorable exactly like a real class — the property that makes robots useful.
+    const beforeL = cohortPushes
+    const scoredL = await callFn('pricingScoreAndRecord', {
+      _dev: { game_instance_id: GID_L, callback_url: COHORT_URL, callback_secret: COHORT_SECRET },
+    })
+    check(scoredL.ok && scoredL.result.finishers === LAUNCH_N,
+      `Score & Record counts all ${LAUNCH_N} launcher-spawned robots as finishers (${scoredL.result?.finishers})`)
+    check(cohortPushes - beforeL === LAUNCH_N,
+      `and pushes one gradebook row each (${cohortPushes - beforeL})`)
+
+    const repL = await callFn('pricingGetReport', { _dev: { game_instance_id: GID_L } })
+    check(repL.result.participants.every(p => p.completed && p.debrief),
+      'every launcher-spawned robot finished WITH a debrief paragraph')
+    check(repL.result.charts.prices.length >= 10,
+      'and they populated the class chart')
 
     cohortServer.close()
 
