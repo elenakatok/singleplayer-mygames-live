@@ -11,7 +11,13 @@
 // validation, and the LEAK ASSERTIONS that are the spec's hard constraint: no
 // response may carry the drawn round count or the competitor's rule.
 //
-// Later slices extend this file with the KC, the debrief, and Score & Record.
+// Slice 3 coverage (§11–§13): the knowledge check in BOTH modes (every question
+// SUBMITTED, not merely rendered — the answer key never ships, the per-question lock
+// holds, a wrong answer is recorded and scored, and the denominator is whatever was
+// served), the debrief with its competitor reveal (gated on the game being over), and
+// Score & Record — participation scoring, and the gradebook push with a verified
+// Bearer signature, including two instances of the SAME game producing two distinct
+// entries for one student.
 //
 // Run (clean start — the emulator boots fresh, runs this, and shuts down):
 //   npm run harness:pricing
@@ -22,6 +28,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import fs from 'node:fs'
+import http from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -165,6 +172,85 @@ function expectedCompetitorPrice(strategy, priorPrices, m) {
 
 /** Dollars agree to the cent — the server multiplies doubles in a different order. */
 const near = (a, b) => Math.abs(a - b) < 0.01
+
+// ── Mock classroom (the gradebook callback + the roster endpoint) ──────────────
+// Same shape pennies' and PD's harnesses use. In the emulator both URLs and the
+// secret are passed explicitly inside _dev, so nothing here depends on a deployed
+// classroom or on PRICING_CALLBACK_SECRET being present.
+//
+// ⚠ THIS MOCK CHECKS THE SIGNATURE. The real classroom authenticates every push with
+// `Authorization: Bearer <the game's callback secret>` (receiveGameResult), so a
+// harness that accepted anything would pass while the game pushed unsigned — which is
+// exactly how a push fails in production and nowhere else.
+const CALLBACK_SECRET = 'test-pricing-secret'
+let pushCount = 0
+const pushed = []
+const badlySigned = []
+const callbackServer = http.createServer((req, res) => {
+  let raw = ''
+  req.on('data', c => (raw += c))
+  req.on('end', () => {
+    const auth = req.headers.authorization ?? ''
+    if (auth !== `Bearer ${CALLBACK_SECRET}`) {
+      badlySigned.push(auth)
+      res.writeHead(401, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'bad signature' }))
+      return
+    }
+    pushCount++
+    try { pushed.push(JSON.parse(raw)) } catch { /* ignore */ }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true }))
+  })
+})
+await new Promise(r => callbackServer.listen(0, r))
+const CALLBACK_URL = `http://127.0.0.1:${callbackServer.address().port}/push`
+
+/** The roster the mock classroom hands back: the students who play, plus one who
+ *  never launches — the −2 floor case only a roster sync can create. */
+const ROSTER = [
+  { participant_id: 'pricing-finisher', name: 'Fin Isher', external_id: 'ext-1' },
+  { participant_id: 'pricing-quitter', name: 'Quinn Itter', external_id: 'ext-2' },
+  { participant_id: 'pricing-absent', name: 'Abby Sent', external_id: 'ext-3' },
+]
+const rosterServer = http.createServer((req, res) => {
+  let raw = ''
+  req.on('data', c => (raw += c))
+  req.on('end', () => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true, participants: ROSTER }))
+  })
+})
+await new Promise(r => rosterServer.listen(0, r))
+const ROSTER_URL = `http://127.0.0.1:${rosterServer.address().port}/roster`
+
+// ── The KC answer key, derived here from the SPEC (never imported) ─────────────
+// The server derives its questions from the instance's market; these are the same
+// derivations written out independently, so agreement means the two agree about the
+// spec rather than agreeing with themselves.
+
+const snapGrid = (v) => Math.min(MARKET.maxPrice, Math.max(MARKET.minPrice,
+  Math.round(v / MARKET.gridStep) * MARKET.gridStep))
+/** The two in-bounds prices the share/contribution questions are posed with. */
+const QP = (() => {
+  const theirs = snapGrid(MARKET.maxPrice - MARKET.gridStep)
+  return { yours: snapGrid(theirs - 2 * MARKET.gridStep), theirs }
+})()
+
+/** Standard mode (spec §8.1) — four questions. */
+const KC_STANDARD = [
+  { field: 'kc_base_share', correct: MARKET.sC.toFixed(4) },
+  { field: 'kc_share_gap', correct: (MARKET.sC + (QP.theirs - QP.yours) / MARKET.k).toFixed(4) },
+  { field: 'kc_contribution', correct: String(QP.yours - MARKET.cC) },
+  { field: 'kc_below_cost', correct: 'negative' },
+]
+
+/** PMG mode (spec §8.2) — three questions, and NOT a repeat of the Standard four. */
+const KC_PMG = [
+  { field: 'kc_pmg_effective', correct: String(QP.yours) },
+  { field: 'kc_pmg_share', correct: MARKET.sC.toFixed(4) },
+  { field: 'kc_pmg_undercut', correct: 'none' },
+]
 
 async function main() {
   const stamp = Date.now()
@@ -624,6 +710,276 @@ async function main() {
   // the horizon, so a green result above means something.
   check(TRUTH_TOKENS.some(re => re.test('return { rounds: totalRounds }'.toLowerCase())),
     'the sweep would catch a returned `rounds:` (the guard is not vacuous)')
+
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SLICE 3 — knowledge check, debrief, scoring, gradebook
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Answers every KC question the server SERVES, in order. `mode` picks whether the
+   *  answers are right or wrong. Returns what the server said each time.
+   *
+   *  ⚠ IT SUBMITS EVERY QUESTION, not just the first. A harness that renders the set
+   *  and answers one proves nothing about the grader knowing the rest — which is
+   *  precisely the failure this whole section exists to catch. */
+  async function answerKc(gid, pid, key, mode, label) {
+    const served = await callFn('pricingGetQuestions', asStudent(gid, pid))
+    if (!served.ok) { check(false, `${label}: pricingGetQuestions failed: ${served.error}`); return null }
+    const qs = served.result.kc
+    check(qs.length === key.length,
+      `${label}: serves ${key.length} questions (got ${qs.length})`)
+    check(qs.map(q => q.field).join() === key.map(k => k.field).join(),
+      `${label}: …the right ones, in order (${qs.map(q => q.field).join(', ')})`)
+
+    const json = JSON.stringify(served.result)
+    check(!json.includes('correct_value'), `${label}: ⚠ the answer key is NOT served`)
+    check(!json.includes('explanation'), `${label}: ⚠ the explanations are NOT served ahead of answering`)
+
+    const verdicts = []
+    for (const q of qs) {
+      const want = key.find(k => k.field === q.field)
+      check(q.options.some(o => o.value === want.correct),
+        `${label}: ${q.field} offers the spec's correct answer as an option (${want.correct})`)
+      const answer = mode === 'correct'
+        ? want.correct
+        : q.options.find(o => o.value !== want.correct).value
+      const res = await callFn('pricingSubmitKcAnswer', asStudent(gid, pid, { field: q.field, answer }))
+      if (!res.ok) { check(false, `${label}: ${q.field} submit failed: ${res.error}`); return null }
+      check(res.result.correct === (mode === 'correct'),
+        `${label}: ${q.field} answered ${mode} → graded ${res.result.correct}`)
+      check(typeof res.result.explanation === 'string' && res.result.explanation.length > 0,
+        `${label}: ${q.field} returns its explanation, AFTER answering`)
+      verdicts.push(res.result)
+    }
+    return { qs, verdicts }
+  }
+
+  // ── 11. The knowledge check, both modes (spec §8) ────────────────────────────
+  console.log('\n[11] Knowledge check — every question served AND submitted')
+
+  const GID_KS = `pricing-kc-std-${stamp}`
+  const KSPID = 'pricing-kc-std-stu'
+  await openInstance(GID_KS, KSPID, 'seed-kc-std')
+  const stdKc = await answerKc(GID_KS, KSPID, KC_STANDARD, 'correct', 'Standard KC')
+  check(!!stdKc, 'the Standard knowledge check completed')
+
+  const kcDoc = await getDoc(`pricing_game_instances/${GID_KS}/participants/${KSPID}`)
+  const kcScore = Number(kcDoc?.knowledge_check_score?.doubleValue ?? kcDoc?.knowledge_check_score?.integerValue)
+  check(kcScore === 1, `all four correct scores 1.0 (got ${kcScore})`)
+  check(kcDoc?.knowledge_check_completed_at != null, 'and stamps knowledge_check_completed_at')
+
+  // The per-question lock: a resubmit with a DIFFERENT VALID option returns the
+  // STORED verdict, never a second bite. (A resubmit with an option that does not
+  // exist is rejected by the same argument check every answer passes — the lock is
+  // about not re-grading, not about accepting nonsense.)
+  const firstQ = stdKc.qs[0]
+  const otherOption = firstQ.options.find(o => o.value !== KC_STANDARD[0].correct).value
+  const relock = await callFn('pricingSubmitKcAnswer',
+    asStudent(GID_KS, KSPID, { field: firstQ.field, answer: otherOption }))
+  check(relock.ok && relock.result.correct === true,
+    'a resubmit for an answered question returns the STORED verdict — a wrong answer cannot overwrite a right one')
+  const relockDoc = await getDoc(`pricing_game_instances/${GID_KS}/participants/${KSPID}`)
+  check(Number(relockDoc?.knowledge_check_score?.doubleValue ?? relockDoc?.knowledge_check_score?.integerValue) === 1,
+    '…and the score is unchanged by the attempt')
+  const bogus = await callFn('pricingSubmitKcAnswer',
+    asStudent(GID_KS, KSPID, { field: firstQ.field, answer: 'not-an-option' }))
+  check(!bogus.ok, 'an answer that is not one of the offered options is rejected')
+
+  // A WRONG run: recorded, scored, and NOT a gate — the student still reaches the game.
+  const GID_KW = `pricing-kc-wrong-${stamp}`
+  const KWPID = 'pricing-kc-wrong-stu'
+  await openInstance(GID_KW, KWPID, 'seed-kc-wrong')
+  await answerKc(GID_KW, KWPID, KC_STANDARD, 'wrong', 'Standard KC (wrong)')
+  const wrongDoc = await getDoc(`pricing_game_instances/${GID_KW}/participants/${KWPID}`)
+  const wrongScore = Number(wrongDoc?.knowledge_check_score?.doubleValue ?? wrongDoc?.knowledge_check_score?.integerValue)
+  check(wrongScore === 0, `all four wrong scores 0.0 (got ${wrongScore})`)
+  const afterWrong = await callFn('pricingSubmitPrice', asStudent(GID_KW, KWPID, { round: 1, price: 1500 }))
+  check(afterWrong.ok, '⚠ a student who got every question wrong still plays — the KC is no gate')
+
+  // ⚠ THE DENOMINATOR IS WHATEVER WAS SERVED, never a hardcoded /4. A market whose
+  // floor sits above unit cost makes the below-cost question meaningless, so it is
+  // not served — and must not sit in anyone's denominator either.
+  const GID_KD = `pricing-kc-denom-${stamp}`
+  const KDPID = 'pricing-kc-denom-stu'
+  await openInstance(GID_KD, KDPID, 'seed-kc-denom', {
+    extraConfig: { market: { mapValue: { fields: { min_price: intVal(1200) } } } },
+  })
+  const denomServed = await callFn('pricingGetQuestions', asStudent(GID_KD, KDPID))
+  check(denomServed.result.kc.length === 3,
+    `a floor above unit cost drops the below-cost question (${denomServed.result.kc.length} served)`)
+  check(!denomServed.result.kc.some(q => q.field === 'kc_below_cost'),
+    '…and it is that question specifically that is gone')
+  for (const q of denomServed.result.kc) {
+    const want = KC_STANDARD.find(k => k.field === q.field)
+    await callFn('pricingSubmitKcAnswer', asStudent(GID_KD, KDPID, { field: q.field, answer: want.correct }))
+  }
+  const denomDoc = await getDoc(`pricing_game_instances/${GID_KD}/participants/${KDPID}`)
+  check(Number(denomDoc?.knowledge_check_score?.doubleValue ?? denomDoc?.knowledge_check_score?.integerValue) === 1,
+    'three of three correct still scores 1.0 — the denominator followed the served set')
+  const notServed = await callFn('pricingSubmitKcAnswer',
+    asStudent(GID_KD, KDPID, { field: 'kc_below_cost', answer: 'negative' }))
+  check(!notServed.ok, 'and a question this instance never served cannot be answered at all')
+
+  // ── The PMG set: three questions, and NOT a repeat of the Standard four ──────
+  const GID_KP = `pricing-kc-pmg-${stamp}`
+  const KPPID = 'pricing-kc-pmg-stu'
+  await openInstance(GID_KP, KPPID, 'seed-kc-pmg', { pmg: true })
+  const pmgServed = await callFn('pricingGetQuestions', asStudent(GID_KP, KPPID))
+  check(pmgServed.result.pmg === true, 'a PMG instance says so, so the client can open with the rules screen')
+  check(!pmgServed.result.kc.some(q => KC_STANDARD.some(k => k.field === q.field)),
+    '⚠ the PMG set repeats NONE of the Standard four (students did those in instance 1)')
+  const pmgKc = await answerKc(GID_KP, KPPID, KC_PMG, 'correct', 'PMG KC')
+  check(!!pmgKc, 'the PMG knowledge check completed')
+
+  // The diagnostic distractor (spec §8.2): the Standard formula's impossible answer
+  // must be ON the share question, or a student carrying the wrong model has nothing
+  // to reveal it with.
+  const shareQ = pmgKc?.qs.find(q => q.field === 'kc_pmg_share')
+  check(shareQ?.options.some(o => Number(o.value) > 1),
+    'the PMG share question offers the >100% diagnostic distractor')
+
+  // A Standard field is not a question in a PMG instance, and vice versa.
+  const crossMode = await callFn('pricingSubmitKcAnswer',
+    asStudent(GID_KP, KPPID, { field: 'kc_contribution', answer: '734' }))
+  check(!crossMode.ok, 'a Standard question cannot be answered in a PMG instance')
+
+  // ── 12. The debrief + the competitor reveal (spec §9) ────────────────────────
+  console.log('\n[12] Debrief — the prompt per mode, and the reveal gated on the game being over')
+
+  const GID_D = `pricing-debrief-${stamp}`
+  const DPID = 'pricing-debrief-stu'
+  const dbrief = await openInstance(GID_D, DPID, 'seed-debrief')
+
+  const midQs = await callFn('pricingGetQuestions', asStudent(GID_D, DPID))
+  check(midQs.result.debrief?.prompt.startsWith('In a few sentences, explain your pricing strategy'),
+    'Standard mode serves the STANDARD debrief prompt (spec §9)')
+  check(midQs.result.competitorReveal === null,
+    '⚠ mid-game, the competitor reveal is NULL — the rule is not sent before the game ends')
+  check(!JSON.stringify(midQs.result).toLowerCase().includes('best'),
+    '⚠ …and no part of the mid-game payload describes the rule either')
+
+  const pmgQs = await callFn('pricingGetQuestions', asStudent(GID_KP, KPPID))
+  check(pmgQs.result.debrief?.prompt.startsWith('In a few sentences, explain how you set prices under the Price Matching'),
+    'PMG mode serves the PMG debrief prompt (spec §9)')
+
+  // Play the game out, then ask again.
+  for (let n = 1; n <= dbrief.rounds; n++) {
+    await callFn('pricingSubmitPrice', asStudent(GID_D, DPID, { round: n, price: 1500 }))
+  }
+  const endQs = await callFn('pricingGetQuestions', asStudent(GID_D, DPID))
+  check(typeof endQs.result.competitorReveal === 'string'
+    && endQs.result.competitorReveal.startsWith('Your competitor was programmed to'),
+    `⚠ once the game is over the reveal arrives ("${String(endQs.result.competitorReveal).slice(0, 48)}…")`)
+  check(/best|grid|profit/i.test(endQs.result.competitorReveal),
+    '…and it actually describes the Standard rule in plain language')
+  check(!/the bot/i.test(endQs.result.competitorReveal),
+    '…without ever calling it "the bot" (spec §1)')
+
+  const badDebrief = await callFn('pricingSubmitDebrief', asStudent(GID_D, DPID, { answer: '   ' }))
+  check(!badDebrief.ok, 'an empty debrief is rejected')
+
+  const wrote = await callFn('pricingSubmitDebrief',
+    asStudent(GID_D, DPID, { answer: 'I opened high, watched it undercut me, and settled near the middle.' }))
+  check(wrote.ok && wrote.result.stored === false, 'the debrief paragraph submits')
+  const again = await callFn('pricingSubmitDebrief', asStudent(GID_D, DPID, { answer: 'Something else entirely.' }))
+  check(again.ok && again.result.stored === true && again.result.answer.startsWith('I opened high'),
+    'and is one-shot: a second submit returns the stored paragraph, unchanged')
+  const debriefDoc = await getDoc(`pricing_game_instances/${GID_D}/participants/${DPID}`)
+  check(debriefDoc?.debrief_answers != null && debriefDoc?.debrief_completed_at != null,
+    'the paragraph is stored where the Tier-2 report will read it')
+  check(debriefDoc?.knowledge_check_score === undefined,
+    '⚠ the ungraded debrief did NOT touch the knowledge-check score')
+
+  // ── 13. Score & Record → the classroom gradebook (spec §7) ───────────────────
+  console.log('\n[13] Participation scoring + the gradebook push')
+
+  const GID_S1 = `pricing-score-${stamp}`
+  const finisher = 'pricing-finisher'
+  const quitter = 'pricing-quitter'
+  const scoreInst = await openInstance(GID_S1, finisher, 'seed-score')
+  await openInstance(GID_S1, quitter, 'seed-score')
+
+  for (let n = 1; n <= scoreInst.rounds; n++) {
+    await callFn('pricingSubmitPrice', asStudent(GID_S1, finisher, { round: n, price: 1500 }))
+  }
+  await callFn('pricingSubmitPrice', asStudent(GID_S1, quitter, { round: 1, price: 1800 }))
+  await callFn('pricingSubmitPrice', asStudent(GID_S1, quitter, { round: 2, price: 1800 }))
+
+  // A third student is enrolled by the roster sync but never launches at all.
+  const sync = await callFn('pricingSyncRoster', {
+    _dev: { game_instance_id: GID_S1, roster_url: ROSTER_URL, callback_secret: CALLBACK_SECRET },
+  })
+  check(sync.ok && sync.result.synced === 3, `pricingSyncRoster pre-created the roster (${sync.result?.synced})`)
+  const absentDoc = await getDoc(`pricing_game_instances/${GID_S1}/participants/pricing-absent`)
+  check(absentDoc !== null && absentDoc.finished_at === undefined,
+    'a rostered student who never launched has an identity-only doc')
+  const quitterAfterSync = await getDoc(`pricing_game_instances/${GID_S1}/participants/${quitter}`)
+  check(quitterAfterSync?.rounds?.arrayValue?.values?.length === 2,
+    'the roster sync did NOT clobber a student who had already played (safe identity-only merge)')
+
+  const pushBefore = pushCount
+  const score = await callFn('pricingScoreAndRecord', {
+    _dev: { game_instance_id: GID_S1, callback_url: CALLBACK_URL, callback_secret: CALLBACK_SECRET },
+  })
+  check(score.ok, 'pricingScoreAndRecord succeeds')
+  check(score.result.scored === 3 && score.result.finishers === 1,
+    `scored 3 students, 1 finisher (got ${score.result?.scored}/${score.result?.finishers})`)
+  check(pushCount - pushBefore === 3, `pushed 3 grade records (got ${pushCount - pushBefore})`)
+  check(badlySigned.length === 0,
+    `⚠ every push carried a VALID Bearer signature (rejected: ${badlySigned.length})`)
+
+  const finDoc = await getDoc(`pricing_game_instances/${GID_S1}/participants/${finisher}`)
+  const quitDoc = await getDoc(`pricing_game_instances/${GID_S1}/participants/${quitter}`)
+  const absDoc = await getDoc(`pricing_game_instances/${GID_S1}/participants/pricing-absent`)
+  const norm = (d) => Number(d?.normalized_score?.doubleValue ?? d?.normalized_score?.integerValue)
+  check(Number(finDoc?.raw_score?.integerValue) === 1 && norm(finDoc) === 0,
+    'a finisher gets participation raw_score 1, normalizing to 0 (zero-SD pool)')
+  check(quitDoc?.raw_score?.nullValue !== undefined && norm(quitDoc) === -2,
+    'a student who played but never finished gets the −2 floor')
+  check(absDoc?.raw_score?.nullValue !== undefined && norm(absDoc) === -2,
+    'and so does one who never launched')
+
+  // ⚠ PROFITS ARE NEVER GRADED (spec §7) — they are report fields only.
+  check(finDoc?.profit_total != null && finDoc?.average_price != null,
+    'profit and average price are written for the reports…')
+  const pushedForFinisher = pushed.slice(-3).find(r => JSON.stringify(r).includes(finisher))
+  check(pushedForFinisher != null, 'the finisher is in the pushed batch')
+  check(!JSON.stringify(pushedForFinisher).includes('profit'),
+    '⚠ …and NO profit figure reaches the gradebook payload')
+  check(JSON.stringify(pushedForFinisher).includes('normalized_score'),
+    'the payload carries normalized_score')
+
+  // ── TWO INSTANCES, TWO ENTRIES (spec §14) ───────────────────────────────────
+  // The same student plays a Standard instance and a PMG instance of the SAME game.
+  // Nothing in the code knows about the pairing; the entries are distinct because the
+  // instances are, and this asserts that end to end.
+  const GID_TWO_STD = `pricing-two-std-${stamp}`
+  const GID_TWO_PMG = `pricing-two-pmg-${stamp}`
+  const BOTH = 'pricing-plays-both'
+  const twoStd = await openInstance(GID_TWO_STD, BOTH, 'seed-two-a')
+  const twoPmg = await openInstance(GID_TWO_PMG, BOTH, 'seed-two-b', { pmg: true })
+  for (let n = 1; n <= twoStd.rounds; n++) {
+    await callFn('pricingSubmitPrice', asStudent(GID_TWO_STD, BOTH, { round: n, price: 1600 }))
+  }
+  for (let n = 1; n <= twoPmg.rounds; n++) {
+    await callFn('pricingSubmitPrice', asStudent(GID_TWO_PMG, BOTH, { round: n, price: 1900 }))
+  }
+
+  const twoBefore = pushCount
+  await callFn('pricingScoreAndRecord', {
+    _dev: { game_instance_id: GID_TWO_STD, callback_url: CALLBACK_URL, callback_secret: CALLBACK_SECRET },
+  })
+  await callFn('pricingScoreAndRecord', {
+    _dev: { game_instance_id: GID_TWO_PMG, callback_url: CALLBACK_URL, callback_secret: CALLBACK_SECRET },
+  })
+  check(pushCount - twoBefore === 2, `two instances pushed two records (got ${pushCount - twoBefore})`)
+
+  const twoRecords = pushed.slice(-2)
+  const flat = twoRecords.map(r => JSON.stringify(r))
+  check(flat.every(j => j.includes(BOTH)), 'both records are for the same student')
+  check(flat[0] !== flat[1], '⚠ …and they are DISTINCT entries, not one overwriting the other')
+  check(flat.some(j => j.includes(GID_TWO_STD)) && flat.some(j => j.includes(GID_TWO_PMG)),
+    'each carries its own game_instance_id — which is what makes them two gradebook rows')
 
   console.log(`\n${failed === 0 ? '✅' : '❌'} pricing harness: ${passed} passed, ${failed} failed`)
   process.exit(failed === 0 ? 0 : 1)

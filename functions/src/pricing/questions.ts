@@ -1,0 +1,380 @@
+import type { PrepTextQuestion } from '@mygames/game-server'
+import { computeRound, type PricingMarketConfig } from './market'
+import {
+  DEFAULT_LABELS, DEFAULT_DEBRIEF_PROMPT_STANDARD, type PricingFirmLabels,
+} from './config'
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Pricing Game — the KNOWLEDGE CHECK (spec §8) and the DEBRIEF (spec §9), as DATA
+// OBJECTS (standing platform constraint: never an inline array in student-flow code).
+// Built on the shared PrepTextQuestion model and the shared `kc_` / `debrief_`
+// field-prefix convention.
+//
+// ⚠ EVERY NUMBER IS DERIVED FROM THE INSTANCE'S MARKET, NOT FROZEN IN THE DATA
+// OBJECT (spec §8, the never-stale principle). Each question below is a `build`
+// function taking the market config; nothing about a question is stored, so an
+// instructor who edits the market can never grade a student against a market that is
+// no longer the one on their screen. The SAME function is called by the serve path
+// (getQuestions) and the GRADE path (submitKcAnswer) — that is the whole reason it is
+// one function, and it is the trap this file exists to close.
+//
+// ⚠ THE SET DEPENDS ON THE MODE (spec §8.1 vs §8.2). Standard asks the four
+// share/contribution questions; PMG asks three about price matching and does NOT
+// repeat the Standard four (students did those in their first instance). The mode
+// also selects the debrief prompt (§9) — that lives in config.ts, which owns the
+// mode-dependent default.
+//
+// NO GATE, as in PD: a wrong answer is recorded and scored, and the student
+// continues into the game regardless.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Local formatting (server-side; deliberately independent of the frontend's) ──
+
+const money = (v: number) => `$${Math.round(v).toLocaleString('en-US')}`
+/** A share as a percentage. Trailing '.0' is dropped so the common case reads "35%",
+ *  not "35.0%" — these are prompts a student reads, not a data table. */
+const pct = (v: number) => {
+  const s = (v * 100).toFixed(1)
+  return `${s.endsWith('.0') ? s.slice(0, -2) : s}%`
+}
+const containers = (v: number) => Math.round(v).toLocaleString('en-US')
+
+/** Snap to the competitor's decision grid, staying inside the band. */
+const snap = (v: number, m: PricingMarketConfig) => {
+  const stepped = Math.round(v / m.gridStep) * m.gridStep
+  return Math.min(m.maxPrice, Math.max(m.minPrice, stepped))
+}
+
+type Option = { value: string; label: string }
+
+/**
+ * Options in a stable order, DE-DUPLICATED by value.
+ *
+ * De-duplication is load-bearing, not tidiness: the distractors are derived, and an
+ * edited market can make one of them collide with the right answer (base share 50%
+ * would make the "50%" distractor in Q1 the correct answer). Offering the same value
+ * twice would let a student pick a "wrong" option that is in fact right. Dropping the
+ * duplicate leaves a shorter list, which is always answerable.
+ */
+function options(...opts: Option[]): Option[] {
+  const seen = new Set<string>()
+  return opts.filter(o => (seen.has(o.value) ? false : (seen.add(o.value), true)))
+}
+
+const shareOption = (v: number): Option => ({ value: v.toFixed(4), label: pct(v) })
+const priceOption = (v: number): Option => ({ value: String(Math.round(v)), label: money(v) })
+
+// ── The question specs ─────────────────────────────────────────────────────────
+
+/** What a built question carries. `null` from `build` means the question does not
+ *  apply to this market at all and is dropped from the set (see kc_loss below). */
+type Built = {
+  prompt: string
+  options: Option[]
+  correct_value: string
+  explanation: string
+}
+
+type KcSpec = {
+  field: string
+  order: number
+  build: (m: PricingMarketConfig, labels: PricingFirmLabels) => Built | null
+}
+
+/**
+ * The two in-bounds prices the share/contribution questions are posed with.
+ *
+ * ⚠ DERIVED FROM THE BAND, NOT THE CASE'S LITERALS. Spec §8.1 illustrates Q2 with
+ * $1,600 / $1,800; those are what the CASE's band happens to make sensible, and
+ * hardcoding them would be a second source of truth that goes stale the moment an
+ * instructor narrows the price range — the exact drift the derivation exists to
+ * prevent. The rule instead is "a grid price just below the ceiling, and one two grid
+ * steps below it", which at the shipped defaults gives $1,900 / $1,700 — a $200 gap,
+ * so the correct answer and all four options are identical to the spec's table.
+ */
+function questionPrices(m: PricingMarketConfig): { yours: number; theirs: number } {
+  const theirs = snap(m.maxPrice - m.gridStep, m)
+  const yours = snap(theirs - 2 * m.gridStep, m)
+  return { yours, theirs }
+}
+
+/** Q1 — base share: your share when both firms charge the same price (spec §8.1). */
+const kcBaseShare: KcSpec = {
+  field: 'kc_base_share',
+  order: 1,
+  build: (m, labels) => ({
+    prompt: `You are ${labels.student}. What is your base market share — your share if both firms charge the same price?`,
+    // Distractors: an even split, your competitor's base share, and the whole market.
+    options: options(
+      shareOption(m.studentBaseShare),
+      shareOption(0.5),
+      shareOption(m.competitorBaseShare),
+      shareOption(1),
+    ).sort((a, b) => Number(a.value) - Number(b.value)),
+    correct_value: m.studentBaseShare.toFixed(4),
+    explanation:
+      `Your base share is ${pct(m.studentBaseShare)}. Price differences move share away from ` +
+      `that starting point — they do not create it.`,
+  }),
+}
+
+/** Q2 — share at a price gap (spec §8.1): s_c + (their price − your price) / k. */
+const kcShareGap: KcSpec = {
+  field: 'kc_share_gap',
+  order: 2,
+  build: (m, labels) => {
+    const { yours, theirs } = questionPrices(m)
+    if (yours >= theirs) return null   // a band too narrow to pose a gap at all
+    const out = computeRound(yours, theirs, m, false)
+    return {
+      prompt:
+        `You price at ${money(yours)} and ${labels.competitor} prices at ${money(theirs)}. ` +
+        `What is your market share?`,
+      // Distractors: your base share, your COMPETITOR's share in this same scenario
+      // (the sign-flipped answer), and their base share.
+      options: options(
+        shareOption(out.studentShare),
+        shareOption(m.studentBaseShare),
+        shareOption(out.competitorShare),
+        shareOption(m.competitorBaseShare),
+      ).sort((a, b) => Number(a.value) - Number(b.value)),
+      correct_value: out.studentShare.toFixed(4),
+      explanation:
+        `You undercut by ${money(theirs - yours)}, which moves ` +
+        `${pct((theirs - yours) / m.slope)} of the market to you: ` +
+        `${pct(m.studentBaseShare)} + ${pct((theirs - yours) / m.slope)} = ${pct(out.studentShare)}.`,
+    }
+  },
+}
+
+/** Q3 — contribution per container (spec §8.1): price − your unit cost. */
+const kcContribution: KcSpec = {
+  field: 'kc_contribution',
+  order: 3,
+  build: (m) => {
+    const { yours } = questionPrices(m)
+    return {
+      prompt:
+        `Your unit cost is ${money(m.studentUnitCost)}. If you price at ${money(yours)}, ` +
+        `what is your contribution per container?`,
+      // Distractors: the unit cost itself, the price itself, and the contribution a
+      // student would get by subtracting the COMPETITOR's cost instead of their own.
+      options: options(
+        priceOption(yours - m.studentUnitCost),
+        priceOption(m.studentUnitCost),
+        priceOption(yours),
+        priceOption(yours - m.competitorUnitCost),
+      ).sort((a, b) => Number(a.value) - Number(b.value)),
+      correct_value: String(Math.round(yours - m.studentUnitCost)),
+      explanation:
+        `Contribution is price minus YOUR unit cost: ${money(yours)} − ` +
+        `${money(m.studentUnitCost)} = ${money(yours - m.studentUnitCost)} per container.`,
+    }
+  },
+}
+
+/**
+ * Q4 — pricing below cost (spec §8.1). Fixed-FORM, config numbers: it plants the
+ * maximize-contribution-not-share lesson the whole game turns on.
+ *
+ * DROPPED when no legal price is below your unit cost — an instructor whose band
+ * starts above cost has a market where the question is unanswerable, and a question
+ * nobody can answer would sit in every student's denominator. The set is served and
+ * graded from the same resolve call, so dropping it here drops it from both.
+ */
+const kcBelowCost: KcSpec = {
+  field: 'kc_below_cost',
+  order: 4,
+  build: (m) => {
+    if (m.minPrice >= m.studentUnitCost) return null
+    const out = computeRound(m.minPrice, m.maxPrice, m, false)
+    return {
+      prompt:
+        `You price at ${money(m.minPrice)} — below your unit cost of ${money(m.studentUnitCost)} — ` +
+        `and win a large market share. What happens to your total profit?`,
+      options: [
+        { value: 'negative', label: 'It is negative — you lose money on every container you sell' },
+        { value: 'high', label: 'It is high, because you serve most of the customers' },
+        { value: 'zero', label: 'It is exactly zero' },
+        { value: 'depends', label: 'It depends on your competitor’s unit cost' },
+      ],
+      correct_value: 'negative',
+      explanation:
+        `Every container sells for ${money(m.minPrice - m.studentUnitCost)} less than it costs ` +
+        `you, so winning ${containers(out.studentDemand)} containers loses money ` +
+        `${containers(out.studentDemand)} times over. Share is worth nothing without contribution.`,
+    }
+  },
+}
+
+/** PMG Q1 — what your customers actually pay (spec §8.2): the lower posted price. */
+const kcPmgEffective: KcSpec = {
+  field: 'kc_pmg_effective',
+  order: 1,
+  build: (m, labels) => {
+    const { yours: lower, theirs: higher } = questionPrices(m)
+    // You post the HIGHER price here, so the right answer is your competitor's.
+    return {
+      prompt:
+        `You post ${money(higher)} and ${labels.competitor} posts ${money(lower)}. ` +
+        `What price do YOUR customers actually pay?`,
+      options: options(
+        priceOption(lower),
+        priceOption(higher),
+        priceOption((lower + higher) / 2),
+        priceOption(m.studentUnitCost),
+      ).sort((a, b) => Number(a.value) - Number(b.value)),
+      correct_value: String(Math.round(lower)),
+      explanation:
+        `Under the price-matching guarantee everyone pays the LOWER posted price, ` +
+        `whoever posted it — so your customers pay ${money(lower)}, not ${money(higher)}.`,
+    }
+  },
+}
+
+/**
+ * PMG Q2 — share under PMG (spec §8.2): frozen at base, whatever the gap.
+ *
+ * The gap is chosen so the STANDARD formula's answer exceeds 100% — that impossible
+ * number is the diagnostic distractor (spec §8.2: "105% is the diagnostic distractor
+ * — the Standard formula's answer"), and a student who picks it has carried the wrong
+ * model across from their first instance.
+ */
+const kcPmgShare: KcSpec = {
+  field: 'kc_pmg_share',
+  order: 2,
+  build: (m, labels) => {
+    // The smallest grid gap that pushes the Standard answer over 100%.
+    const needed = Math.ceil(((1 - m.studentBaseShare) * m.slope) / m.gridStep) * m.gridStep
+    const band = m.maxPrice - m.minPrice
+    const gap = Math.min(needed, Math.floor(band / m.gridStep) * m.gridStep)
+    if (gap <= 0) return null
+    const slack = band - gap
+    const yours = snap(m.minPrice + slack / 2, m)
+    const theirs = Math.min(m.maxPrice, yours + gap)
+    const flipped = m.studentBaseShare + (theirs - yours) / m.slope
+
+    return {
+      prompt:
+        `You post ${money(yours)} and ${labels.competitor} posts ${money(theirs)}. ` +
+        `What is your market share?`,
+      // The diagnostic distractor is the Standard formula's answer — which is the
+      // whole point, so it is offered EVEN THOUGH it may exceed 100%.
+      options: options(
+        shareOption(m.studentBaseShare),
+        shareOption(m.competitorBaseShare),
+        shareOption(1),
+        shareOption(flipped),
+      ).sort((a, b) => Number(a.value) - Number(b.value)),
+      correct_value: m.studentBaseShare.toFixed(4),
+      explanation:
+        `Under the price-matching guarantee shares do not respond to price at all — ` +
+        `yours is always ${pct(m.studentBaseShare)}. ${pct(flipped)} is what the ordinary ` +
+        `share formula would have said, and it is exactly the reasoning PMG removes.`,
+    }
+  },
+}
+
+/** PMG Q3 — undercutting wins nothing (spec §8.2). Fixed-FORM, config numbers. */
+const kcPmgUndercut: KcSpec = {
+  field: 'kc_pmg_undercut',
+  order: 3,
+  build: (m, labels) => ({
+    prompt:
+      `Under the price-matching guarantee, you undercut ${labels.competitor} by ` +
+      `${money(m.gridStep)}. How many additional customers do you win?`,
+    options: [
+      { value: 'none', label: `None — your share stays ${pct(m.studentBaseShare)}` },
+      { value: 'containers', label: `${containers(m.marketSize * (m.gridStep / m.slope))} containers` },
+      { value: 'share_move', label: `${pct(m.gridStep / m.slope)} of the market` },
+      { value: 'all', label: 'All of them' },
+    ],
+    correct_value: 'none',
+    explanation:
+      `None. Because your competitor's customers pay the lower price too, undercutting ` +
+      `moves no share at all — it only lowers the price everyone pays, including yours. ` +
+      `${containers(m.marketSize * (m.gridStep / m.slope))} containers is what the same ` +
+      `undercut would have won in the standard game.`,
+  }),
+}
+
+const STANDARD_KC: KcSpec[] = [kcBaseShare, kcShareGap, kcContribution, kcBelowCost]
+const PMG_KC: KcSpec[] = [kcPmgEffective, kcPmgShare, kcPmgUndercut]
+
+// ── Resolution ─────────────────────────────────────────────────────────────────
+
+/** A resolved knowledge-check question: the shared model, fully built. */
+export type PricingKcQuestion = PrepTextQuestion & {
+  field: string
+  prompt: string
+  options: Option[]
+  correct_value: string
+  explanation: string
+}
+
+const kcBase = {
+  type: 'mc' as const,
+  format: 'multiple_choice' as const,
+  category: 'knowledge_check' as const,
+  grading: 'static' as const,
+  system: false,
+  placeholder: '',
+  hidden: false,
+  deletable: false,
+  role_target: 'all',
+}
+
+/**
+ * This instance's knowledge check: the MODE picks the set, and every prompt, option,
+ * correct answer and explanation is regenerated from the instance's own market.
+ *
+ * Pure — no Firestore. Both the serve path and the grade path call this, so the
+ * options a student sees and the answer they are graded against cannot disagree.
+ */
+export function resolvePricingKcQuestions(
+  market: PricingMarketConfig,
+  pmg: boolean,
+  labels: PricingFirmLabels = DEFAULT_LABELS,
+): PricingKcQuestion[] {
+  const specs = pmg ? PMG_KC : STANDARD_KC
+  const out: PricingKcQuestion[] = []
+  for (const spec of specs) {
+    const built = spec.build(market, labels)
+    if (built === null) continue        // does not apply to this market — see kcBelowCost
+    out.push({ ...kcBase, field: spec.field, order: out.length + 1, ...built })
+  }
+  return out
+}
+
+/** The KC as sent to the STUDENT — the answer key removed. `correct_value` and
+ *  `explanation` are stripped: the explanation is earned by answering (the submit
+ *  callable returns it), and the key is never client-side. */
+export function toClientKcQuestions(resolved: PricingKcQuestion[]) {
+  return resolved.map(q => ({
+    field: q.field,
+    prompt: q.prompt,
+    options: q.options.map(o => ({ value: o.value, label: o.label })),
+  }))
+}
+
+// ── The debrief (spec §9) ──────────────────────────────────────────────────────
+
+/** ONE open-ended paragraph, UNGRADED. Feeds the Tier-2 report.
+ *
+ *  The PROMPT is mode-dependent and lives in config (loadPricingConfig picks the
+ *  Standard or PMG default and honours an instructor edit); the literal here is only
+ *  the shape's required field. No `grading` and no `correct_value` — ungraded by
+ *  construction, so it can never reach calcKCScore's denominator. */
+export const debriefQuestion: PrepTextQuestion = {
+  field: 'debrief_reflection',
+  order: 1,
+  type: 'text',
+  format: 'text',
+  category: 'debrief',
+  system: false,
+  placeholder: 'A few sentences are plenty.',
+  hidden: false,
+  deletable: false,
+  role_target: 'all',
+  prompt: DEFAULT_DEBRIEF_PROMPT_STANDARD,
+}

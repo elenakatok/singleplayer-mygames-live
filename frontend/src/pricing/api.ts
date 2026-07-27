@@ -6,7 +6,8 @@ import { functions } from '../firebase'
 // (one project serves every single-player game); only the callable NAMES are
 // pricing-specific.
 //
-// SLICE 2 — launch, instructor session, and the round loop.
+// SLICE 3 — launch, instructor session, the round loop, the knowledge check and
+// the debrief.
 //
 // ⚠ THE RESPONSE TYPES BELOW ARE THE WHOLE CLIENT-SIDE CONTRACT. There is no round
 // count and no competitor rule in them because the server never sends either
@@ -148,6 +149,59 @@ export const pricingGetState = () => callFn<PricingStateResult>('pricingGetState
  *  bounds; the server validates it again and rejects anything else. */
 export const pricingSubmitPrice = (round: number, price: number) =>
   callFn<PricingRoundResult>('pricingSubmitPrice', { round, price })
+
+// ── Student: the knowledge check + the debrief ──────────────────────────────────
+
+/** One KC question as the student receives it — NO answer key, NO explanation.
+ *  Both are earned by answering (pricingSubmitKcAnswer returns the explanation). */
+export type PricingKcQuestionClient = {
+  field: string
+  prompt: string
+  options: { value: string; label: string }[]
+}
+
+export type PricingDebriefQuestionClient = {
+  field: string
+  /** The MODE's prompt (spec §9), or the instructor's edit of it. */
+  prompt: string
+  placeholder: string
+}
+
+export type PricingQuestionsResult = {
+  ok: boolean
+  kcEnabled: boolean
+  /** Does this instance open with the PMG rules screen (spec §6.2)? */
+  pmg: boolean
+  kc: PricingKcQuestionClient[]
+  debriefEnabled: boolean
+  debrief: PricingDebriefQuestionClient | null
+  kcAnswered: string[]
+  debriefSubmitted: boolean
+  /**
+   * "Your competitor was programmed to …" (spec §9).
+   *
+   * ⚠ NULL UNTIL THE GAME IS OVER. The server gates this on `finished_at`, so there
+   * is no moment at which a mid-game client holds it. Do not cache it, and do not
+   * try to reconstruct it here — the client never receives the rule id at all.
+   */
+  competitorReveal: string | null
+}
+
+export const pricingGetQuestions = () => callFn<PricingQuestionsResult>('pricingGetQuestions')
+
+export type PricingKcAnswerResult = {
+  ok: boolean
+  correct: boolean
+  graded: boolean
+  /** Earned by answering — this is the ONLY path that returns it. */
+  explanation: string
+}
+
+export const pricingSubmitKcAnswer = (field: string, answer: string) =>
+  callFn<PricingKcAnswerResult>('pricingSubmitKcAnswer', { field, answer })
+
+export const pricingSubmitDebrief = (answer: string) =>
+  callFn<{ ok: boolean; stored: boolean; answer: string }>('pricingSubmitDebrief', { answer })
 
 // ── Instructor: session ─────────────────────────────────────────────────────────
 

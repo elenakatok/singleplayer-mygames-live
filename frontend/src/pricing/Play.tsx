@@ -1,37 +1,45 @@
 import { useEffect, useState } from 'react'
 import { auth } from '../firebase'
 import {
-  pricingBootstrap, pricingGetState, STUDENT_CLASSROOM_URL,
+  pricingBootstrap, pricingGetState, pricingGetQuestions, STUDENT_CLASSROOM_URL,
   type PricingHistoryRow, type PricingLabels, type PricingMarket, type PricingRoundResult,
+  type PricingKcQuestionClient, type PricingDebriefQuestionClient,
 } from './api'
 import { PageShell } from '../shared/PageShell'
 import { SequenceRunner, loopScreen, type SequenceScreen } from '../shared/sequence'
 import { ChoosePrice, RevealRound } from './RoundScreen'
+import { PmgRulesScreen } from './PmgRulesScreen'
+import { KcScreen } from './KcScreen'
+import { DebriefScreen } from './DebriefScreen'
 import { EndScreen } from './EndScreen'
-import { pricingResume } from './resume'
+import { pricingResumeIndex, pricingScreenCount, pricingStartIteration } from './resume'
 import { useStudentSession, typography } from '@mygames/game-ui'
 import type { BootstrapArgs } from '@mygames/game-ui'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Pricing Game (Cheyenne Shipping) — student entry.
+// Pricing Game (Cheyenne Shipping) — student entry. THE WHOLE FLOW, in one sequence:
 //
-// SLICE 2 — the round loop on screen:
+//   (PMG rules)  →  KC  →  the round loop  →  the debrief  →  done
+//   (PMG only,      (graded,   (self-paced,      (ungraded,
+//    read-only)      no gate)   server-ended)     reveals the competitor)
 //
-//   price entry  →  round result  →  … until the SERVER says done  →  end screen
+// The PMG rules screen comes FIRST in a PMG instance (spec §6.2): it replaces the
+// in-lecture announcement that the rules have changed, and a student must meet it
+// before the knowledge check that tests it.
 //
-// The knowledge check (spec §8) comes BEFORE the loop and the debrief (spec §9)
-// after it; both arrive in the next slice, and both slot into the same sequence the
-// loop already runs in, exactly as PD's do.
+// The KC comes before the game (spec §8): it confirms the student can read the market
+// before they start making decisions in it. It is graded but it is NOT A GATE — a
+// wrong answer is recorded and the student continues regardless.
 //
-// RESUME, one rule: every fact the flow branches on is stored on the SERVER — the
-// rounds played and the phase. Nothing is kept in the browser, so a student resumes
-// identically on another device. See resume.ts for what that does and does not
-// restore.
+// RESUME, one rule for the whole flow: every step's completion is a fact stored on
+// the server, so `startIndex` is just "how many steps are already done" — KC answers
+// first, then the loop's own phase, then the debrief's stored answer. Nothing is kept
+// in the browser; a student resumes identically on another device.
 //
-// ⚠ The drawn round count and the competitor's rule never reach this file (spec §3,
-// §5) — see api.ts, which is the whole client-side contract. The loop is UNBOUNDED
-// here: it ends when the server says a round was the last one, never because the
-// client counted to a total it was given.
+// ⚠ The drawn round count and the competitor's rule never reach this file during play
+// (spec §3, §5) — see api.ts. The reveal sentence arrives from the server only once
+// the game is over, and it is the ONLY thing about the competitor the client ever
+// holds.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 type Loaded = {
@@ -40,12 +48,15 @@ type Loaded = {
   market: PricingMarket
   minRounds: number
   maxRounds: number
+  kc: PricingKcQuestionClient[]
+  debrief: PricingDebriefQuestionClient | null
+  competitorReveal: string | null
 }
 
 type Screen =
   | { name: 'loading' }
   | { name: 'error'; message: string }
-  | { name: 'flow'; startIteration: number }
+  | { name: 'flow'; startIndex: number; startIteration: number }
   | { name: 'done' }
 
 export default function Play() {
@@ -75,12 +86,15 @@ export default function Play() {
   // cannot drift), along with the running totals it computed.
   const [history, setHistory] = useState<PricingHistoryRow[]>([])
   const [totals, setTotals] = useState<{ total: number; average: number }>({ total: 0, average: 0 })
+  // The reveal, refreshed when the loop ends — the state call that seeded the page
+  // was made mid-game, when the server correctly refused to send it.
+  const [reveal, setReveal] = useState<string | null>(null)
 
   useEffect(() => {
     if (session.kind !== 'ready') return
     let cancelled = false
-    pricingGetState()
-      .then(state => {
+    Promise.all([pricingGetState(), pricingGetQuestions()])
+      .then(([state, questions]) => {
         if (cancelled) return
         setLoaded({
           pmg: state.pmg,
@@ -88,14 +102,27 @@ export default function Play() {
           market: state.market,
           minRounds: state.minRounds,
           maxRounds: state.maxRounds,
+          kc: questions.kc,
+          debrief: questions.debrief,
+          competitorReveal: questions.competitorReveal,
         })
         setHistory(state.history)
         setTotals({ total: state.totalProfit, average: state.averageProfit })
-        const { finished, startIteration } = pricingResume({
-          phase: state.phase,
-          roundsPlayed: state.history.length,
+        setReveal(questions.competitorReveal)
+
+        const start = pricingResumeIndex({
+          pmg: state.pmg,
+          kcCount: questions.kc.length,
+          kcAnswered: questions.kcAnswered.length,
+          gameOver: state.gameOver,
+          debriefEnabled: questions.debriefEnabled,
+          debriefSubmitted: questions.debriefSubmitted,
         })
-        setScreen(finished ? { name: 'done' } : { name: 'flow', startIteration })
+        if (start >= pricingScreenCount(state.pmg, questions.kc.length, questions.debriefEnabled)) {
+          setScreen({ name: 'done' })
+        } else {
+          setScreen({ name: 'flow', startIndex: start, startIteration: pricingStartIteration(state.history.length) })
+        }
       })
       .catch(err => {
         if (!cancelled) {
@@ -137,15 +164,40 @@ export default function Play() {
           pmg={loaded.pmg}
           totalProfit={totals.total}
           averageProfit={totals.average}
+          competitorReveal={reveal}
         />
       </PageShell>
     )
   }
 
   if (screen.name === 'flow' && loaded !== null) {
-    const { pmg, labels, market, minRounds, maxRounds } = loaded
+    const { pmg, labels, market, minRounds, maxRounds, kc, debrief } = loaded
 
     const screens: SequenceScreen[] = [
+      // ── The PMG rule change, before anything else (spec §6.2) ────────────────
+      ...(pmg ? [{
+        id: 'pricing-pmg-rules',
+        render: ({ onDone }: { onDone: () => void }) => (
+          <PmgRulesScreen
+            market={market} labels={labels}
+            minRounds={minRounds} maxRounds={maxRounds}
+            onDone={onDone}
+          />
+        ),
+      }] : []),
+
+      // ── The knowledge check: one graded screen per question, no gate ──────────
+      ...kc.map((q, i) => ({
+        id: q.field,
+        render: ({ onDone }: { onDone: () => void }) => (
+          <KcScreen
+            question={q} index={i} total={kc.length}
+            market={market} labels={labels} pmg={pmg}
+            onDone={onDone}
+          />
+        ),
+      })),
+
       // ── The round loop: post → reveal, repeated until the SERVER says done ────
       loopScreen<PricingRoundResult>({
         id: 'pricing-rounds',
@@ -162,6 +214,13 @@ export default function Play() {
             onResult={(res, done) => {
               setHistory(res.history)
               setTotals({ total: res.totalProfit, average: res.averageProfit })
+              // The game just ended, so the reveal now exists. Fetch it before the
+              // debrief screen mounts — the client cannot construct this sentence.
+              if (done) {
+                void pricingGetQuestions()
+                  .then(q => setReveal(q.competitorReveal))
+                  .catch(() => { /* the debrief still works without it */ })
+              }
               onResult(res, done)
             }}
           />
@@ -177,13 +236,30 @@ export default function Play() {
           />
         ),
       }),
+
+      // ── The debrief paragraph, IF the instructor left it on ───────────────────
+      ...(debrief ? [{
+        id: debrief.field,
+        render: ({ onDone }: { onDone: () => void }) => (
+          <DebriefScreen
+            question={debrief}
+            competitorReveal={reveal}
+            history={history}
+            labels={labels}
+            pmg={pmg}
+            totalProfit={totals.total}
+            averageProfit={totals.average}
+            onDone={onDone}
+          />
+        ),
+      }] : []),
     ]
 
     return (
       <PageShell>
         <SequenceRunner
           screens={screens}
-          startIndex={0}
+          startIndex={screen.startIndex}
           onAllComplete={() => setScreen({ name: 'done' })}
         />
       </PageShell>

@@ -85,12 +85,11 @@ export { pdGetConfig, pdUpdateConfig } from './pd/instructorConfig'
 
 // ── Pricing Game / Cheyenne Shipping (game_id: pricing) ───────────────────────
 //
-// SLICE 1 — the round loop, server side: the market model (both modes), the
-// competitor strategy library, the per-student hidden horizon, and the two student
-// callables. The KC, the debrief, the screens, scoring, and the reports arrive in
-// later slices. One game, TWO course instances (Standard / PMG) distinguished by a
-// per-instance config flag, so there is exactly ONE set of callables here — never a
-// second game_id.
+// SLICE 3 — the complete student flow: (PMG rules →) KC → round loop → debrief,
+// plus participation scoring and the gradebook push. The reports arrive in Slice 4.
+// One game, TWO course instances (Standard / PMG) distinguished by a per-instance
+// config flag, so there is exactly ONE set of callables here — never a second
+// game_id, and never a second set of names to deploy.
 
 export const pricingBootstrap = makeSinglePlayerBootstrap({
   collectionPrefix: PRICING_COLLECTION_PREFIX,
@@ -103,6 +102,13 @@ export const pricingInstructorSession = makeSinglePlayerInstructorSession({
 // Student.
 export { pricingGetState } from './pricing/getState'
 export { pricingSubmitPrice } from './pricing/submitPrice'
+export { pricingGetQuestions } from './pricing/getQuestions'
+export { pricingSubmitKcAnswer } from './pricing/submitKcAnswer'
+export { pricingSubmitDebrief } from './pricing/submitDebrief'
+
+// Instructor.
+export { pricingSyncRoster } from './pricing/syncRoster'
+export { pricingScoreAndRecord } from './pricing/scoreAndRecord'
 
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 

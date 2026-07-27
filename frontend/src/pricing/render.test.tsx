@@ -1,12 +1,21 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- classic JSX transform
 import React from 'react'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
+
+// DebriefScreen imports the callables (not just their types), and api.ts reaches
+// ../firebase, which initializes Firebase Auth on import — in Node that throws. The
+// component is still pure presentation for rendering purposes: nothing is CALLED
+// until a button is clicked, and these tests never click. So the module is stubbed
+// rather than the component being left untested.
+vi.mock('../firebase', () => ({ auth: {}, db: {}, functions: {} }))
 import { HistoryTable } from './HistoryTable'
 import { EndScreen } from './EndScreen'
 import { MarketFacts, Formulas, PmgRules, Framing } from './MarketPanel'
+import { PmgRulesScreen } from './PmgRulesScreen'
+import { DebriefScreen } from './DebriefScreen'
 import { formatPrice, formatProfitM, formatShare, formatDemand } from './format'
-import { pricingResume } from './resume'
+import { pricingResumeIndex, pricingScreenCount, pricingStartIteration } from './resume'
 import type { PricingHistoryRow, PricingLabels, PricingMarket } from './api'
 
 // Static-markup render tests. The repo has no jsdom/testing-library, but every
@@ -242,7 +251,8 @@ describe('EndScreen — the reveal, and only after the game (spec §4)', () => {
   const history = [row(1), row(2, { yourTotal: 174_306_000, yourAverage: 87_153_000 })]
   const html = renderToStaticMarkup(
     <EndScreen history={history} labels={LABELS} pmg={false}
-      totalProfit={174_306_000} averageProfit={87_153_000} />)
+      totalProfit={174_306_000} averageProfit={87_153_000}
+      competitorReveal="Your competitor was programmed to open at the highest allowed price." />)
 
   it('reveals how many rounds the game lasted — counted from the rows themselves', () => {
     expect(textOf(html, 'pricing-final-rounds')).toBe('2')
@@ -254,9 +264,16 @@ describe('EndScreen — the reveal, and only after the game (spec §4)', () => {
     expect(textOf(html, 'pricing-final-average')).toBe('$87.15M')
   })
 
-  it('offers the debrief seam, disabled until the debrief exists', () => {
-    expect(html).toContain('data-testid="pricing-to-debrief"')
-    expect(html).toContain('data-testid="pricing-debrief-pending"')
+  it('repeats the competitor reveal, so a student who comes back does not lose it', () => {
+    expect(html).toContain('data-testid="pricing-final-reveal"')
+    expect(visibleText(html)).toContain('Your competitor was programmed to')
+  })
+
+  it('and omits that section entirely when the server sent no reveal', () => {
+    const bare = renderToStaticMarkup(
+      <EndScreen history={history} labels={LABELS} pmg={false}
+        totalProfit={1} averageProfit={1} competitorReveal={null} />)
+    expect(bare).not.toContain('data-testid="pricing-final-reveal"')
   })
 
   it('still shows the full history', () => {
@@ -264,20 +281,119 @@ describe('EndScreen — the reveal, and only after the game (spec §4)', () => {
   })
 })
 
-describe('pricingResume — where a returning student lands', () => {
-  it('mid-game: at the ask for the next unplayed round', () => {
-    expect(pricingResume({ phase: 'play', roundsPlayed: 6 })).toEqual({ finished: false, startIteration: 6 })
+describe('DebriefScreen — the reveal is the point of it (spec §9)', () => {
+  const history = [row(1), row(2)]
+  const QUESTION = {
+    field: 'debrief_reflection',
+    prompt: 'In a few sentences, explain your pricing strategy.',
+    placeholder: 'A few sentences are plenty.',
+  }
+  const html = renderToStaticMarkup(
+    <DebriefScreen
+      question={QUESTION}
+      competitorReveal="Your competitor was programmed to open at the highest allowed price, then best-reply."
+      history={history} labels={LABELS} pmg={false}
+      totalProfit={174_306_000} averageProfit={87_153_000}
+      onDone={() => {}} />)
+
+  it('shows the mode’s prompt and says it is ungraded', () => {
+    expect(textOf(html, 'pricing-debrief-prompt')).toBe(QUESTION.prompt)
+    expect(visibleText(html)).toContain('not graded')
   })
 
-  it('brand new: at round 1', () => {
-    expect(pricingResume({ phase: 'play', roundsPlayed: 0 })).toEqual({ finished: false, startIteration: 0 })
+  it('⚠ shows the competitor reveal, ABOVE the question they are about to answer', () => {
+    expect(html).toContain('data-testid="pricing-competitor-reveal"')
+    expect(html.indexOf('pricing-competitor-reveal')).toBeLessThan(html.indexOf('pricing-debrief-prompt'))
   })
 
-  it('⚠ finished comes from the PHASE, never from counting rounds', () => {
-    // A student who has played 20 rounds is NOT finished unless the server says so —
-    // deriving it from a count would need the drawn horizon in the browser, which is
-    // exactly what spec §3 forbids.
-    expect(pricingResume({ phase: 'play', roundsPlayed: 20 }).finished).toBe(false)
-    expect(pricingResume({ phase: 'debrief', roundsPlayed: 11 }).finished).toBe(true)
+  it('states the round count and the totals — the game is over, so it may', () => {
+    expect(textOf(html, 'pricing-debrief-rounds')).toBe('2')
+    expect(textOf(html, 'pricing-debrief-total')).toBe('$174.31M')
+  })
+
+  it('keeps the history on screen while they write', () => {
+    expect(html).toContain('data-testid="pricing-history-row-2"')
+  })
+
+  it('renders without a reveal rather than breaking, if the server sent none', () => {
+    const bare = renderToStaticMarkup(
+      <DebriefScreen question={QUESTION} competitorReveal={null} history={history}
+        labels={LABELS} pmg={false} totalProfit={0} averageProfit={0} onDone={() => {}} />)
+    expect(bare).not.toContain('data-testid="pricing-competitor-reveal"')
+    expect(bare).toContain('data-testid="pricing-debrief-input"')
+  })
+})
+
+describe('PmgRulesScreen — the standalone §6.2 announcement', () => {
+  const html = renderToStaticMarkup(
+    <PmgRulesScreen market={MARKET} labels={LABELS} minRounds={10} maxRounds={20} onDone={() => {}} />)
+
+  it('leads with the rule change and nothing else to do', () => {
+    expect(html).toContain('data-testid="pricing-pmg-screen"')
+    expect(html).toContain('data-testid="pricing-pmg-rules"')
+    expect(html).toContain('data-testid="pricing-pmg-continue"')
+  })
+
+  it('carries no knowledge check — that comes after', () => {
+    expect(html).not.toContain('pricing-kc-')
+  })
+
+  it('states the round RANGE, the only schedule fact a student may be told', () => {
+    expect(visibleText(html)).toContain('between 10 and 20 rounds')
+  })
+})
+
+describe('pricingResumeIndex — where a returning student lands', () => {
+  const base = { pmg: false, kcCount: 4, kcAnswered: 0, gameOver: false, debriefEnabled: true, debriefSubmitted: false }
+
+  it('brand new (Standard): the first KC question', () => {
+    expect(pricingResumeIndex(base)).toBe(0)
+  })
+
+  it('brand new (PMG): the rules screen, ahead of the KC', () => {
+    expect(pricingResumeIndex({ ...base, pmg: true, kcCount: 3 })).toBe(0)
+    expect(pricingScreenCount(true, 3, true)).toBe(6)   // rules + 3 KC + loop + debrief
+  })
+
+  it('part-way through the KC: the first unanswered question — past the rules screen', () => {
+    expect(pricingResumeIndex({ ...base, kcAnswered: 2 })).toBe(2)
+    expect(pricingResumeIndex({ ...base, pmg: true, kcCount: 3, kcAnswered: 2 })).toBe(3)
+  })
+
+  it('KC done, game running: the round loop', () => {
+    expect(pricingResumeIndex({ ...base, kcAnswered: 4 })).toBe(4)
+    expect(pricingResumeIndex({ ...base, pmg: true, kcCount: 3, kcAnswered: 3 })).toBe(4)
+  })
+
+  it('game over: the debrief', () => {
+    expect(pricingResumeIndex({ ...base, kcAnswered: 4, gameOver: true })).toBe(5)
+  })
+
+  it('debrief submitted: past the end', () => {
+    const done = { ...base, kcAnswered: 4, gameOver: true, debriefSubmitted: true }
+    expect(pricingResumeIndex(done)).toBe(6)
+    expect(pricingResumeIndex(done)).toBeGreaterThanOrEqual(pricingScreenCount(false, 4, true))
+  })
+
+  it('no debrief configured: game over IS the end', () => {
+    const noDebrief = { ...base, kcAnswered: 4, gameOver: true, debriefEnabled: false }
+    expect(pricingResumeIndex(noDebrief)).toBe(5)
+    expect(pricingResumeIndex(noDebrief)).toBeGreaterThanOrEqual(pricingScreenCount(false, 4, false))
+  })
+
+  it('no KC configured: the loop is the first screen', () => {
+    expect(pricingResumeIndex({ ...base, kcCount: 0, kcAnswered: 0 })).toBe(0)
+  })
+
+  it('⚠ gameOver comes from the SERVER, never from counting rounds', () => {
+    // Nothing here takes a round count at all — the browser has no horizon to compare
+    // against, which is exactly what spec §3 requires.
+    expect(Object.keys(base).sort())
+      .toEqual(['debriefEnabled', 'debriefSubmitted', 'gameOver', 'kcAnswered', 'kcCount', 'pmg'])
+  })
+
+  it('the round loop resumes at the next unplayed round', () => {
+    expect(pricingStartIteration(6)).toBe(6)
+    expect(pricingStartIteration(0)).toBe(0)
   })
 })

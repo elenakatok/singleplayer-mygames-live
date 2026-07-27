@@ -19,11 +19,10 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | `pd` | Repeated Prisoner's Dilemma | `pd.mygames.live` | `pd-mygames-live` |
 | `pricing` | Pricing Game (Cheyenne Shipping) | `pricing.mygames.live` | `pricing-mygames-live` |
 
-> `pricing` is at **Slice 2 (student screens)**: the market model in both modes, the
-> competitor strategy library, the per-student hidden horizon, the two student
-> callables (`pricingGetState`, `pricingSubmitPrice`), and the round loop on screen —
-> price entry → round result → end screen, in Standard and PMG. No KC, no debrief, no
-> scoring, no reports yet — and **nothing deployed**. It is **one game,
+> `pricing` is **FEATURE-COMPLETE for students** (Slice 3): (PMG rules →) knowledge
+> check → round loop → debrief, participation scoring + the gradebook push, and
+> classroom registration. The instructor dashboard, settings and reports are Slice 4 —
+> and **nothing is deployed**. It is **one game,
 > two course instances** — Standard and PMG are the same `game_id` switched by a
 > per-instance config flag, never a second prefix or a second hosting site.
 >
@@ -111,7 +110,7 @@ npm run harness:pd               # HTTP    — server contract
 npm run harness:pd:browser       # BROWSER — the whole game, clicked through
 npm run harness:pennies
 npm run harness:poll
-npm run harness:pricing          # HTTP    — scaffold + the round loop
+npm run harness:pricing          # HTTP    — the whole server contract
 npm run harness:pricing:browser  # BROWSER — both modes, clicked through
 HEADED=1 npm run harness:pricing:browser   # …and watch it play
 ```

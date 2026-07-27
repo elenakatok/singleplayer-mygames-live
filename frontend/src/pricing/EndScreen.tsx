@@ -14,9 +14,10 @@ import { card, sectionTitle } from './MarketPanel'
 // fetched from anywhere — it is `history.length`, which the student could count off
 // the table themselves.
 //
-// SLICE 2 ends here. The debrief paragraph (spec §9) and its reveal of what the
-// competitor was actually doing are the next slice; the button below is the seam
-// they attach to, deliberately visible now so the flow's shape is testable.
+// It is the LAST screen, after the debrief — a student reaches it once there is
+// nothing left to do. The competitor reveal is repeated here (the debrief is where
+// they first read it, and a student who closes the tab and comes back should not
+// lose it).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export function EndScreen({
@@ -25,27 +26,28 @@ export function EndScreen({
   pmg,
   totalProfit,
   averageProfit,
-  onContinue,
+  competitorReveal,
 }: {
   history: PricingHistoryRow[]
   labels: PricingLabels
   pmg: boolean
   totalProfit: number
   averageProfit: number
-  onContinue?: () => void
+  /** The server's reveal sentence (spec §9), or null if it declined to send one. */
+  competitorReveal?: string | null
 }) {
   const rounds = history.length
 
   return (
     <div>
       <h1 data-testid="pricing-game-over" style={{ marginTop: 0, fontSize: '1.6rem', color: colors.text }}>
-        That was your last round
+        All done — thank you
       </h1>
 
       <p style={{ lineHeight: 1.6, color: colors.text }}>
-        Your game lasted{' '}
+        Your answers and your game have been recorded. Your game lasted{' '}
         <strong data-testid="pricing-final-rounds">{rounds}</strong> round{rounds === 1 ? '' : 's'}.
-        Every round you played is below.
+        You can close this tab.
       </p>
 
       <section style={{ ...card, background: colors.confirmBg, borderColor: colors.confirmBorder }}>
@@ -75,24 +77,15 @@ export function EndScreen({
         </div>
       </section>
 
-      {/* The seam the debrief attaches to next slice. Until then it says what it is:
-          a student who reaches it has finished everything that exists. */}
-      <button
-        data-testid="pricing-to-debrief"
-        onClick={onContinue}
-        disabled={!onContinue}
-        style={{
-          padding: '0.7rem 1.75rem', fontSize: '1rem', fontWeight: 600,
-          cursor: onContinue ? 'pointer' : 'not-allowed',
-          backgroundColor: onContinue ? colors.text : colors.disabledBtnBg,
-          color: colors.white, border: 'none', borderRadius: 6, marginBottom: '0.5rem',
-        }}
-      >
-        Continue to the debrief
-      </button>
-      <p data-testid="pricing-debrief-pending" style={{ fontSize: typography.sizeXs, color: colors.textSecondary, margin: '0 0 1.5rem' }}>
-        The debrief is not open yet. Your game has been recorded — you can close this tab.
-      </p>
+      {competitorReveal && (
+        <section
+          data-testid="pricing-final-reveal"
+          style={{ ...card, background: colors.infoBannerBg, borderColor: colors.infoBannerBorder }}
+        >
+          <h2 style={sectionTitle}>What your competitor was doing</h2>
+          <p style={{ margin: 0, lineHeight: 1.6, color: colors.text }}>{competitorReveal}</p>
+        </section>
+      )}
 
       {rounds > 0 && (
         <section style={card}>
