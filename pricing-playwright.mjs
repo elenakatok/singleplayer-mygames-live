@@ -38,6 +38,8 @@
 //   • the LAUNCHER SPAWN PATH — the shipped driver run as a child process with the
 //     exact arguments the launcher's /launch-robots passes it, ending in a scorable
 //     cohort;
+//   • the LAUNCHER AUTO-DRIVE — "Start at game" run against a student, then the tab
+//     opened, asserting it lands on price entry with the KC recorded AND STAYS OPEN;
 //   • the INSTRUCTOR dashboard and all three report tiers against a deliberately
 //     MIXED population (finished / mid-game / never started, in both modes), with
 //     the Tier-1 rows and the Tier-3 per-round averages and denominators checked
@@ -71,6 +73,10 @@ import { fileURLToPath } from 'node:url'
 // robot driver runs in production. A second copy here would let the tested styles
 // drift from the shipped ones, which is the one thing a style test exists to prevent.
 import { STANDARD_STYLES, PMG_STYLES, assignStyles, nashStudentPrice } from './bot/pricing-styles.mjs'
+// The SHIPPED auto-drive sequence — the same module the launcher's "Start at game"
+// runs before it opens a student tab. Imported rather than reimplemented so the tab
+// this harness opens is the tab Elena gets.
+import { drivePricingStudentPastKc } from './bot/pricing-autodrive.mjs'
 
 const PROJECT = 'demo-singleplayer'
 const FUNCTIONS = `http://127.0.0.1:5010/${PROJECT}/us-central1`
@@ -1151,6 +1157,92 @@ async function main() {
       'every launcher-spawned robot finished WITH a debrief paragraph')
     check(repL.result.charts.prices.length >= 10,
       'and they populated the class chart')
+
+
+    // ── 9. The launcher's "Start at game" auto-drive ───────────────────────────
+    // The launcher runs this sequence server-side with the student's classroom JWT,
+    // then opens their tab. Here the same shipped module runs against the emulator
+    // with the dev identity — only the transport differs, so what is under test is
+    // the sequence and the screen it lands on.
+    console.log('\n[9] Launcher auto-drive — "Start at game" lands the tab on price entry')
+
+    for (const pmgDriven of [false, true]) {
+      const modeName = pmgDriven ? 'PMG' : 'Standard'
+      const GID_D = `pw-drive-${pmgDriven ? 'pmg' : 'std'}-${stamp}`
+      const DPID = 'pw-drive-stu'
+      await putDoc(`pricing_game_instances/${GID_D}/config/main`, {
+        seed: strVal('seed-drive'), pmg: boolVal(pmgDriven),
+      })
+
+      // The drive itself — the module the launcher imports, called the way it calls it.
+      const drove = await drivePricingStudentPastKc(
+        async (fnName, data) => {
+          const r = await callFn(fnName, data)
+          if (!r.ok) throw new Error(`${fnName}: ${r.error}`)
+          return r.result
+        },
+        { _test: { participant_id: DPID, game_instance_id: GID_D } },
+      )
+      check(drove.pmg === pmgDriven, `${modeName}: the drive reports the instance mode it found`)
+      check(drove.questionsAnswered === (pmgDriven ? 3 : 4),
+        `${modeName}: it answered every KC question (${drove.questionsAnswered})`)
+
+      // The KC really is recorded server-side — a score is stamped, so the student is
+      // past it for good rather than merely appearing to be.
+      const droveDoc = await getDoc(`pricing_game_instances/${GID_D}/participants/${DPID}`)
+      check(droveDoc?.kc_static_answers != null && droveDoc?.knowledge_check_score != null,
+        `${modeName}: the knowledge check is RECORDED, with a score`)
+
+      // Now open the tab, exactly as the launcher does after driving.
+      const ctxD = await browser.newContext()
+      const pageD = await ctxD.newPage()
+      await pageD.goto(studentUrl(GID_D, DPID))
+      await pageD.waitForSelector('[data-testid="pricing-round-heading"], [data-testid="pricing-kc-prompt"], [data-testid="pricing-pmg-screen"]', { timeout: 30000 })
+
+      check(await exists(pageD, '[data-testid="pricing-round-heading"]'),
+        `${modeName}: ⚠ the opened tab lands on the PRICE-ENTRY screen`)
+      check(!(await exists(pageD, '[data-testid="pricing-kc-prompt"]')),
+        `${modeName}: …not on the knowledge check`)
+      check(!(await exists(pageD, '[data-testid="pricing-pmg-screen"]')),
+        `${modeName}: …and not on the PMG rules screen${pmgDriven ? ' (finishing the KC puts them past it)' : ''}`)
+      check(await testId(pageD, 'pricing-round-heading') === 'Round 1',
+        `${modeName}: on round 1, with the game not yet played`)
+      // The in-game PMG panel is still there in a PMG instance — the reference copy,
+      // which is a different job from the rules SCREEN.
+      check((await exists(pageD, '[data-testid="pricing-pmg-rules"]')) === pmgDriven,
+        `${modeName}: the in-game PMG reference panel is ${pmgDriven ? 'present' : 'absent'}`)
+
+      // ⚠ AND THE TAB STAYS OPEN. Nothing in the drive, the page or the game closes it:
+      // an opened student tab is something Elena inspects, so it has to still be there
+      // after the drive has finished with it.
+      await new Promise(r => setTimeout(r, 2000))
+      check(!pageD.isClosed(), `${modeName}: ⚠ the tab is STILL OPEN after the drive (not auto-closed)`)
+      check(await exists(pageD, '[data-testid="pricing-round-heading"]'),
+        `${modeName}: …and still showing where the drive left it`)
+
+      // A driven student who then PLAYS to the end must be left on their end screen,
+      // not closed out of it — that game is the thing worth inspecting.
+      if (!pmgDriven) {
+        const horizon = Number((await getDoc(`pricing_game_instances/${GID_D}/truth/participant_${DPID}`))?.rounds?.integerValue)
+        for (let n = 1; n <= horizon; n++) {
+          await pageD.fill('[data-testid="pricing-price-input"]', '1500')
+          await pageD.click('[data-testid="pricing-submit-round"]')
+          await pageD.waitForSelector('[data-testid="pricing-reveal"]', { timeout: 30000 })
+          await pageD.click('[data-testid="pricing-continue"]')
+          await pageD.waitForSelector('[data-testid="pricing-round-heading"], [data-testid="pricing-debrief-heading"]', { timeout: 30000 })
+        }
+        await pageD.fill('[data-testid="pricing-debrief-input"]', 'Held a steady price all game.')
+        await pageD.click('[data-testid="pricing-debrief-submit"]')
+        await pageD.waitForSelector('[data-testid="pricing-game-over"]', { timeout: 30000 })
+        await new Promise(r => setTimeout(r, 2000))
+        check(!pageD.isClosed() && await exists(pageD, '[data-testid="pricing-game-over"]'),
+          '⚠ a driven student who plays through is left ON the end screen, tab open')
+        check(await exists(pageD, `[data-testid="pricing-history-row-${horizon}"]`),
+          '…with the whole played game still on screen to inspect')
+      }
+
+      await ctxD.close()
+    }
 
     cohortServer.close()
 
