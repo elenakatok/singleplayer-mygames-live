@@ -262,6 +262,23 @@ export type PricingPricePoint = {
   n: number
 }
 
+/** One round of the Tier-3 PROFIT chart. `n` is the same denominator the price
+ *  chart reports — the two charts always average over the same students. */
+export type PricingProfitPoint = {
+  round: number
+  student: number
+  competitor: number
+  n: number
+}
+
+/** The profit each firm earns at the reference prices. The two DIFFER even under
+ *  PMG — same price, different costs and shares, so different money. */
+export type PricingProfitEquilibrium = {
+  student: number
+  competitor: number
+  label: string
+}
+
 export type PricingEquilibrium = {
   student: number
   competitor: number
@@ -282,12 +299,16 @@ export type PricingReportData = {
   /** The longest game anyone played — the chart's x-axis. NOT anyone's horizon. */
   maxRoundsPlayed: number
   participants: PricingReportParticipant[]
-  charts: { prices: PricingPricePoint[] }
+  charts: { prices: PricingPricePoint[]; profits: PricingProfitPoint[] }
   summary: {
     averagePostedPrice: number | null
     /** PMG only; null under Standard, where there is no single price paid. */
     averageEffectivePrice: number | null
     equilibrium: PricingEquilibrium
+    /** Both firms' mean profit per round played; null before anyone has played. */
+    averageProfit: number | null
+    averageCompetitorProfit: number | null
+    profitEquilibrium: PricingProfitEquilibrium
   }
   debriefPrompt: string
 }

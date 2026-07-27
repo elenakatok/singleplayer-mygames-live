@@ -9,6 +9,7 @@ import {
   type PricingReportData, type PricingReportParticipant,
 } from './api'
 import { PriceChartSVG } from './PriceChartSVG'
+import { ProfitChartSVG } from './ProfitChartSVG'
 import { ModeHeader } from './Dashboard'
 import { formatPrice, formatProfitM } from './format'
 
@@ -18,7 +19,9 @@ import { formatPrice, formatProfitM } from './format'
 //
 //   Tier 1  Outcomes roster           — every student, finished or not
 //   Tier 2  Debrief paragraphs        — exportable, for the AI-summary pass
-//   Tier 3  Average posted price by round — THE slide-19 chart
+//   Tier 3  Average posted price by round — THE slide-19 chart — and its sibling,
+//           average profit by round, on the same tile. The pair is the lesson: what
+//           the class charged, and what that earned them.
 //
 // INSTRUCTOR-ONLY, all of it. Every tile is labelled with the instance's mode and its
 // competitor rule (spec §10) because two instances of this game run in the same course
@@ -135,50 +138,90 @@ function DebriefAnswers({
 
 // ── Tier 3: the chart + its summary stats ──────────────────────────────────────
 
+const stat = (label: string, value: string, testId: string) => (
+  <div style={{ minWidth: '9rem' }}>
+    <div style={{ fontSize: '0.78rem', color: colors.textSecondary }}>{label}</div>
+    <div data-testid={testId} style={{ fontSize: '1.15rem', fontWeight: 700, color: colors.text, ...tnum }}>{value}</div>
+  </div>
+)
+
+const summaryBox: React.CSSProperties = {
+  flex: '0 1 13rem', border: `1px solid ${colors.borderMid}`, borderRadius: 8,
+  padding: '0.9rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.85rem',
+}
+const chartRow: React.CSSProperties = {
+  display: 'flex', flexWrap: 'wrap', gap: '1.5rem', alignItems: 'flex-start',
+}
+
+/**
+ * The Tier-3 tile: the price chart, then its profit sibling underneath, each with its
+ * own summary box.
+ *
+ * ⚠ THE TWO ARE ONE ARGUMENT, which is why they share a tile rather than sitting in
+ * two. "The class priced down toward equilibrium" and "the class earned less doing
+ * it" are the same finding stated twice, and splitting them across tiles would let a
+ * reader see either half alone.
+ */
 function PriceReport({ data }: { data: PricingReportData }) {
   const s = data.summary
-  const stat = (label: string, value: string, testId: string) => (
-    <div style={{ minWidth: '9rem' }}>
-      <div style={{ fontSize: '0.78rem', color: colors.textSecondary }}>{label}</div>
-      <div data-testid={testId} style={{ fontSize: '1.15rem', fontWeight: 700, color: colors.text, ...tnum }}>{value}</div>
-    </div>
-  )
 
   return (
-    <div data-testid="pricing-report-prices" style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', alignItems: 'flex-start' }}>
-      <div style={{ flex: '1 1 20rem', minWidth: '18rem' }}>
-        <PriceChartSVG
-          points={data.charts.prices}
-          equilibrium={data.summary.equilibrium}
-          market={data.market}
-          labels={data.labels}
-        />
+    <div data-testid="pricing-report-prices">
+      {/* ── Average posted price by round ─────────────────────────────────── */}
+      <div style={chartRow}>
+        <div style={{ flex: '1 1 20rem', minWidth: '18rem' }}>
+          <PriceChartSVG
+            points={data.charts.prices}
+            equilibrium={data.summary.equilibrium}
+            market={data.market}
+            labels={data.labels}
+          />
+        </div>
+
+        {/* The summary-stat box beside the chart — spec §10 mirrors slide 19's table. */}
+        <div data-testid="pricing-summary-box" style={summaryBox}>
+          {stat('Average posted price', price(s.averagePostedPrice), 'pricing-summary-avg-price')}
+          {data.pmg && stat('Average price paid', price(s.averageEffectivePrice), 'pricing-summary-avg-effective')}
+          {stat(
+            data.pmg ? 'PMG equilibrium' : `${data.labels.student} equilibrium`,
+            formatPrice(s.equilibrium.student),
+            'pricing-summary-equilibrium',
+          )}
+          {!data.pmg && stat(
+            `${data.labels.competitor} equilibrium`,
+            formatPrice(s.equilibrium.competitor),
+            'pricing-summary-equilibrium-competitor',
+          )}
+          <p style={{ fontSize: '0.72rem', color: colors.textSecondary, margin: 0, lineHeight: 1.45 }}>
+            {s.equilibrium.label} — derived from this instance’s market, so it moves if the
+            market is edited.
+          </p>
+        </div>
       </div>
 
-      {/* The summary-stat box beside the chart — spec §10 mirrors slide 19's table. */}
-      <div
-        data-testid="pricing-summary-box"
-        style={{
-          flex: '0 1 13rem', border: `1px solid ${colors.borderMid}`, borderRadius: 8,
-          padding: '0.9rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.85rem',
-        }}
-      >
-        {stat('Average posted price', price(s.averagePostedPrice), 'pricing-summary-avg-price')}
-        {data.pmg && stat('Average price paid', price(s.averageEffectivePrice), 'pricing-summary-avg-effective')}
-        {stat(
-          data.pmg ? 'PMG equilibrium' : `${data.labels.student} equilibrium`,
-          formatPrice(s.equilibrium.student),
-          'pricing-summary-equilibrium',
-        )}
-        {!data.pmg && stat(
-          `${data.labels.competitor} equilibrium`,
-          formatPrice(s.equilibrium.competitor),
-          'pricing-summary-equilibrium-competitor',
-        )}
-        <p style={{ fontSize: '0.72rem', color: colors.textSecondary, margin: 0, lineHeight: 1.45 }}>
-          {s.equilibrium.label} — derived from this instance’s market, so it moves if the
-          market is edited.
-        </p>
+      {/* ── …and what those prices EARNED ─────────────────────────────────── */}
+      <h3 style={{ margin: '1.75rem 0 0.5rem', fontSize: '1rem', color: colors.text }}>
+        Average profit by round
+      </h3>
+      <div style={chartRow}>
+        <div style={{ flex: '1 1 20rem', minWidth: '18rem' }}>
+          <ProfitChartSVG
+            points={data.charts.profits}
+            equilibrium={data.summary.profitEquilibrium}
+            labels={data.labels}
+          />
+        </div>
+
+        <div data-testid="pricing-profit-summary-box" style={summaryBox}>
+          {stat(`${data.labels.student} avg profit / round`, profit(s.averageProfit), 'pricing-summary-avg-profit')}
+          {stat(`${data.labels.competitor} avg profit / round`, profit(s.averageCompetitorProfit), 'pricing-summary-avg-competitor-profit')}
+          {stat(`${data.labels.student} at equilibrium`, formatProfitM(s.profitEquilibrium.student), 'pricing-summary-eq-profit')}
+          {stat(`${data.labels.competitor} at equilibrium`, formatProfitM(s.profitEquilibrium.competitor), 'pricing-summary-eq-profit-competitor')}
+          <p style={{ fontSize: '0.72rem', color: colors.textSecondary, margin: 0, lineHeight: 1.45 }}>
+            {s.profitEquilibrium.label} — computed through the same market model that
+            scored every round, so it moves if the market is edited.
+          </p>
+        </div>
       </div>
     </div>
   )
@@ -237,7 +280,7 @@ export default function Reports() {
     },
     {
       id: 'prices',
-      title: 'Average posted price by round',
+      title: 'Average price and profit by round',
       disabled: played.length === 0,
       preview: played.length === 0
         ? <span style={{ color: '#94a3b8' }}>No rounds played yet.</span>
@@ -267,7 +310,7 @@ export default function Reports() {
         </Modal>
       )}
       {active === 'prices' && (
-        <Modal title={`Average posted price by round (${modeName})`} onClose={() => setActive(null)}>
+        <Modal title={`Average price and profit by round (${modeName})`} onClose={() => setActive(null)}>
           <PriceReport data={data} />
         </Modal>
       )}

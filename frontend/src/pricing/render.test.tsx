@@ -86,6 +86,10 @@ describe('number formatting (spec §4 — the case table’s own format)', () =>
     expect(formatProfitM(0)).toBe('$0.00M')
     expect(formatProfitM(-1)).toBe('$0.00M')     // −$0.000001M rounds to nothing
     expect(formatProfitM(-10_000)).toBe('−$0.01M')
+    // ⚠ -0 IS REACHABLE, not hypothetical: a firm priced out of the market has zero
+    // share and a negative margin, and 0 × negative is -0 in IEEE-754. It arrives at
+    // the profit chart's equilibrium line that way.
+    expect(formatProfitM(-0)).toBe('$0.00M')
   })
 
   it('prices are whole dollars with separators; shares one decimal; demand whole containers', () => {

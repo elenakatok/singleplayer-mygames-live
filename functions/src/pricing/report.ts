@@ -10,9 +10,11 @@ import { parseStoredRounds } from './rounds'
 import { clientMarket } from './clientState'
 import { debriefQuestion } from './questions'
 import {
-  pricesByRound, averagePrice, averageProfitPerRound, totalProfit,
-  classAveragePrice, classAverageEffectivePrice, equilibriumReference,
-  type PricingGameRow, type PricePoint, type EquilibriumReference,
+  pricesByRound, profitsByRound, averagePrice, averageProfitPerRound, totalProfit,
+  classAveragePrice, classAverageEffectivePrice, classAverageProfit,
+  equilibriumReference, equilibriumProfitReference,
+  type PricingGameRow, type PricePoint, type ProfitPoint,
+  type EquilibriumReference, type ProfitEquilibriumReference,
 } from './reportStats'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -85,6 +87,7 @@ export const pricingGetReport = onCall({ cors: PRICING_CORS_ORIGINS }, async (re
       competitorPrices: rounds.map(r => r.competitor_price),
       effectivePrices: rounds.map(r => r.effective_price),
       profits: rounds.map(r => r.student_profit),
+      competitorProfits: rounds.map(r => r.competitor_profit),
     }
     gameRows.push(row)
 
@@ -114,11 +117,17 @@ export const pricingGetReport = onCall({ cors: PRICING_CORS_ORIGINS }, async (re
    */
   const maxRoundsPlayed = gameRows.reduce((max, r) => Math.max(max, r.prices.length), 0)
 
-  const charts: { prices: PricePoint[] } = {
+  const charts: { prices: PricePoint[]; profits: ProfitPoint[] } = {
     prices: pricesByRound(gameRows, maxRoundsPlayed),
+    // The price chart's sibling: what those prices EARNED, round by round, with the
+    // same denominators.
+    profits: profitsByRound(gameRows, maxRoundsPlayed),
   }
 
   const equilibrium: EquilibriumReference = equilibriumReference(config.market, config.pmg)
+  const profitEquilibrium: ProfitEquilibriumReference =
+    equilibriumProfitReference(config.market, config.pmg)
+  const avgProfit = classAverageProfit(gameRows)
 
   return {
     ok: true as const,
@@ -144,6 +153,11 @@ export const pricingGetReport = onCall({ cors: PRICING_CORS_ORIGINS }, async (re
       /** PMG only — null under Standard, where there is no single price paid. */
       averageEffectivePrice: config.pmg ? classAverageEffectivePrice(gameRows) : null,
       equilibrium,
+      /** The profit chart's summary: both firms' mean profit per round, and the
+       *  profit each earns at the reference prices. */
+      averageProfit: avgProfit.student,
+      averageCompetitorProfit: avgProfit.competitor,
+      profitEquilibrium,
     },
     /** The prompt the paragraphs answered — mode-dependent, so Tier 2 is labelled
      *  with the question that was actually asked. */

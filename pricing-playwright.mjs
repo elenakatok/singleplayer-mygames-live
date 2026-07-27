@@ -769,6 +769,29 @@ async function main() {
       return prices
     }
 
+    /** The independent model of what the Tier-3 PROFIT chart must show. */
+    function expectedProfitChart(games, pmg) {
+      const maxRounds = Math.max(0, ...games.map(g => g.length))
+      const points = []
+      for (let round = 1; round <= maxRounds; round++) {
+        const played = games.filter(g => g.length >= round)
+        if (played.length === 0) continue
+        const mine = [], theirs = []
+        for (const g of played) {
+          const rival = expectedCompetitorPrice(pmg, g.slice(0, round - 1))
+          const out = expectedOutcome(g[round - 1], rival, pmg)
+          mine.push(out.yourProfit); theirs.push(out.competitorProfit)
+        }
+        points.push({
+          round,
+          student: mine.reduce((a, b) => a + b, 0) / mine.length,
+          competitor: theirs.reduce((a, b) => a + b, 0) / theirs.length,
+          n: played.length,
+        })
+      }
+      return points
+    }
+
     /** The independent model of what the Tier-3 chart must show. */
     function expectedChart(games) {
       const maxRounds = Math.max(0, ...games.map(g => g.length))
@@ -867,10 +890,11 @@ async function main() {
     const board = await pageI.locator('body').innerText()
     check(/Outcomes — all students/.test(board), 'Tier 1 tile is present')
     check(/Debrief paragraphs/.test(board), 'Tier 2 tile is present')
-    check(/Average posted price by round/.test(board), 'Tier 3 tile is present')
+    check(/Average price and profit by round/.test(board),
+      'Tier 3 tile is present — and named for BOTH charts it now holds')
 
     // ── Tier 3: the chart, its denominators, and its equilibrium lines ────────
-    await pageI.click('text=Average posted price by round')
+    await pageI.click('text=Average price and profit by round')
     await pageI.waitForSelector('[data-testid="pricing-price-chart"]')
 
     const wantPoints = expectedChart([finPrices, midPrices])
@@ -902,6 +926,76 @@ async function main() {
     check(!(await exists(pageI, '[data-testid="pricing-summary-avg-effective"]')),
       'Standard has no average-price-paid stat — there is no single price paid')
 
+
+    // ── Tier 3, second chart: average PROFIT by round ─────────────────────────
+    // The price chart's sibling, on the same tile: what those prices EARNED.
+    check(await exists(pageI, '[data-testid="pricing-profit-chart"]'),
+      'the profit chart is on the same tile, below the price chart')
+
+    const wantProfit = expectedProfitChart([finPrices, midPrices], false)
+    for (const p of [wantProfit[0], wantProfit[wantProfit.length - 1]]) {
+      const shown = await pageI.locator(`[data-testid="pricing-profit-n-${p.round}"]`).count()
+      if (shown > 0) {
+        check(await svgText(pageI, `pricing-profit-n-${p.round}`) === `n=${p.n}`,
+          `profit chart round ${p.round} reports the SAME denominator as the price chart (n=${p.n})`)
+      }
+    }
+    check(wantProfit.map(p => p.n).join() === wantPoints.map(p => p.n).join(),
+      'the two charts average over exactly the same students, round for round')
+
+    // Both dashed lines, and the summary box's four figures — all from the model.
+    check(await exists(pageI, '[data-testid="pricing-profit-eq-line-student"]')
+      && await exists(pageI, '[data-testid="pricing-profit-eq-line-competitor"]'),
+      'Standard draws a dashed profit line for EACH firm')
+    const eqStd = expectedOutcome(1394, 1472, false)
+    check(await testId(pageI, 'pricing-summary-eq-profit') === fmtProfitM(eqStd.yourProfit),
+      `the summary box states the DERIVED equilibrium profit (${fmtProfitM(eqStd.yourProfit)})`)
+    check(await testId(pageI, 'pricing-summary-eq-profit-competitor') === fmtProfitM(eqStd.competitorProfit),
+      `…and the competitor's (${fmtProfitM(eqStd.competitorProfit)})`)
+
+    const allMine = [], allTheirs = []
+    for (const g of [finPrices, midPrices]) {
+      for (let i = 0; i < g.length; i++) {
+        const out = expectedOutcome(g[i], expectedCompetitorPrice(false, g.slice(0, i)), false)
+        allMine.push(out.yourProfit); allTheirs.push(out.competitorProfit)
+      }
+    }
+    check(await testId(pageI, 'pricing-summary-avg-profit')
+      === fmtProfitM(allMine.reduce((a, b) => a + b, 0) / allMine.length),
+      'and the class average profit per round, over every round every student played')
+    check(await testId(pageI, 'pricing-summary-avg-competitor-profit')
+      === fmtProfitM(allTheirs.reduce((a, b) => a + b, 0) / allTheirs.length),
+      '…and the competitor’s average')
+
+    // ⚠ NEGATIVE PROFIT MUST BE VISIBLE AS NEGATIVE. The finisher's schedule includes
+    // $1,200 — below the $966 unit cost is not reached there, so this drives a
+    // separate student who prices at the floor every round and checks the chart holds
+    // it: the zero line appears, and the series runs below it.
+    const GID_NEG = `pw-negative-${stamp}`
+    const negPrices = []
+    const negStu = await openInstance(GID_NEG, 'pw-neg-stu', 'seed-neg', false)
+    for (let n = 1; n <= 4; n++) {
+      await callFn('pricingSubmitPrice', asStudent(GID_NEG, 'pw-neg-stu', { round: n, price: 900 }))
+      negPrices.push(900)
+    }
+    const ctxN2 = await browser.newContext()
+    const pageN2 = await ctxN2.newPage()
+    await pageN2.goto(instrUrl('/reports', GID_NEG))
+    await pageN2.waitForSelector('[data-testid="pricing-mode-header"]', { timeout: 30000 })
+    await pageN2.click('text=Average price and profit by round')
+    await pageN2.waitForSelector('[data-testid="pricing-profit-chart"]')
+    check(await exists(pageN2, '[data-testid="pricing-profit-chart-zero"]'),
+      '⚠ a below-cost class gets a ZERO LINE on the profit chart')
+    const negSummary = await pageN2.locator('[data-testid="pricing-profit-summary-box"]').innerText()
+    check(/−\$/.test(negSummary),
+      '⚠ …and its average profit renders as a signed LOSS in the summary box')
+    const wantNeg = expectedProfitChart([negPrices], false)
+    check(wantNeg[0].student < 0, '(the model agrees the class is losing money)')
+    check(await testId(pageN2, 'pricing-summary-avg-profit')
+      === fmtProfitM(wantNeg.reduce((a, p) => a + p.student, 0) / wantNeg.length),
+      '…matching the independent model to the cent')
+    await ctxN2.close()
+
     await ctxI.close()
 
     // ── The PMG instance's reports differ where the mode differs ──────────────
@@ -911,7 +1005,7 @@ async function main() {
     await pageIP.waitForSelector('[data-testid="pricing-mode-header"]', { timeout: 30000 })
     check((await testId(pageIP, 'pricing-mode-name')).includes('PMG'),
       'the PMG instance labels itself PMG')
-    await pageIP.click('text=Average posted price by round')
+    await pageIP.click('text=Average price and profit by round')
     await pageIP.waitForSelector('[data-testid="pricing-price-chart"]')
     check(await exists(pageIP, '[data-testid="pricing-eq-line-pmg"]'),
       'PMG draws ONE dashed line…')
@@ -924,6 +1018,21 @@ async function main() {
       'PMG adds the average price PAID to the summary box')
     check(await testId(pageIP, 'pricing-summary-equilibrium') === fmtPrice(MARKET.maxPrice),
       'and its equilibrium stat is the ceiling')
+
+    // ⚠ THE PROFIT CHART STILL DRAWS TWO LINES UNDER PMG, where the price chart draws
+    // one: any equal price is an equilibrium, but that one price earns the two firms
+    // different money (different costs, different shares).
+    check(await exists(pageIP, '[data-testid="pricing-profit-eq-line-student"]')
+      && await exists(pageIP, '[data-testid="pricing-profit-eq-line-competitor"]'),
+      '⚠ PMG draws TWO dashed profit lines, where the price chart draws one')
+    const pmgEq = expectedOutcome(MARKET.maxPrice, MARKET.maxPrice, true)
+    check(await testId(pageIP, 'pricing-summary-eq-profit') === fmtProfitM(pmgEq.yourProfit),
+      `PMG equilibrium profit at the ceiling (${fmtProfitM(pmgEq.yourProfit)})`)
+    check(await testId(pageIP, 'pricing-summary-eq-profit-competitor') === fmtProfitM(pmgEq.competitorProfit),
+      `…and the competitor's (${fmtProfitM(pmgEq.competitorProfit)})`)
+    const pmgProfitBox = await pageIP.locator('[data-testid="pricing-profit-summary-box"]').innerText()
+    check(/ceiling shown/.test(pmgProfitBox),
+      '…labelled with the price chart’s "ceiling shown" convention')
 
     // Tier 2 carries the paragraph the PMG student wrote, labelled with its context.
     await pageIP.click('button:has-text("Close")')
@@ -948,6 +1057,8 @@ async function main() {
       'an instance where nobody has played says so rather than crashing')
     check(!/NaN|Infinity|undefined/.test(emptyBoard),
       '⚠ …and divides nothing by zero on the way (no NaN/Infinity on screen)')
+    check(!(await exists(pageE, '[data-testid="pricing-profit-chart"]')),
+      '…with the profit chart equally absent rather than half-drawn')
     await ctxE.close()
 
 
