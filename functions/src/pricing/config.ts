@@ -128,6 +128,8 @@ export interface PricingConfig {
   maxRounds: number
   /** Is the knowledge check part of this instance's flow? */
   kcEnabled: boolean
+  /** Instructor-added KC questions, rendered AFTER the derived set. */
+  addedKcQuestions: PricingAddedKcQuestion[]
   /** Is the debrief paragraph part of this instance's flow? */
   debriefEnabled: boolean
   /** The debrief prompt shown to students. Defaults PER MODE (spec §9). */
@@ -140,6 +142,31 @@ export interface PricingConfig {
    * leaves the server either.
    */
   seed: string | null
+}
+
+/**
+ * ONE instructor-added knowledge-check question.
+ *
+ * ⚠ DELIBERATELY A SEPARATE SOURCE FROM THE DERIVED SET. The derived questions are
+ * computed from the instance's MARKET at serve AND grade time (questions.ts) so they
+ * can never drift from the market a student is pricing in. These are hand-authored
+ * and carry their own stored answer key. Merging the two lists would mean storing the
+ * derived ones as frozen text — exactly the drift the derivation exists to prevent —
+ * so they are kept apart end to end: separate config field, separate render segment,
+ * separate grading path. Mirrors PD's PdAddedKcQuestion exactly.
+ */
+export interface PricingAddedKcQuestion {
+  /** Stable id, also the answers-map key. Never collides with a derived `kc_*` field
+   *  because it is minted with an `akc_` prefix. */
+  id: string
+  type: 'mc' | 'text'
+  prompt: string
+  /** mc only: the offered choices, in order. */
+  options?: { value: string; label: string }[]
+  /** mc only: the correct option value. Absent ⇒ recorded but UNGRADED. */
+  correct_value?: string
+  /** Shown after answering, like the derived ones. */
+  explanation?: string
 }
 
 /** The instance's competitor rules — ONE per mode (spec §5). Stored in truth/main,
@@ -163,9 +190,61 @@ export const DEFAULT_PRICING_CONFIG: PricingConfig = {
   minRounds: DEFAULT_MIN_ROUNDS,
   maxRounds: DEFAULT_MAX_ROUNDS,
   kcEnabled: true,
+  addedKcQuestions: [],
   debriefEnabled: true,
   debriefPrompt: DEFAULT_DEBRIEF_PROMPT_STANDARD,
   seed: null,
+}
+
+/** Defensive parse of ONE instructor-added KC question. Returns null if unusable —
+ *  loadPricingConfig drops those rather than throwing, so a half-written config can
+ *  never make the game unplayable (the same posture as parseMarket). Copied from PD's
+ *  parseAddedKcQuestion, including its two traps. */
+export function parseAddedKcQuestion(raw: unknown): PricingAddedKcQuestion | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const q = raw as Record<string, unknown>
+  const id = typeof q.id === 'string' ? q.id.trim() : ''
+  const prompt = typeof q.prompt === 'string' ? q.prompt.trim() : ''
+  if (!id || !prompt) return null
+  // An added question may NEVER take a derived field's id, or the grader's
+  // derived-first lookup would shadow it (and the student would be graded against the
+  // market instead of the instructor's key).
+  if (id.startsWith('kc_')) return null
+
+  // ⚠ OPTIONAL FIELDS ARE OMITTED, NEVER SET TO undefined. These objects are written
+  // straight into Firestore, which REJECTS an undefined value outright — so an
+  // explanation-less question would fail the whole save rather than store cleanly.
+  const explanation = typeof q.explanation === 'string' && q.explanation.trim()
+    ? q.explanation.trim() : null
+
+  const type: 'mc' | 'text' = q.type === 'mc' ? 'mc' : 'text'
+  if (type === 'text') {
+    // Free text cannot be auto-graded, so it is recorded and left UNGRADED — it never
+    // enters the KC score's numerator or denominator.
+    return { id, type, prompt, ...(explanation ? { explanation } : {}) }
+  }
+
+  const optionsRaw = Array.isArray(q.options) ? q.options : []
+  const options: { value: string; label: string }[] = []
+  for (const o of optionsRaw) {
+    if (typeof o !== 'object' || o === null) continue
+    const oo = o as Record<string, unknown>
+    const value = typeof oo.value === 'string' ? oo.value : ''
+    const label = typeof oo.label === 'string' ? oo.label : ''
+    if (value && label) options.push({ value, label })
+  }
+  if (options.length < 2) return null   // an mc question needs something to choose between
+
+  const key = typeof q.correct_value === 'string' ? q.correct_value : ''
+  // A key that names no offered option is dropped rather than kept: it would mark
+  // every student wrong, silently.
+  const hasKey = options.some(o => o.value === key)
+
+  return {
+    id, type, prompt, options,
+    ...(hasKey ? { correct_value: key } : {}),
+    ...(explanation ? { explanation } : {}),
+  }
 }
 
 /** Clamp + sanity-check a stored round range. Returns the shipped defaults when the
@@ -209,6 +288,9 @@ export function loadPricingConfig(configData: Record<string, unknown> | undefine
     // Absent ⇒ ON. An instance created before a toggle existed keeps the flow it
     // had, rather than silently losing its knowledge check.
     kcEnabled: configData?.kc_enabled !== false,
+    addedKcQuestions: (Array.isArray(configData?.added_kc_questions) ? configData.added_kc_questions : [])
+      .map(parseAddedKcQuestion)
+      .filter((q): q is PricingAddedKcQuestion => q !== null),
     debriefEnabled: configData?.debrief_enabled !== false,
     debriefPrompt: typeof promptRaw === 'string' && promptRaw.trim()
       ? promptRaw.trim()

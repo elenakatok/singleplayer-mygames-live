@@ -41,9 +41,11 @@ export function KcScreen({
   const [value, setValue] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [verdict, setVerdict] = useState<{ correct: boolean; explanation: string } | null>(null)
+  const [verdict, setVerdict] = useState<{ correct: boolean; graded: boolean; explanation: string } | null>(null)
 
-  const canSubmit = !submitting && value !== null
+  // Instructor-added questions may be free text; the derived ones are always mc.
+  const isText = question.type === 'text'
+  const canSubmit = !submitting && (isText ? (value ?? '').trim() !== '' : value !== null)
 
   const handleSubmit = async () => {
     if (!canSubmit || value === null) return
@@ -51,7 +53,7 @@ export function KcScreen({
     setError(null)
     try {
       const res = await pricingSubmitKcAnswer(question.field, value)
-      setVerdict({ correct: res.correct, explanation: res.explanation })
+      setVerdict({ correct: res.correct, graded: res.graded, explanation: res.explanation })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.')
     } finally {
@@ -73,6 +75,21 @@ export function KcScreen({
       </h1>
 
       <section style={card}>
+        {isText ? (
+          <textarea
+            data-testid="pricing-kc-text-input"
+            value={value ?? ''}
+            disabled={submitting || answered}
+            onChange={e => setValue(e.target.value)}
+            rows={4}
+            placeholder="Type your answer…"
+            style={{
+              width: '100%', fontSize: '1rem', padding: '0.6rem 0.7rem', borderRadius: 4,
+              border: `1px solid ${colors.inputBorder}`, boxSizing: 'border-box',
+              resize: 'vertical', fontFamily: 'inherit',
+            }}
+          />
+        ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
           {question.options.map(opt => {
             const selected = value === opt.value
@@ -99,6 +116,7 @@ export function KcScreen({
             )
           })}
         </div>
+        )}
       </section>
 
       {error && (
@@ -109,15 +127,16 @@ export function KcScreen({
 
       {answered && (
         <section
-          data-testid={verdict.correct ? 'pricing-kc-correct' : 'pricing-kc-incorrect'}
+          data-testid={!verdict.graded ? 'pricing-kc-recorded' : verdict.correct ? 'pricing-kc-correct' : 'pricing-kc-incorrect'}
           style={{
             ...card,
-            background: verdict.correct ? colors.kcCorrectBg : colors.kcIncorrectBg,
-            borderColor: verdict.correct ? colors.kcCorrectBorder : colors.kcIncorrectBorder,
+            background: !verdict.graded ? colors.surfaceSubtle : verdict.correct ? colors.kcCorrectBg : colors.kcIncorrectBg,
+            borderColor: !verdict.graded ? colors.border : verdict.correct ? colors.kcCorrectBorder : colors.kcIncorrectBorder,
           }}
         >
-          <p style={{ margin: verdict.explanation ? '0 0 0.4rem' : 0, fontWeight: 700, color: verdict.correct ? colors.kcCorrectText : colors.kcIncorrectText }}>
-            {verdict.correct ? 'Correct' : 'Not quite'}
+          {/* An ungraded (free-text) added question is RECORDED, never marked wrong. */}
+          <p style={{ margin: verdict.explanation ? '0 0 0.4rem' : 0, fontWeight: 700, color: !verdict.graded ? colors.text : verdict.correct ? colors.kcCorrectText : colors.kcIncorrectText }}>
+            {!verdict.graded ? 'Recorded' : verdict.correct ? 'Correct' : 'Not quite'}
           </p>
           {verdict.explanation && (
             <p style={{ margin: 0, lineHeight: 1.6, color: colors.text }}>{verdict.explanation}</p>

@@ -96,13 +96,17 @@ export default function Play() {
     Promise.all([pricingGetState(), pricingGetQuestions()])
       .then(([state, questions]) => {
         if (cancelled) return
+        // Rendered order: the mode's derived questions, THEN the instructor's
+        // additions. The server keeps the two sources apart and grades each on its
+        // own path (api.ts); this flattening is for rendering ORDER only.
+        const kc = [...questions.kc.derived, ...questions.kc.added]
         setLoaded({
           pmg: state.pmg,
           labels: state.labels,
           market: state.market,
           minRounds: state.minRounds,
           maxRounds: state.maxRounds,
-          kc: questions.kc,
+          kc,
           debrief: questions.debrief,
           competitorReveal: questions.competitorReveal,
         })
@@ -112,13 +116,13 @@ export default function Play() {
 
         const start = pricingResumeIndex({
           pmg: state.pmg,
-          kcCount: questions.kc.length,
+          kcCount: kc.length,
           kcAnswered: questions.kcAnswered.length,
           gameOver: state.gameOver,
           debriefEnabled: questions.debriefEnabled,
           debriefSubmitted: questions.debriefSubmitted,
         })
-        if (start >= pricingScreenCount(state.pmg, questions.kc.length, questions.debriefEnabled)) {
+        if (start >= pricingScreenCount(state.pmg, kc.length, questions.debriefEnabled)) {
           setScreen({ name: 'done' })
         } else {
           setScreen({ name: 'flow', startIndex: start, startIteration: pricingStartIteration(state.history.length) })

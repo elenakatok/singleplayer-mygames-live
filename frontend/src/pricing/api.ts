@@ -6,8 +6,8 @@ import { functions } from '../firebase'
 // (one project serves every single-player game); only the callable NAMES are
 // pricing-specific.
 //
-// SLICE 4 — launch, instructor session, the round loop, the knowledge check, the
-// debrief, and the instructor dashboard + reports.
+// SLICE 5 — the whole game: launch, the round loop, the knowledge check, the
+// debrief, the instructor dashboard + reports, and instructor settings.
 //
 // ⚠ THE RESPONSE TYPES BELOW ARE THE WHOLE CLIENT-SIDE CONTRACT. There is no round
 // count and no competitor rule in them because the server never sends either
@@ -158,6 +158,8 @@ export type PricingKcQuestionClient = {
   field: string
   prompt: string
   options: { value: string; label: string }[]
+  /** Added questions may be free text; the derived ones are always 'mc'. */
+  type?: 'mc' | 'text'
 }
 
 export type PricingDebriefQuestionClient = {
@@ -172,7 +174,13 @@ export type PricingQuestionsResult = {
   kcEnabled: boolean
   /** Does this instance open with the PMG rules screen (spec §6.2)? */
   pmg: boolean
-  kc: PricingKcQuestionClient[]
+  /**
+   * ⚠ TWO SOURCES, KEPT APART. `derived` is recomputed from the instance's market on
+   * every call; `added` is the instructor's own list with its own keys. The client
+   * renders derived-then-added and the server grades each on its own path — see
+   * getQuestions.ts for why flattening them server-side would defeat the derivation.
+   */
+  kc: { derived: PricingKcQuestionClient[]; added: PricingKcQuestionClient[] }
   debriefEnabled: boolean
   debrief: PricingDebriefQuestionClient | null
   kcAnswered: string[]
@@ -285,3 +293,57 @@ export type PricingReportData = {
 }
 
 export const pricingGetReport = () => callFn<PricingReportData>('pricingGetReport')
+
+// ── Instructor: settings (spec §3) ──────────────────────────────────────────────
+
+/** One instructor-added KC question, as the settings page edits it. */
+export type PricingAddedKcQuestion = {
+  id: string
+  type: 'mc' | 'text'
+  prompt: string
+  options?: { value: string; label: string }[]
+  correct_value?: string
+  explanation?: string
+}
+
+export type PricingConfigResult = {
+  ok: boolean
+  pmg: boolean
+  labels: PricingLabels
+  /** The FULL market, gridStep included — this is the instructor's view. */
+  market: PricingMarket & { gridStep: number }
+  minRounds: number
+  maxRounds: number
+  kcEnabled: boolean
+  addedKcQuestions: PricingAddedKcQuestion[]
+  debriefEnabled: boolean
+  debriefPrompt: string
+  /** Read-only preview of what the CURRENT market derives — instructor-side, so it
+   *  may include the answer key. Not editable: change the market instead. */
+  derivedKcPreview: { field: string; prompt: string; options: { value: string; label: string }[]; correct_value: string }[]
+  /** Display only — the library has one rule per mode and the mode selects it. */
+  competitorRule: { id: string; description: string }
+  /** What the current market implies for the Tier-3 reference line. */
+  equilibrium: { student: number; competitor: number }
+  /** Has any student launched? Drives the round-range notice. A BOOLEAN, never a
+   *  number, and never any student's drawn count. */
+  anyRoundsDrawn: boolean
+  /** Has any student actually played a round? Drives the market-edit warning. */
+  anyRoundsPlayed: boolean
+}
+
+export const pricingGetConfig = () => callFn<PricingConfigResult>('pricingGetConfig')
+
+/** Save settings. Every field is optional — only what is sent is written (merge), so
+ *  a partial save can never clobber a sibling setting. */
+export const pricingUpdateConfig = (patch: Partial<{
+  pmg: boolean
+  labels: PricingLabels
+  market: PricingMarket & { gridStep: number }
+  minRounds: number
+  maxRounds: number
+  kcEnabled: boolean
+  addedKcQuestions: PricingAddedKcQuestion[]
+  debriefEnabled: boolean
+  debriefPrompt: string
+}>) => callFn<PricingConfigResult>('pricingUpdateConfig', patch)

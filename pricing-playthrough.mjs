@@ -725,7 +725,7 @@ async function main() {
   async function answerKc(gid, pid, key, mode, label) {
     const served = await callFn('pricingGetQuestions', asStudent(gid, pid))
     if (!served.ok) { check(false, `${label}: pricingGetQuestions failed: ${served.error}`); return null }
-    const qs = served.result.kc
+    const qs = served.result.kc.derived
     check(qs.length === key.length,
       `${label}: serves ${key.length} questions (got ${qs.length})`)
     check(qs.map(q => q.field).join() === key.map(k => k.field).join(),
@@ -805,11 +805,11 @@ async function main() {
     extraConfig: { market: { mapValue: { fields: { min_price: intVal(1200) } } } },
   })
   const denomServed = await callFn('pricingGetQuestions', asStudent(GID_KD, KDPID))
-  check(denomServed.result.kc.length === 3,
-    `a floor above unit cost drops the below-cost question (${denomServed.result.kc.length} served)`)
-  check(!denomServed.result.kc.some(q => q.field === 'kc_below_cost'),
+  check(denomServed.result.kc.derived.length === 3,
+    `a floor above unit cost drops the below-cost question (${denomServed.result.kc.derived.length} served)`)
+  check(!denomServed.result.kc.derived.some(q => q.field === 'kc_below_cost'),
     '…and it is that question specifically that is gone')
-  for (const q of denomServed.result.kc) {
+  for (const q of denomServed.result.kc.derived) {
     const want = KC_STANDARD.find(k => k.field === q.field)
     await callFn('pricingSubmitKcAnswer', asStudent(GID_KD, KDPID, { field: q.field, answer: want.correct }))
   }
@@ -826,7 +826,7 @@ async function main() {
   await openInstance(GID_KP, KPPID, 'seed-kc-pmg', { pmg: true })
   const pmgServed = await callFn('pricingGetQuestions', asStudent(GID_KP, KPPID))
   check(pmgServed.result.pmg === true, 'a PMG instance says so, so the client can open with the rules screen')
-  check(!pmgServed.result.kc.some(q => KC_STANDARD.some(k => k.field === q.field)),
+  check(!pmgServed.result.kc.derived.some(q => KC_STANDARD.some(k => k.field === q.field)),
     '⚠ the PMG set repeats NONE of the Standard four (students did those in instance 1)')
   const pmgKc = await answerKc(GID_KP, KPPID, KC_PMG, 'correct', 'PMG KC')
   check(!!pmgKc, 'the PMG knowledge check completed')
@@ -980,6 +980,216 @@ async function main() {
   check(flat[0] !== flat[1], '⚠ …and they are DISTINCT entries, not one overwriting the other')
   check(flat.some(j => j.includes(GID_TWO_STD)) && flat.some(j => j.includes(GID_TWO_PMG)),
     'each carries its own game_instance_id — which is what makes them two gradebook rows')
+
+
+  // ── 14. Instructor settings (spec §3) ────────────────────────────────────────
+  console.log('\n[14] Instructor settings — round trip, and the never-stale chain')
+
+  const GID_SET = `pricing-settings-${stamp}`
+  const SETPID = 'pricing-settings-stu'
+
+  const cfg0 = await callFn('pricingGetConfig', asDev(GID_SET))
+  check(cfg0.ok, 'pricingGetConfig succeeds on an untouched instance')
+  check(cfg0.result.pmg === false, 'a fresh instance is Standard')
+  check(cfg0.result.market.marketSize === 190_000 && cfg0.result.market.studentUnitCost === 966,
+    'and carries the shipped case market')
+  check(cfg0.result.minRounds === 10 && cfg0.result.maxRounds === 20, 'and the shipped [10,20] range')
+  check(cfg0.result.anyRoundsDrawn === false && cfg0.result.anyRoundsPlayed === false,
+    'nobody has launched or played yet')
+  check(cfg0.result.derivedKcPreview.length === 4, 'previews the four derived Standard questions')
+  check(cfg0.result.competitorRule.id === 'standard-highstart-bestreply',
+    'and names the rule this mode runs (display only)')
+  check(Math.round(cfg0.result.equilibrium.student) === 1394,
+    'and the equilibrium the current market implies ($1,394)')
+  check(!JSON.stringify(cfg0.result).includes('"rounds"'),
+    '⚠ the instructor settings page never receives any student’s drawn count')
+
+  // ── Validation ────────────────────────────────────────────────────────────
+  const badShares = await callFn('pricingUpdateConfig', {
+    ...asDev(GID_SET),
+    market: { ...cfg0.result.market, studentBaseShare: 0.4, competitorBaseShare: 0.5 },
+  })
+  check(!badShares.ok && /add up to 1/.test(badShares.error), 'rejects base shares that do not sum to 1')
+  const zeroShare = await callFn('pricingUpdateConfig', {
+    ...asDev(GID_SET), market: { ...cfg0.result.market, studentBaseShare: 0, competitorBaseShare: 1 },
+  })
+  check(!zeroShare.ok, 'rejects a zero base share')
+  const badBounds = await callFn('pricingUpdateConfig', {
+    ...asDev(GID_SET), market: { ...cfg0.result.market, minPrice: 2000, maxPrice: 900 },
+  })
+  check(!badBounds.ok, 'rejects an inverted price band')
+  const badCost = await callFn('pricingUpdateConfig', {
+    ...asDev(GID_SET), market: { ...cfg0.result.market, studentUnitCost: 2500 },
+  })
+  check(!badCost.ok && /below the maximum price/.test(badCost.error),
+    'rejects a unit cost at or above the ceiling — no price could ever be profitable')
+  const badSlope = await callFn('pricingUpdateConfig', {
+    ...asDev(GID_SET), market: { ...cfg0.result.market, slope: 0 },
+  })
+  check(!badSlope.ok, 'rejects a zero share slope')
+  const badRange = await callFn('pricingUpdateConfig', { ...asDev(GID_SET), minRounds: 9, maxRounds: 4 })
+  check(!badRange.ok, 'rejects min > max on the round range')
+  const badLabels = await callFn('pricingUpdateConfig', { ...asDev(GID_SET), labels: { student: '', competitor: 'W' } })
+  check(!badLabels.ok, 'rejects an empty firm name')
+  const reservedId = await callFn('pricingUpdateConfig', {
+    ...asDev(GID_SET),
+    addedKcQuestions: [{ id: 'kc_base_share', type: 'mc', prompt: 'Sneaky',
+      options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }], correct_value: 'a' }],
+  })
+  check(!reservedId.ok, '⚠ rejects an added question claiming a reserved kc_ id')
+
+  // ── A real edit, and THE NEVER-STALE CHAIN ────────────────────────────────
+  // One market edit must move, in one flow: the KC's numbers AND answers, the
+  // competitor's best reply, the student's screen, and the Tier-3 reference.
+  const EDITED = {
+    marketSize: 250_000,
+    studentBaseShare: 0.4,
+    competitorBaseShare: 0.6,
+    studentUnitCost: 1000,
+    competitorUnitCost: 950,
+    slope: 800,
+    minPrice: 1000,
+    maxPrice: 2400,
+    gridStep: 100,
+  }
+  const saved = await callFn('pricingUpdateConfig', {
+    ...asDev(GID_SET),
+    market: EDITED,
+    labels: { student: 'Cheyenne', competitor: 'Western' },
+    minRounds: 3,
+    maxRounds: 4,
+    debriefPrompt: 'What was your pricing plan?',
+  })
+  check(saved.ok, 'a valid settings save succeeds')
+  check(saved.result.market.marketSize === 250_000 && saved.result.market.slope === 800,
+    'the save returns the STORED market')
+  check(saved.result.labels.student === 'Cheyenne', 'and the new firm labels')
+
+  // The equilibrium the settings page shows follows the edit.
+  const wantEq = (2 * (EDITED.studentBaseShare * EDITED.slope + EDITED.studentUnitCost)
+    + (EDITED.competitorBaseShare * EDITED.slope + EDITED.competitorUnitCost)) / 3
+  check(Math.abs(saved.result.equilibrium.student - wantEq) < 1e-6,
+    `⚠ the equilibrium reference moved with the market (${saved.result.equilibrium.student.toFixed(2)})`)
+
+  // The KC's derived questions and ANSWERS followed too.
+  const editedTheirs = EDITED.maxPrice - EDITED.gridStep          // 2300
+  const editedYours = editedTheirs - 2 * EDITED.gridStep          // 2100
+  const preview = saved.result.derivedKcPreview
+  check(preview.find(q => q.field === 'kc_base_share')?.correct_value === '0.4000',
+    '⚠ the base-share question’s ANSWER followed the new base share (40%)')
+  check(preview.find(q => q.field === 'kc_contribution')?.correct_value === String(editedYours - EDITED.studentUnitCost),
+    `⚠ the contribution answer followed the new unit cost (${editedYours - EDITED.studentUnitCost})`)
+  check(preview.find(q => q.field === 'kc_share_gap')?.prompt.includes('$2,100'),
+    '⚠ and the questions are posed at prices INSIDE the new band')
+
+  // The STUDENT sees the same thing, and is graded against it.
+  await callFn('pricingBootstrap', asStudent(GID_SET, SETPID))
+  const sState = await callFn('pricingGetState', asStudent(GID_SET, SETPID))
+  check(sState.result.market.marketSize === 250_000 && sState.result.market.minPrice === 1000,
+    'the student is served the new market')
+  check(sState.result.labels.student === 'Cheyenne', 'and the new firm labels')
+  check(sState.result.minRounds === 3 && sState.result.maxRounds === 4, 'and the new round RANGE')
+  const sQs = await callFn('pricingGetQuestions', asStudent(GID_SET, SETPID))
+  check(sQs.result.kc.derived.find(q => q.field === 'kc_share_gap')?.prompt.includes('$2,100'),
+    'the student’s KC is posed at the new prices')
+  check(sQs.result.debrief.prompt === 'What was your pricing plan?', 'and the edited debrief prompt')
+  const gradeNew = await callFn('pricingSubmitKcAnswer',
+    asStudent(GID_SET, SETPID, { field: 'kc_base_share', answer: '0.4000' }))
+  check(gradeNew.ok && gradeNew.result.correct === true,
+    '⚠ and the GRADER marks the new market’s answer correct — serve and grade moved together')
+  const gradeOld = await callFn('pricingSubmitKcAnswer',
+    asStudent(GID_SET, SETPID, { field: 'kc_contribution', answer: '734' }))
+  check(!gradeOld.ok || gradeOld.result.correct === false,
+    '…and the OLD market’s answer is no longer correct')
+
+  // The COMPETITOR's best reply moved too: round 1 is the new ceiling.
+  const editedRound = await callFn('pricingSubmitPrice', asStudent(GID_SET, SETPID, { round: 1, price: 2000 }))
+  check(editedRound.ok && editedRound.result.round.competitorPrice === EDITED.maxPrice,
+    `⚠ the competitor opens at the NEW ceiling (${EDITED.maxPrice})`)
+  check(near(editedRound.result.round.yourShare, 0.4 + (EDITED.maxPrice - 2000) / EDITED.slope),
+    '…and the round is computed in the new market (new base share, new slope)')
+
+  // The REPORT's reference line moved as well — one edit, the whole chain.
+  const editedReport = await callFn('pricingGetReport', asDev(GID_SET))
+  check(Math.abs(editedReport.result.summary.equilibrium.student - wantEq) < 1e-6,
+    '⚠ and the Tier-3 dashed line is the same moved equilibrium')
+
+  // ── ⚠ A RANGE EDIT MUST NOT REDRAW AN ALREADY-LAUNCHED STUDENT ────────────
+  const drawnTruth = await getDoc(`pricing_game_instances/${GID_SET}/truth/participant_${SETPID}`)
+  const drawn = Number(drawnTruth?.rounds?.integerValue)
+  check(drawn >= 3 && drawn <= 4, `the draw used the configured range (${drawn} ∈ [3,4])`)
+  const cfgAfter = await callFn('pricingGetConfig', asDev(GID_SET))
+  check(cfgAfter.result.anyRoundsDrawn === true, 'settings now reports that someone has started')
+  check(cfgAfter.result.anyRoundsPlayed === true, '…and that someone has actually played')
+
+  await callFn('pricingUpdateConfig', { ...asDev(GID_SET), minRounds: 15, maxRounds: 20 })
+  await callFn('pricingGetState', asStudent(GID_SET, SETPID))   // a touch that could have redrawn
+  const truthAfter = await getDoc(`pricing_game_instances/${GID_SET}/truth/participant_${SETPID}`)
+  check(Number(truthAfter?.rounds?.integerValue) === drawn,
+    `⚠ widening the range did NOT redraw the launched student (still ${drawn}) — they keep their horizon`)
+  const LATE = 'pricing-settings-latecomer'
+  await callFn('pricingBootstrap', asStudent(GID_SET, LATE))
+  await callFn('pricingGetState', asStudent(GID_SET, LATE))
+  const lateDrawn = Number((await getDoc(`pricing_game_instances/${GID_SET}/truth/participant_${LATE}`))?.rounds?.integerValue)
+  check(lateDrawn >= 15 && lateDrawn <= 20,
+    `a student who launches AFTER the edit draws in the new range (${lateDrawn} ∈ [15,20])`)
+
+  // ── THE PMG TOGGLE, flipped on a fresh instance ───────────────────────────
+  // Everything downstream is already config-driven (Slices 1–4); this asserts the one
+  // flag actually reaches all of it, rather than rebuilding any of it.
+  const GID_TOG = `pricing-toggle-${stamp}`
+  const TOGPID = 'pricing-toggle-stu'
+  const beforeToggle = await callFn('pricingGetConfig', asDev(GID_TOG))
+  check(beforeToggle.result.competitorRule.id === 'standard-highstart-bestreply',
+    'before the toggle: the Standard rule')
+  const toggled = await callFn('pricingUpdateConfig', { ...asDev(GID_TOG), pmg: true })
+  check(toggled.ok && toggled.result.pmg === true, 'the PMG toggle saves')
+  check(toggled.result.competitorRule.id === 'pmg-ceiling', '⚠ …the competitor rule switched')
+  check(toggled.result.derivedKcPreview.length === 3
+    && toggled.result.derivedKcPreview[0].field === 'kc_pmg_effective',
+    '⚠ …the KC set switched to the PMG three')
+  check(toggled.result.equilibrium.student === toggled.result.market.maxPrice,
+    '⚠ …the Tier-3 reference became the ceiling')
+  await callFn('pricingBootstrap', asStudent(GID_TOG, TOGPID))
+  const togQs = await callFn('pricingGetQuestions', asStudent(GID_TOG, TOGPID))
+  check(togQs.result.pmg === true, '⚠ …the student is told to show the PMG rules screen')
+  check(togQs.result.debrief.prompt.startsWith('In a few sentences, explain how you set prices under'),
+    '⚠ …and gets the PMG debrief prompt')
+  const togRound = await callFn('pricingSubmitPrice', asStudent(GID_TOG, TOGPID, { round: 1, price: 1500 }))
+  check(togRound.result.round.effectivePrice === 1500 && near(togRound.result.round.yourShare, 0.35),
+    '⚠ …and the round is computed under PMG rules (effective price, frozen share)')
+
+  // ── Instructor-added KC questions (PD's pattern, mirrored) ────────────────
+  const GID_ADD = `pricing-added-${stamp}`
+  const ADDPID = 'pricing-added-stu'
+  const addedMc = { id: 'akc_one', type: 'mc', prompt: 'Which price did you plan to open with?',
+    options: [{ value: 'a', label: 'High' }, { value: 'b', label: 'Low' }], correct_value: 'b' }
+  const addedText = { id: 'akc_two', type: 'text', prompt: 'Why?' }
+  const addSave = await callFn('pricingUpdateConfig', { ...asDev(GID_ADD), addedKcQuestions: [addedMc, addedText] })
+  check(addSave.ok && addSave.result.addedKcQuestions.length === 2, 'two added questions saved')
+
+  await callFn('pricingBootstrap', asStudent(GID_ADD, ADDPID))
+  const aQs = await callFn('pricingGetQuestions', asStudent(GID_ADD, ADDPID))
+  check(aQs.result.kc.derived.length === 4 && aQs.result.kc.added.length === 2,
+    '⚠ the two sources arrive SEPARATELY (4 derived + 2 added), never flattened')
+  check(!JSON.stringify(aQs.result.kc.added).includes('correct_value'),
+    '…and the added questions ship no answer key either')
+
+  for (const q of aQs.result.kc.derived) {
+    const want = KC_STANDARD.find(k => k.field === q.field)
+    await callFn('pricingSubmitKcAnswer', asStudent(GID_ADD, ADDPID, { field: q.field, answer: want.correct }))
+  }
+  const mcRes = await callFn('pricingSubmitKcAnswer', asStudent(GID_ADD, ADDPID, { field: 'akc_one', answer: 'b' }))
+  check(mcRes.ok && mcRes.result.correct === true && mcRes.result.graded === true,
+    'an added multiple-choice question is graded against the instructor’s own key')
+  const textRes = await callFn('pricingSubmitKcAnswer',
+    asStudent(GID_ADD, ADDPID, { field: 'akc_two', answer: 'I wanted the volume.' }))
+  check(textRes.ok && textRes.result.graded === false,
+    '⚠ an added FREE-TEXT question is recorded, never graded')
+  const addDoc = await getDoc(`pricing_game_instances/${GID_ADD}/participants/${ADDPID}`)
+  const addScore = Number(addDoc?.knowledge_check_score?.doubleValue ?? addDoc?.knowledge_check_score?.integerValue)
+  check(addScore === 1,
+    `⚠ the score is 5/5 over the four derived + the graded added one — the free-text one is in NEITHER numerator nor denominator (got ${addScore})`)
 
   console.log(`\n${failed === 0 ? '✅' : '❌'} pricing harness: ${passed} passed, ${failed} failed`)
   process.exit(failed === 0 ? 0 : 1)

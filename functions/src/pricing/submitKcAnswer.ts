@@ -58,21 +58,54 @@ export const pricingSubmitKcAnswer = onCall({ cors: PRICING_CORS_ORIGINS }, asyn
     throw new HttpsError('failed-precondition', 'The knowledge check is not part of this game.')
   }
 
-  // The same resolve the serve path made — this instance's market, this instance's
-  // mode. A field from the OTHER mode's set is not a question in this game.
-  const questions = resolvePricingKcQuestions(config.market, config.pmg, config.labels)
-  const question = questions.find(q => q.field === field)
-  if (!question) {
+  // ── ROUTE THE FIELD TO ITS OWN SOURCE ─────────────────────────────────────
+  // Derived FIRST: resolved against this instance's market and mode, the same call
+  // the serve path made, so a student is graded against the market they were shown.
+  // Added questions are looked up in config with their own stored key. The two lists
+  // are never merged — an added question cannot even take a kc_ id (config.ts), so
+  // this lookup order can never shadow one with the other. A field from the OTHER
+  // mode's set is not a question in this game at all.
+  const derived = resolvePricingKcQuestions(config.market, config.pmg, config.labels)
+  const derivedQ = derived.find(q => q.field === field)
+  const addedQ = derivedQ ? undefined : config.addedKcQuestions.find(q => q.id === field)
+
+  if (!derivedQ && !addedQ) {
     throw new HttpsError('invalid-argument', `'${field}' is not a knowledge-check question in this game.`)
   }
-  if (!question.options.some(o => o.value === answer)) {
-    throw new HttpsError('invalid-argument', 'Please choose one of the options.')
+
+  /** The correct answer, or null when the question is ungraded (added free text). */
+  let correctValue: string | null
+  let explanation: string
+  if (derivedQ) {
+    if (!derivedQ.options.some(o => o.value === answer)) {
+      throw new HttpsError('invalid-argument', 'Please choose one of the options.')
+    }
+    correctValue = derivedQ.correct_value
+    explanation = derivedQ.explanation
+  } else {
+    const q = addedQ!
+    if (q.type === 'mc' && !(q.options ?? []).some(o => o.value === answer)) {
+      throw new HttpsError('invalid-argument', 'Please choose one of the options.')
+    }
+    // Free text has no key: it is RECORDED and left ungraded, never counted wrong.
+    correctValue = q.type === 'mc' ? (q.correct_value ?? null) : null
+    explanation = q.explanation ?? ''
   }
 
-  /** The scoring set: every question actually served for this instance. The
-   *  denominator is therefore DYNAMIC — Standard's four, PMG's three, or one fewer if
-   *  the market made a question inapplicable (questions.ts). Never a hardcoded /4. */
-  const forScoring = questions.map(q => ({ field: q.field, correct_value: q.correct_value }))
+  /**
+   * The scoring set: every DERIVED question served for this instance, PLUS any added
+   * question that carries a key. The denominator is therefore DYNAMIC — Standard's
+   * four, PMG's three, one fewer if the market made a question inapplicable
+   * (questions.ts), plus whatever the instructor added. Never a hardcoded /4. Added
+   * free-text questions are absent from BOTH numerator and denominator, so adding one
+   * cannot silently lower everyone's score.
+   */
+  const forScoring = [
+    ...derived.map(q => ({ field: q.field, correct_value: q.correct_value })),
+    ...config.addedKcQuestions
+      .filter(q => q.type === 'mc' && typeof q.correct_value === 'string')
+      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
+  ]
   const participantRef = instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
 
   const result = await db.runTransaction(async (tx) => {
@@ -86,7 +119,9 @@ export const pricingSubmitKcAnswer = onCall({ cors: PRICING_CORS_ORIGINS }, asyn
       return { correct: existing[field].correct, stored: true as const }
     }
 
-    const correct = answer === question.correct_value
+    // An ungraded (free-text) added question is stored with correct:false and is
+    // excluded from `forScoring`, so it counts nowhere — it is a record, not a mark.
+    const correct = correctValue !== null && answer === correctValue
 
     // Every answer, including this one, for the all-answered check + the score.
     const allAnswers: Record<string, string> = {}
@@ -118,8 +153,10 @@ export const pricingSubmitKcAnswer = onCall({ cors: PRICING_CORS_ORIGINS }, asyn
   return {
     ok: true as const,
     correct: result.correct,
-    graded: true as const,
+    /** False for an ungraded added question, so the client shows "recorded" rather
+     *  than marking a free-text answer wrong. */
+    graded: correctValue !== null,
     // Earned by answering — this is the ONLY path that returns it.
-    explanation: question.explanation,
+    explanation,
   }
 })

@@ -32,6 +32,9 @@
 //   • ⚠ NO "of M" ROUND-TOTAL STRING ANYWHERE, and no leak of the drawn horizon or
 //     the competitor's rule into the page or into any callable response the browser
 //     actually received;
+//   • a ROBOT COHORT (spec §11) — every shipped play style driven through the real UI
+//     to a finished game, in both modes, then Score & Record over the cohort with the
+//     gradebook push signature-checked;
 //   • the INSTRUCTOR dashboard and all three report tiers against a deliberately
 //     MIXED population (finished / mid-game / never started, in both modes), with
 //     the Tier-1 rows and the Tier-3 per-round averages and denominators checked
@@ -58,8 +61,13 @@
 
 import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
+import http from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+// ⚠ THE SHIPPED STYLES, not a copy: the robot cohort below drives the same list the
+// robot driver runs in production. A second copy here would let the tested styles
+// drift from the shipped ones, which is the one thing a style test exists to prevent.
+import { STANDARD_STYLES, PMG_STYLES, assignStyles, nashStudentPrice } from './bot/pricing-styles.mjs'
 
 const PROJECT = 'demo-singleplayer'
 const FUNCTIONS = `http://127.0.0.1:5010/${PROJECT}/us-central1`
@@ -736,7 +744,9 @@ async function main() {
     async function seedStudent(gid, pid, pmg, rounds, priceFor) {
       await callFn('pricingBootstrap', asStudent(gid, pid))
       const served = await callFn('pricingGetQuestions', asStudent(gid, pid))
-      for (const q of served.result.kc) {
+      // Slice 5 split the KC into two sources (derived + the instructor's own); the
+      // seeding path answers both, exactly as a student would.
+      for (const q of [...served.result.kc.derived, ...served.result.kc.added]) {
         await callFn('pricingSubmitKcAnswer',
           asStudent(gid, pid, { field: q.field, answer: q.options[0].value }))
       }
@@ -911,6 +921,155 @@ async function main() {
     check(!/NaN|Infinity|undefined/.test(emptyBoard),
       '⚠ …and divides nothing by zero on the way (no NaN/Infinity on screen)')
     await ctxE.close()
+
+
+    // ── 7. The robot cohort (spec §11) ─────────────────────────────────────────
+    // Every shipped play style, driven through the REAL UI to a finished game — then
+    // scored like a class. Robots are the tool Elena uses to fill an instance before a
+    // dry run, so "a finished robot is indistinguishable from a finished student" is
+    // the property that matters, and Score & Record over the cohort is what proves it.
+    console.log('\n[7] Robot cohort — every play style, both modes, then Score & Record')
+
+    // A mock classroom for the cohort's push. It CHECKS THE SIGNATURE: a harness that
+    // accepted anything would pass while the game pushed unsigned.
+    const COHORT_SECRET = 'test-cohort-secret'
+    let cohortPushes = 0
+    let cohortBadlySigned = 0
+    const cohortServer = http.createServer((req, res) => {
+      let raw = ''
+      req.on('data', c => (raw += c))
+      req.on('end', () => {
+        if ((req.headers.authorization ?? '') !== `Bearer ${COHORT_SECRET}`) {
+          cohortBadlySigned++
+          res.writeHead(401).end('{}')
+          return
+        }
+        cohortPushes++
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true }))
+      })
+    })
+    await new Promise(r => cohortServer.listen(0, r))
+    const COHORT_URL = `http://127.0.0.1:${cohortServer.address().port}/push`
+
+    /** Drives ONE robot through the whole game in a real browser, exactly as the
+     *  shipped driver does: read the market off the screen, price by style, learn the
+     *  competitor's price from the rendered result. */
+    async function runRobot(page, style, pmg, label) {
+      await page.waitForSelector('[data-testid="pricing-pmg-screen"], [data-testid="pricing-kc-prompt"], [data-testid="pricing-round-heading"]', { timeout: 60000 })
+      if (await exists(page, '[data-testid="pricing-pmg-screen"]')) {
+        await page.click('[data-testid="pricing-pmg-continue"]')
+      }
+      // KC at random — the robots populate reports, they do not test grading.
+      while (await exists(page, '[data-testid="pricing-kc-prompt"]')) {
+        const opts = await page.locator('[data-testid^="pricing-kc-option-"]').all()
+        if (opts.length === 0) break
+        await opts[Math.floor(Math.random() * opts.length)].click()
+        await page.click('[data-testid="pricing-kc-submit"]')
+        await page.waitForSelector('[data-testid="pricing-kc-correct"], [data-testid="pricing-kc-incorrect"]', { timeout: 30000 })
+        await page.click('[data-testid="pricing-kc-continue"]')
+        await page.waitForSelector('[data-testid="pricing-kc-prompt"], [data-testid="pricing-round-heading"]', { timeout: 30000 })
+      }
+
+      // The market as the ROBOT reads it — off its own screen, never imported.
+      const market = { ...MARKET,
+        studentBaseShare: MARKET.sC, competitorBaseShare: MARKET.sW,
+        studentUnitCost: MARKET.cC, competitorUnitCost: MARKET.cW,
+        marketSize: MARKET.M, slope: MARKET.k }
+
+      const theirs = [], mine = []
+      let rounds = 0
+      while (await exists(page, '[data-testid="pricing-round-heading"]')) {
+        rounds++
+        if (rounds > 30) { check(false, `${label}: runaway loop`); return null }
+        const price = style.decide(market, theirs, mine)
+        await page.fill('[data-testid="pricing-price-input"]', String(price))
+        await page.click('[data-testid="pricing-submit-round"]')
+        await page.waitForSelector('[data-testid="pricing-reveal"]', { timeout: 30000 })
+        theirs.push(Number((await testId(page, 'pricing-them-price')).replace(/[^0-9]/g, '')))
+        mine.push(price)
+        await page.click('[data-testid="pricing-continue"]')
+        await page.waitForSelector('[data-testid="pricing-round-heading"], [data-testid="pricing-debrief-heading"], [data-testid="pricing-game-over"]', { timeout: 30000 })
+      }
+      if (await exists(page, '[data-testid="pricing-debrief-input"]')) {
+        await page.fill('[data-testid="pricing-debrief-input"]',
+          style.debrief[Math.floor(Math.random() * style.debrief.length)])
+        await page.click('[data-testid="pricing-debrief-submit"]')
+        await page.waitForSelector('[data-testid="pricing-game-over"]', { timeout: 30000 })
+      }
+      return { rounds, mine, theirs }
+    }
+
+    for (const pmgCohort of [false, true]) {
+      const modeName = pmgCohort ? 'PMG' : 'Standard'
+      const pool = pmgCohort ? PMG_STYLES : STANDARD_STYLES
+      const GID_C = `pw-cohort-${pmgCohort ? 'pmg' : 'std'}-${stamp}`
+
+      // ROUND-ROBIN over a shuffled pool — the shipped assignment, so a cohort can
+      // never be five undercutters and a flat chart.
+      const styles = assignStyles(pool.length, pmgCohort)
+      check(new Set(styles.map(s => s.key)).size === pool.length,
+        `${modeName}: round-robin covers every shipped style exactly once (${styles.map(s => s.key).join(', ')})`)
+
+      const results = []
+      for (let i = 0; i < styles.length; i++) {
+        const pid = `robot-${i + 1}`
+        await openInstance(GID_C, pid, `seed-cohort-${pmgCohort}`, pmgCohort)
+        const ctx = await browser.newContext()
+        const page = await ctx.newPage()
+        await page.goto(studentUrl(GID_C, pid))
+        const r = await runRobot(page, styles[i], pmgCohort, `${modeName}/${styles[i].key}`)
+        results.push({ style: styles[i], r, pid })
+        await ctx.close()
+      }
+      check(results.every(x => x.r && x.r.rounds >= 10),
+        `${modeName}: every robot played a full game to its own horizon`)
+
+      // The styles actually did what they claim — spot-checked on real play.
+      const byKey = Object.fromEntries(results.map(x => [x.style.key, x.r]))
+      if (!pmgCohort) {
+        check(byKey['nash-player'].mine.every(p => p === Math.round(nashStudentPrice({
+          studentBaseShare: MARKET.sC, competitorBaseShare: MARKET.sW,
+          studentUnitCost: MARKET.cC, competitorUnitCost: MARKET.cW, slope: MARKET.k })) ),
+          'nash-player posted the derived equilibrium every round ($1,394)')
+        check(byKey['cost-skimmer'].mine.every(p => p === MARKET.cC + 50),
+          'cost-skimmer priced just above its own unit cost ($1,016)')
+        check(byKey['undercutter'].mine.slice(1).every((p, i) => p === Math.max(MARKET.minPrice, byKey['undercutter'].theirs[i] - 100)),
+          'undercutter posted $100 under the competitor’s last price, clamped')
+        check(byKey['high-pricer'].mine.every(p => p >= MARKET.maxPrice - 100),
+          'high-pricer stayed near the ceiling')
+      } else {
+        check(byKey['ceiling-poster'].mine.every(p => p === MARKET.maxPrice),
+          'ceiling-poster posted the ceiling every round')
+        const gr = byKey['gradual-raiser'].mine
+        check(gr.every((p, i) => i === 0 || p >= gr[i - 1]),
+          'gradual-raiser never lowered its price')
+        check(gr[gr.length - 1] > gr[0], '…and finished higher than it started')
+      }
+
+      // ⚠ A FINISHED ROBOT IS A FINISHED STUDENT. Score & Record over the cohort must
+      // grade and push them exactly as it would a real class.
+      const before = cohortPushes
+      const scored = await callFn('pricingScoreAndRecord', {
+        _dev: { game_instance_id: GID_C, callback_url: COHORT_URL, callback_secret: COHORT_SECRET },
+      })
+      check(scored.ok && scored.result.finishers === styles.length,
+        `${modeName}: Score & Record counts every robot as a finisher (${scored.result?.finishers}/${styles.length})`)
+      check(cohortPushes - before === styles.length,
+        `${modeName}: one gradebook row pushed per robot (${cohortPushes - before})`)
+      check(cohortBadlySigned === 0, `${modeName}: every cohort push carried a valid signature`)
+
+      // And the reports they populated are the ones Elena would open.
+      const rep = await callFn('pricingGetReport', { _dev: { game_instance_id: GID_C } })
+      check(rep.result.participants.length === styles.length
+        && rep.result.participants.every(p => p.completed && p.debrief),
+        `${modeName}: the roster shows every robot finished, with a debrief paragraph`)
+      check(new Set(rep.result.participants.map(p => p.debrief)).size > 1,
+        `${modeName}: …and the paragraphs differ — style-matched, not N copies of one sentence`)
+      check(rep.result.charts.prices.length >= 10 && rep.result.charts.prices[0].n === styles.length,
+        `${modeName}: the class chart has every robot in round 1 (n=${rep.result.charts.prices[0]?.n})`)
+    }
+
+    cohortServer.close()
 
     // ── 6. The truth is still on the server, denied to the client ──────────────
     const truth = await getDoc(`pricing_game_instances/${GID_S}/truth/participant_${SPID}`)

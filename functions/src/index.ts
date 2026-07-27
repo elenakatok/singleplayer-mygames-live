@@ -110,6 +110,7 @@ export { pricingSubmitDebrief } from './pricing/submitDebrief'
 export { pricingSyncRoster } from './pricing/syncRoster'
 export { pricingScoreAndRecord } from './pricing/scoreAndRecord'
 export { pricingGetReport } from './pricing/report'
+export { pricingGetConfig, pricingUpdateConfig } from './pricing/instructorConfig'
 
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 
