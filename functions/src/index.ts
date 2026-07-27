@@ -85,11 +85,11 @@ export { pdGetConfig, pdUpdateConfig } from './pd/instructorConfig'
 
 // ── Pricing Game / Cheyenne Shipping (game_id: pricing) ───────────────────────
 //
-// SLICE 3 — the complete student flow: (PMG rules →) KC → round loop → debrief,
-// plus participation scoring and the gradebook push. The reports arrive in Slice 4.
-// One game, TWO course instances (Standard / PMG) distinguished by a per-instance
-// config flag, so there is exactly ONE set of callables here — never a second
-// game_id, and never a second set of names to deploy.
+// SLICE 4 — feature-complete bar instructor settings: (PMG rules →) KC → round loop
+// → debrief, participation scoring + the gradebook push, and the instructor dashboard
+// + all three report tiers. One game, TWO course instances (Standard / PMG)
+// distinguished by a per-instance config flag, so there is exactly ONE set of
+// callables here — never a second game_id, and never a second set of names to deploy.
 
 export const pricingBootstrap = makeSinglePlayerBootstrap({
   collectionPrefix: PRICING_COLLECTION_PREFIX,
@@ -109,6 +109,7 @@ export { pricingSubmitDebrief } from './pricing/submitDebrief'
 // Instructor.
 export { pricingSyncRoster } from './pricing/syncRoster'
 export { pricingScoreAndRecord } from './pricing/scoreAndRecord'
+export { pricingGetReport } from './pricing/report'
 
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 

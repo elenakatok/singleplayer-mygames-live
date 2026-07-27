@@ -6,8 +6,8 @@ import { functions } from '../firebase'
 // (one project serves every single-player game); only the callable NAMES are
 // pricing-specific.
 //
-// SLICE 3 — launch, instructor session, the round loop, the knowledge check and
-// the debrief.
+// SLICE 4 — launch, instructor session, the round loop, the knowledge check, the
+// debrief, and the instructor dashboard + reports.
 //
 // ⚠ THE RESPONSE TYPES BELOW ARE THE WHOLE CLIENT-SIDE CONTRACT. There is no round
 // count and no competitor rule in them because the server never sends either
@@ -211,3 +211,77 @@ export type InstructorSessionArgs =
 
 export const pricingInstructorSession = (args: InstructorSessionArgs) =>
   callFn<{ ok: boolean; customToken: string }>('pricingInstructorSession', args)
+
+// ── Instructor: roster, scoring, reports ────────────────────────────────────────
+//
+// ⚠ EVERYTHING BELOW IS INSTRUCTOR-ONLY, and it DOES carry the competitor's rule.
+// That is correct and required (spec §10): a class chart is unreadable without
+// knowing what the class was playing against. These callables are behind an
+// instructor session, and no student screen imports from this section.
+
+export const pricingSyncRoster = () => callFn<{ ok: boolean; synced: number }>('pricingSyncRoster')
+
+export type PricingPushSummary = { total: number; succeeded: number; failed: unknown[] }
+
+export const pricingScoreAndRecord = () =>
+  callFn<{ ok: boolean; scored: number; finishers: number; push: PricingPushSummary | null }>(
+    'pricingScoreAndRecord')
+
+/** One student, as the dashboard and the Tier-1 roster render them (spec §10). */
+export type PricingReportParticipant = {
+  participant_id: string
+  name: string | null
+  launched: boolean
+  completed: boolean
+  finalized: boolean
+  rounds_played: number
+  /** Mean POSTED price; null for a student who has posted none. */
+  average_price: number | null
+  /** Mean profit per round PLAYED; null likewise. */
+  average_profit: number | null
+  total_profit: number
+  knowledge_check_score: number | null
+  participation_score: number | null
+  debrief: string | null
+}
+
+/** One round of the Tier-3 chart. `n` is the number of students the two averages are
+ *  over — it thins down the chart as the class spreads out, and the chart says so. */
+export type PricingPricePoint = {
+  round: number
+  student: number
+  competitor: number
+  n: number
+}
+
+export type PricingEquilibrium = {
+  student: number
+  competitor: number
+  label: string
+  /** PMG draws ONE line (any equal price is an equilibrium); Standard draws two. */
+  singleLine: boolean
+}
+
+export type PricingReportData = {
+  ok: boolean
+  /** Has Score & Record been run for this instance? */
+  scored: boolean
+  pmg: boolean
+  labels: PricingLabels
+  market: PricingMarket
+  /** Instructor-only, by design (spec §10). */
+  competitorRule: { id: string; description: string }
+  /** The longest game anyone played — the chart's x-axis. NOT anyone's horizon. */
+  maxRoundsPlayed: number
+  participants: PricingReportParticipant[]
+  charts: { prices: PricingPricePoint[] }
+  summary: {
+    averagePostedPrice: number | null
+    /** PMG only; null under Standard, where there is no single price paid. */
+    averageEffectivePrice: number | null
+    equilibrium: PricingEquilibrium
+  }
+  debriefPrompt: string
+}
+
+export const pricingGetReport = () => callFn<PricingReportData>('pricingGetReport')

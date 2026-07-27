@@ -19,10 +19,12 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | `pd` | Repeated Prisoner's Dilemma | `pd.mygames.live` | `pd-mygames-live` |
 | `pricing` | Pricing Game (Cheyenne Shipping) | `pricing.mygames.live` | `pricing-mygames-live` |
 
-> `pricing` is **FEATURE-COMPLETE for students** (Slice 3): (PMG rules →) knowledge
-> check → round loop → debrief, participation scoring + the gradebook push, and
-> classroom registration. The instructor dashboard, settings and reports are Slice 4 —
-> and **nothing is deployed**. It is **one game,
+> `pricing` is **FEATURE-COMPLETE** (Slice 4): (PMG rules →) knowledge check → round
+> loop → debrief, participation scoring + the gradebook push, classroom registration,
+> and the instructor dashboard + all three report tiers. Instructor SETTINGS is the
+> one thing left (the market, the PMG toggle and the round range are config-driven but
+> have no editor yet, so an instance is configured by seeding config/main). **Nothing
+> is deployed.** It is **one game,
 > two course instances** — Standard and PMG are the same `game_id` switched by a
 > per-instance config flag, never a second prefix or a second hosting site.
 >

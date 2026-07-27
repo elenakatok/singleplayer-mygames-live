@@ -31,7 +31,11 @@
 //   • the end screen revealing the round count, the total and the average;
 //   • ⚠ NO "of M" ROUND-TOTAL STRING ANYWHERE, and no leak of the drawn horizon or
 //     the competitor's rule into the page or into any callable response the browser
-//     actually received.
+//     actually received;
+//   • the INSTRUCTOR dashboard and all three report tiers against a deliberately
+//     MIXED population (finished / mid-game / never started, in both modes), with
+//     the Tier-1 rows and the Tier-3 per-round averages and denominators checked
+//     against the same independent model the student side uses.
 //
 // Run:
 //   npm install && npx playwright install chromium     (once)
@@ -232,6 +236,10 @@ const studentUrl = (gid, pid) => `${APP}/?game=pricing&_pid=${pid}&_gid=${gid}`
 
 const text = async (page, sel) => (await page.locator(sel).first().innerText()).trim()
 const testId = async (page, id) => text(page, `[data-testid="${id}"]`)
+/** innerText is an HTMLElement API and THROWS on an SVG node, so anything inside the
+ *  chart (its <text> labels) has to be read with textContent instead. */
+const svgText = async (page, id) =>
+  ((await page.locator(`[data-testid="${id}"]`).first().textContent()) ?? '').trim()
 const exists = async (page, sel) => (await page.locator(sel).count()) > 0
 
 /** Every callable response this browser actually received, for the network audit. */
@@ -714,7 +722,197 @@ async function main() {
     check(bodies.includes('your competitor was programmed to'),
       '⚠ …while the debrief reveal DID reach the browser, once the game was over')
 
-    // ── 5. The truth is still on the server, denied to the client ──────────────
+
+    // ── 5. Instructor dashboard + reports, on a MIXED population ───────────────
+    // The population is the point: a finisher, a mid-game student, and one who never
+    // started — which is what an instructor actually opens mid-week, and the state in
+    // which an average is easiest to get wrong.
+    console.log('\n[5] Instructor dashboard + reports (mixed population, mid-week)')
+
+    const instrUrl = (path, gid) => `${APP}${path}?game=pricing&_gid=${gid}`
+
+    /** Drives one student through the KC and N rounds over HTTP (fast — the browser
+     *  work under test here is the INSTRUCTOR's, not another playthrough). */
+    async function seedStudent(gid, pid, pmg, rounds, priceFor) {
+      await callFn('pricingBootstrap', asStudent(gid, pid))
+      const served = await callFn('pricingGetQuestions', asStudent(gid, pid))
+      for (const q of served.result.kc) {
+        await callFn('pricingSubmitKcAnswer',
+          asStudent(gid, pid, { field: q.field, answer: q.options[0].value }))
+      }
+      const prices = []
+      for (let n = 1; n <= rounds; n++) {
+        const price = priceFor(n)
+        const res = await callFn('pricingSubmitPrice', asStudent(gid, pid, { round: n, price }))
+        if (!res.ok) break
+        prices.push(price)
+      }
+      return prices
+    }
+
+    /** The independent model of what the Tier-3 chart must show. */
+    function expectedChart(games) {
+      const maxRounds = Math.max(0, ...games.map(g => g.length))
+      const points = []
+      for (let round = 1; round <= maxRounds; round++) {
+        const played = games.filter(g => g.length >= round)
+        if (played.length === 0) continue
+        const mine = played.map(g => g[round - 1])
+        const theirs = played.map((g, i) => expectedCompetitorPrice(false, g.slice(0, round - 1)))
+        points.push({
+          round,
+          student: mine.reduce((a, b) => a + b, 0) / mine.length,
+          competitor: theirs.reduce((a, b) => a + b, 0) / theirs.length,
+          n: played.length,
+        })
+      }
+      return points
+    }
+
+    const GID_R = `pw-report-${stamp}`
+    // A finisher (plays to their own horizon), a mid-game student (4 rounds), and one
+    // who is rostered but never launches.
+    const finisher = await openInstance(GID_R, 'pw-r-finisher', 'seed-pw-std', false)
+    const midgame = await openInstance(GID_R, 'pw-r-midgame', 'seed-pw-std', false)
+    const finPrices = await seedStudent(GID_R, 'pw-r-finisher', false, finisher.rounds, n => 1200 + (n % 3) * 200)
+    const midPrices = await seedStudent(GID_R, 'pw-r-midgame', false, 4, () => 1800)
+    // ⚠ NOT a bootstrap — that stamps launched_at and would make this student read as
+    // "in progress (0 rounds)". A never-started student is one the ROSTER SYNC created:
+    // identity fields only. This writes exactly what pricingSyncRoster writes.
+    await putDoc(`pricing_game_instances/${GID_R}/participants/pw-r-never`, {
+      participant_id: strVal('pw-r-never'),
+      game_instance_id: strVal(GID_R),
+      name: strVal('Never Started'),
+    })
+    check(finPrices.length === finisher.rounds && midPrices.length === 4,
+      `seeded a finisher (${finPrices.length} rounds), a mid-game student (4), and a never-started one`)
+
+    const ctxI = await browser.newContext()
+    const pageI = await ctxI.newPage()
+    await pageI.goto(instrUrl('/dashboard', GID_R))
+    await pageI.waitForSelector('[data-testid="pricing-roster"]', { timeout: 30000 })
+
+    // ── The header: which of the two instances am I looking at? ───────────────
+    check((await testId(pageI, 'pricing-mode-name')).includes('Standard'),
+      'the dashboard header names the MODE (Standard)')
+    const ruleText = await testId(pageI, 'pricing-rule-text')
+    check(/programmed to/.test(ruleText) && /best|grid|profit/i.test(ruleText),
+      '…and states the competitor rule in plain language (instructor-only, and correct here)')
+
+    // ── The assignment-status view ────────────────────────────────────────────
+    const roster = await pageI.locator('[data-testid="pricing-roster"]').innerText()
+    check(/Finished/.test(roster), 'the roster marks the finisher Finished')
+    check(new RegExp(`In progress \\(4 rounds\\)`).test(roster),
+      'the mid-game student shows In progress WITH how far they have got')
+    check(/Not started/.test(roster), 'and the never-launched student shows Not started')
+    check((await testId(pageI, 'pricing-counts')).includes('1 finished / 2 started / 3 on roster'),
+      'the action bar counts finished / started / on roster')
+
+    // ── Tier 1 numbers, against the model ─────────────────────────────────────
+    const rosterRows = roster.split('\n')
+    const finRow = rosterRows.find(r => /Finished/.test(r)) ?? ''
+    const wantAvgPrice = fmtPrice(finPrices.reduce((a, b) => a + b, 0) / finPrices.length)
+    check(finRow.includes(wantAvgPrice),
+      `Tier 1: the finisher's average posted price is ${wantAvgPrice}`)
+    const finProfits = finPrices.map((p, i) =>
+      expectedOutcome(p, expectedCompetitorPrice(false, finPrices.slice(0, i)), false).yourProfit)
+    const wantAvgProfit = fmtProfitM(finProfits.reduce((a, b) => a + b, 0) / finProfits.length)
+    check(finRow.includes(wantAvgProfit),
+      `Tier 1: …and their average profit per round is ${wantAvgProfit}`)
+    const neverRow = rosterRows.find(r => /Not started/.test(r)) ?? ''
+    check((neverRow.match(/—/g) ?? []).length >= 3,
+      'Tier 1: a student who never started shows dashes, not zeros')
+
+    // ── The reports page: three tiles, mode-labelled ──────────────────────────
+    await pageI.goto(instrUrl('/reports', GID_R))
+    await pageI.waitForSelector('[data-testid="pricing-mode-header"]', { timeout: 30000 })
+    const board = await pageI.locator('body').innerText()
+    check(/Outcomes — all students/.test(board), 'Tier 1 tile is present')
+    check(/Debrief paragraphs/.test(board), 'Tier 2 tile is present')
+    check(/Average posted price by round/.test(board), 'Tier 3 tile is present')
+
+    // ── Tier 3: the chart, its denominators, and its equilibrium lines ────────
+    await pageI.click('text=Average posted price by round')
+    await pageI.waitForSelector('[data-testid="pricing-price-chart"]')
+
+    const wantPoints = expectedChart([finPrices, midPrices])
+    check(wantPoints.length === Math.max(finPrices.length, midPrices.length),
+      `the chart spans the LONGEST game played (${wantPoints.length} rounds)`)
+    // The per-round denominator: 2 while both are playing, 1 once the mid-game student
+    // has stopped. This is the composition signal the count row exists for.
+    for (const p of [wantPoints[0], wantPoints[3], wantPoints[wantPoints.length - 1]]) {
+      const shown = await pageI.locator(`[data-testid="pricing-chart-n-${p.round}"]`).count()
+      if (shown > 0) {
+        check(await svgText(pageI, `pricing-chart-n-${p.round}`) === `n=${p.n}`,
+          `round ${p.round} reports its denominator (n=${p.n})`)
+      }
+    }
+    check(wantPoints[0].n === 2 && wantPoints[wantPoints.length - 1].n === 1,
+      'the denominator genuinely thins from 2 to 1 across this chart')
+
+    check(await exists(pageI, '[data-testid="pricing-eq-line-student"]')
+      && await exists(pageI, '[data-testid="pricing-eq-line-competitor"]'),
+      'Standard draws BOTH dashed equilibrium lines')
+    check(!(await exists(pageI, '[data-testid="pricing-eq-line-pmg"]')),
+      '…and not the PMG single line')
+    check(await testId(pageI, 'pricing-summary-equilibrium') === fmtPrice(1394),
+      'the summary box states the DERIVED equilibrium ($1,394 at the case market)')
+    const allPrices = [...finPrices, ...midPrices]
+    check(await testId(pageI, 'pricing-summary-avg-price')
+      === fmtPrice(allPrices.reduce((a, b) => a + b, 0) / allPrices.length),
+      'and the class average posted price, over every round every student played')
+    check(!(await exists(pageI, '[data-testid="pricing-summary-avg-effective"]')),
+      'Standard has no average-price-paid stat — there is no single price paid')
+
+    await ctxI.close()
+
+    // ── The PMG instance's reports differ where the mode differs ──────────────
+    const ctxIP = await browser.newContext()
+    const pageIP = await ctxIP.newPage()
+    await pageIP.goto(instrUrl('/reports', GID_P))
+    await pageIP.waitForSelector('[data-testid="pricing-mode-header"]', { timeout: 30000 })
+    check((await testId(pageIP, 'pricing-mode-name')).includes('PMG'),
+      'the PMG instance labels itself PMG')
+    await pageIP.click('text=Average posted price by round')
+    await pageIP.waitForSelector('[data-testid="pricing-price-chart"]')
+    check(await exists(pageIP, '[data-testid="pricing-eq-line-pmg"]'),
+      'PMG draws ONE dashed line…')
+    check(!(await exists(pageIP, '[data-testid="pricing-eq-line-student"]')),
+      '…not the two Standard ones')
+    const pmgSummary = await pageIP.locator('[data-testid="pricing-summary-box"]').innerText()
+    check(/any equal price/.test(pmgSummary),
+      '…and says "any equal price", never implying the ceiling is uniquely optimal')
+    check(await exists(pageIP, '[data-testid="pricing-summary-avg-effective"]'),
+      'PMG adds the average price PAID to the summary box')
+    check(await testId(pageIP, 'pricing-summary-equilibrium') === fmtPrice(MARKET.maxPrice),
+      'and its equilibrium stat is the ceiling')
+
+    // Tier 2 carries the paragraph the PMG student wrote, labelled with its context.
+    await pageIP.click('button:has-text("Close")')
+    await pageIP.click('text=Debrief paragraphs')
+    await pageIP.waitForSelector('[data-testid="pricing-report-debrief"]')
+    const debriefPanel = await pageIP.locator('[data-testid="pricing-report-debrief"]').innerText()
+    check(/I started high/.test(debriefPanel), 'Tier 2 shows the paragraph the student submitted')
+    const ctx2 = await testId(pageIP, 'pricing-debrief-context')
+    check(/PMG instance/.test(ctx2) && /programmed to/.test(ctx2) && /prompt:/.test(ctx2),
+      '…labelled with the mode, the competitor rule and the prompt, so a pasted block carries its context')
+    await ctxIP.close()
+
+    // ── Mid-week with NOTHING played: the reports must still open ─────────────
+    const GID_EMPTY = `pw-empty-${stamp}`
+    await openInstance(GID_EMPTY, 'pw-empty-stu', 'seed-empty', false)
+    const ctxE = await browser.newContext()
+    const pageE = await ctxE.newPage()
+    await pageE.goto(instrUrl('/reports', GID_EMPTY))
+    await pageE.waitForSelector('[data-testid="pricing-mode-header"]', { timeout: 30000 })
+    const emptyBoard = await pageE.locator('body').innerText()
+    check(/No rounds played yet/.test(emptyBoard),
+      'an instance where nobody has played says so rather than crashing')
+    check(!/NaN|Infinity|undefined/.test(emptyBoard),
+      '⚠ …and divides nothing by zero on the way (no NaN/Infinity on screen)')
+    await ctxE.close()
+
+    // ── 6. The truth is still on the server, denied to the client ──────────────
     const truth = await getDoc(`pricing_game_instances/${GID_S}/truth/participant_${SPID}`)
     check(Number(truth?.rounds?.integerValue) === std.rounds,
       'the horizon lives in the rules-denied truth/ doc, where the browser cannot reach it')
