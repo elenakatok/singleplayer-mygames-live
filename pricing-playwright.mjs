@@ -356,6 +356,12 @@ async function checkEntryScreen(page, pmg, label) {
 async function checkPriceValidation(page, label) {
   check(await page.locator('[data-testid="pricing-submit-round"]').isDisabled(),
     `${label}: submit is disabled before a price is typed`)
+  // ⚠ The field starts EMPTY, with no placeholder number: a prefilled price anchors,
+  // and the one it used to show was the floor — below unit cost at the shipped market.
+  check(await page.locator('[data-testid="pricing-price-input"]').inputValue() === '',
+    `${label}: the price field starts empty — no default value`)
+  check((await page.getAttribute('[data-testid="pricing-price-input"]', 'placeholder') ?? '') === '',
+    `${label}: …and offers no placeholder number to anchor on`)
 
   await page.fill('[data-testid="pricing-price-input"]', String(MARKET.maxPrice + 1))
   check(await page.locator('[data-testid="pricing-submit-round"]').isDisabled(),

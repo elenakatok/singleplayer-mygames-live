@@ -98,6 +98,12 @@ export function ChoosePrice({
         <h2 style={sectionTitle}>Your price this round</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
           <span style={{ fontSize: '1.35rem', color: colors.text }}>$</span>
+          {/* ⚠ NO PLACEHOLDER AND NO DEFAULT VALUE, DELIBERATELY. The field used to
+              show the price FLOOR, which at the shipped market sits BELOW unit cost —
+              so the one number on screen while a student was deciding proposed a price
+              that loses money on every container. Any prefilled number anchors; that
+              one anchored toward the worst available decision. The bounds hint beside
+              the field states the legal range without suggesting a value inside it. */}
           <input
             data-testid="pricing-price-input"
             type="text"
@@ -105,7 +111,6 @@ export function ChoosePrice({
             autoComplete="off"
             value={raw}
             disabled={submitting}
-            placeholder={String(market.minPrice)}
             onChange={e => setRaw(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && canSubmit) void handleSubmit() }}
             style={{
