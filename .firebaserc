@@ -13,6 +13,9 @@
         ],
         "pd": [
           "pd-mygames-live"
+        ],
+        "pricing": [
+          "pricing-mygames-live"
         ]
       }
     }

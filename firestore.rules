@@ -121,5 +121,47 @@ service cloud.firestore {
         allow write: if false;
       }
     }
+
+    // ── Pricing Game / Cheyenne Shipping (game_id: pricing) ────────────────────
+
+    match /pricing_game_instances/{instanceId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+
+      // Per-instance instructor config (config/main). STUDENT-READABLE, and safe to
+      // be: it holds the market parameters (market size, base shares, unit costs,
+      // share slope, price bounds) and the PMG flag — every one of which is printed
+      // on the price-entry screen anyway. The drawn round count is NOT here; it
+      // lives in truth/ below (Pricing spec §3: never displayed).
+      match /config/{doc} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+
+      // TRUTH (truth/main → the drawn round count, and anything else the pedagogy
+      // depends on staying hidden). DENY ALL CLIENT ACCESS — read AND write,
+      // unconditionally, with NO exception for the instructor (who reads/writes it
+      // only through an authenticated callable). Same eBay vCommon pattern as
+      // pennies' true_value and pd's round count. Do not relax this rule, ever.
+      match /truth/{doc} {
+        allow read, write: if false;
+      }
+
+      // Participant document — per-INSTANCE subcollection, same structural isolation
+      // as the rest of the family.
+      //
+      // ⚠ FOLLOWS PD, NOT pennies/poll: read is DENIED OUTRIGHT, not scoped to
+      // "your own doc". A pricing participant doc carries the round history, and the
+      // pedagogy is that the student infers the competitor's rule from play (spec
+      // §5: the rule's identity is not shown until the debrief). A self-read would
+      // expose whatever the compute step stores alongside that history — including,
+      // once later slices land, the round the game ends on. Every student read goes
+      // through a callable that returns only what the student has already earned.
+      // No client writes either (callables only).
+      match /participants/{participantId} {
+        allow read: if false;
+        allow write: if false;
+      }
+    }
   }
 }

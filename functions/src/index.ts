@@ -5,6 +5,7 @@ import { makeSinglePlayerInstructorSession } from './shared/singlePlayerInstruct
 import { PENNIES_COLLECTION_PREFIX, PENNIES_CORS_ORIGINS } from './pennies/config'
 import { POLL_COLLECTION_PREFIX, POLL_CORS_ORIGINS } from './poll/config'
 import { PD_COLLECTION_PREFIX, PD_CORS_ORIGINS } from './pd/config'
+import { PRICING_COLLECTION_PREFIX, PRICING_CORS_ORIGINS } from './pricing/config'
 
 admin.initializeApp()
 
@@ -82,6 +83,21 @@ export { pdScoreAndRecord } from './pd/scoreAndRecord'
 export { pdGetReport } from './pd/report'
 export { pdGetConfig, pdUpdateConfig } from './pd/instructorConfig'
 
+// ── Pricing Game / Cheyenne Shipping (game_id: pricing) ───────────────────────
+//
+// SLICE 0 — SCAFFOLD ONLY: launch + instructor session + health. No game logic:
+// no market computation, no round loop, no competitor, no KC. One game, TWO course
+// instances (Standard / PMG) distinguished by a per-instance config flag, so there
+// is exactly ONE set of callables here — never a second game_id.
+
+export const pricingBootstrap = makeSinglePlayerBootstrap({
+  collectionPrefix: PRICING_COLLECTION_PREFIX,
+  corsOrigins: PRICING_CORS_ORIGINS,
+})
+export const pricingInstructorSession = makeSinglePlayerInstructorSession({
+  corsOrigins: PRICING_CORS_ORIGINS,
+})
+
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 
 function makeHealth(game: string, origins: string[]) {
@@ -101,3 +117,4 @@ function makeHealth(game: string, origins: string[]) {
 export const penniesHealth = makeHealth('pennies', PENNIES_CORS_ORIGINS)
 export const pollHealth = makeHealth('poll', POLL_CORS_ORIGINS)
 export const pdHealth = makeHealth('pd', PD_CORS_ORIGINS)
+export const pricingHealth = makeHealth('pricing', PRICING_CORS_ORIGINS)

@@ -13,6 +13,10 @@ import PdPlay from './pd/Play'
 import PdDashboard from './pd/Dashboard'
 import PdSettings from './pd/Settings'
 import PdReports from './pd/Reports'
+import PricingPlay from './pricing/Play'
+import PricingDashboard from './pricing/Dashboard'
+import PricingSettings from './pricing/Settings'
+import PricingReports from './pricing/Reports'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ONE Vite app serves EVERY single-player game (architecture: one bundle, many
@@ -25,11 +29,11 @@ import PdReports from './pd/Reports'
 // games' sites serve on their next hosting deploy. Adding a game must therefore
 // never change another game's routing — hence the explicit per-game map below.
 //
-// DEV override: ?game=poll / ?game=pd (nav preserves the query string, so it carries
-// across pages). Production keys off the hostname alone.
+// DEV override: ?game=poll / ?game=pd / ?game=pricing (nav preserves the query string,
+// so it carries across pages). Production keys off the hostname alone.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-type Game = 'pennies' | 'poll' | 'pd'
+type Game = 'pennies' | 'poll' | 'pd' | 'pricing'
 
 /** Hostname prefix → game. Checked in order; the first match wins. These are
  *  PREFIXES, not exact labels, because a site's default domain carries a suffix
@@ -38,6 +42,7 @@ const HOST_PREFIXES: ReadonlyArray<readonly [string, Game]> = [
   ['pennies', 'pennies'],
   ['poll', 'poll'],
   ['pd', 'pd'],
+  ['pricing', 'pricing'],
 ]
 
 function resolveGame(): Game {
@@ -49,6 +54,7 @@ function resolveGame(): Game {
     const q = new URLSearchParams(window.location.search).get('game')
     if (q === 'poll') return 'poll'
     if (q === 'pd') return 'pd'
+    if (q === 'pricing') return 'pricing'
   }
   return 'pennies'
 }
@@ -73,6 +79,10 @@ const GAMES: Record<Game, GameScreens> = {
   pd: {
     title: 'Repeated Prisoner’s Dilemma',
     Play: PdPlay, Dashboard: PdDashboard, Settings: PdSettings, Reports: PdReports,
+  },
+  pricing: {
+    title: 'Cheyenne Shipping',
+    Play: PricingPlay, Dashboard: PricingDashboard, Settings: PricingSettings, Reports: PricingReports,
   },
 }
 

@@ -17,6 +17,12 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | `pennies` | Jar of Pennies | `pennies.mygames.live` | `pennies` |
 | `poll` | Poll | `poll.mygames.live` | `poll-mygames` |
 | `pd` | Repeated Prisoner's Dilemma | `pd.mygames.live` | `pd-mygames-live` |
+| `pricing` | Pricing Game (Cheyenne Shipping) | `pricing.mygames.live` | `pricing-mygames-live` |
+
+> `pricing` is at **Slice 0 (scaffold)**: launch, instructor session, health probe,
+> the `pricing_` rules block, and the four routes. No game logic yet. It is **one
+> game, two course instances** — Standard and PMG are the same `game_id` switched by
+> a per-instance config flag, never a second prefix or a second hosting site.
 
 > `pd` is **FEATURE-COMPLETE** (Slice 4): knowledge check → round loop → debrief,
 > participation scoring + gradebook push, and the instructor dashboard + all three
@@ -90,6 +96,7 @@ npm run harness:pd          # HTTP  — server contract
 npm run harness:pd:browser  # BROWSER — the whole game, clicked through
 npm run harness:pennies
 npm run harness:poll
+npm run harness:pricing   # HTTP — Slice 0 scaffold contract
 ```
 
 The browser harness boots the Vite **dev** server itself (dev mode is what enables the
