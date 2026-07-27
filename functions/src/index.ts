@@ -85,10 +85,12 @@ export { pdGetConfig, pdUpdateConfig } from './pd/instructorConfig'
 
 // ── Pricing Game / Cheyenne Shipping (game_id: pricing) ───────────────────────
 //
-// SLICE 0 — SCAFFOLD ONLY: launch + instructor session + health. No game logic:
-// no market computation, no round loop, no competitor, no KC. One game, TWO course
-// instances (Standard / PMG) distinguished by a per-instance config flag, so there
-// is exactly ONE set of callables here — never a second game_id.
+// SLICE 1 — the round loop, server side: the market model (both modes), the
+// competitor strategy library, the per-student hidden horizon, and the two student
+// callables. The KC, the debrief, the screens, scoring, and the reports arrive in
+// later slices. One game, TWO course instances (Standard / PMG) distinguished by a
+// per-instance config flag, so there is exactly ONE set of callables here — never a
+// second game_id.
 
 export const pricingBootstrap = makeSinglePlayerBootstrap({
   collectionPrefix: PRICING_COLLECTION_PREFIX,
@@ -97,6 +99,10 @@ export const pricingBootstrap = makeSinglePlayerBootstrap({
 export const pricingInstructorSession = makeSinglePlayerInstructorSession({
   corsOrigins: PRICING_CORS_ORIGINS,
 })
+
+// Student.
+export { pricingGetState } from './pricing/getState'
+export { pricingSubmitPrice } from './pricing/submitPrice'
 
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 

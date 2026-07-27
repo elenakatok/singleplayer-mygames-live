@@ -19,10 +19,22 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | `pd` | Repeated Prisoner's Dilemma | `pd.mygames.live` | `pd-mygames-live` |
 | `pricing` | Pricing Game (Cheyenne Shipping) | `pricing.mygames.live` | `pricing-mygames-live` |
 
-> `pricing` is at **Slice 0 (scaffold)**: launch, instructor session, health probe,
-> the `pricing_` rules block, and the four routes. No game logic yet. It is **one
-> game, two course instances** — Standard and PMG are the same `game_id` switched by
-> a per-instance config flag, never a second prefix or a second hosting site.
+> `pricing` is at **Slice 1 (server-side round loop)**: the market model in both
+> modes, the competitor strategy library, the per-student hidden horizon, and the two
+> student callables (`pricingGetState`, `pricingSubmitPrice`). No screens, no KC, no
+> debrief, no scoring, no reports yet — and **nothing deployed**. It is **one game,
+> two course instances** — Standard and PMG are the same `game_id` switched by a
+> per-instance config flag, never a second prefix or a second hosting site.
+>
+> ⚠ **Pricing's two invariants, in code:** the student's round count and the
+> competitor's rule are server-side truth (`truth/…`, rules-denied) and appear in
+> **no** callable response — both callables return hand-built whitelists, and
+> `pricing-playthrough.mjs` §10 audits every response tree for stray keys, forbidden
+> words, and any number that could be the horizon, then §10b greps the source that
+> builds those responses. Unlike PD the horizon is drawn **per student**, so the
+> first student to finish cannot tell the class how long the game is. Rounds also
+> **submit-and-lock**: a resubmit for a played round returns the stored round and
+> writes nothing.
 
 > `pd` is **FEATURE-COMPLETE** (Slice 4): knowledge check → round loop → debrief,
 > participation scoring + gradebook push, and the instructor dashboard + all three
