@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { collection, onSnapshot } from 'firebase/firestore'
 import { SortableTable, colors, type SortableColumn } from '@mygames/game-ui'
+import { auth, db } from '../firebase'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
@@ -104,6 +106,61 @@ export default function Dashboard() {
     // Pull the full course roster first (so never-started students appear and can be
     // graded −2), then load. `finally` so the table still loads with no classroom wired.
     newsvendorSyncRoster().catch(() => {}).finally(load)
+  }, [session.kind, load])
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // LIVE REFRESH — the dashboard follows the class as it plays.
+  //
+  // ⚠ THIS IS A CHANGE SIGNAL, NOT A DATA SOURCE. The snapshot below is subscribed
+  // purely to learn THAT something changed; not one field is read off it and nothing
+  // renders from it. Every number on screen still comes from newsvendorGetReport,
+  // which stays the single authority — so the averages, the status wording and the
+  // optimality gap can never be computed two different ways and disagree. Deriving
+  // them client-side from raw docs is exactly the drift this avoids.
+  //
+  // ⚠ AND IT IS NOT A POLL. Firestore pushes; there is no timer asking "anything
+  // yet?". The debounce coalesces a burst (forty students submitting a period within
+  // the same second) into ONE refetch — it rate-limits pushes that already happened,
+  // it does not schedule requests that have no reason to exist.
+  //
+  // The subscription needs the instructor read granted in firestore.rules, gated on
+  // this instance's own instructor claims. See that file for why it widens nothing.
+  //
+  // ⚠ NOTE FOR PD AND PRICING: they do NOT have this. Their dashboards are one-shot
+  // fetches — the data path here was byte-identical to pricing's before this block —
+  // so they still need a manual reload to show progress. This is the family's first
+  // live dashboard, not a newsvendor-specific repair; port it across if it earns its
+  // keep in class.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (session.kind !== 'ready') return
+    // The instance id comes from the SESSION, not the URL: the signed-in uid is
+    // `instructor_${gameInstanceId}` by construction (functions
+    // shared/singlePlayerInstructorSession.ts), so it is present whenever the session
+    // is ready and it cannot disagree with the identity the rules will check. Reading
+    // a query param instead would break the moment a link omitted it.
+    const uid = auth.currentUser?.uid ?? ''
+    const gid = uid.startsWith('instructor_') ? uid.slice('instructor_'.length) : ''
+    // No resolvable instance means nothing to subscribe to. The one-shot load above has
+    // already run, so the page is correct — it simply will not self-update.
+    if (!gid) return
+
+    const unsubscribe = onSnapshot(
+      collection(db, 'newsvendor_game_instances', gid, 'participants'),
+      () => {
+        if (debounceRef.current) clearTimeout(debounceRef.current)
+        debounceRef.current = setTimeout(load, 400)
+      },
+      // A denied or dropped listener must NOT blank the page: the table is already
+      // populated from the authoritative fetch, and losing live updates is a
+      // degradation, not a failure. Logged, never surfaced as a load error.
+      (err) => console.warn('[newsvendor] live roster listener stopped:', err.message),
+    )
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      unsubscribe()
+    }
   }, [session.kind, load])
 
   const handleScore = async () => {

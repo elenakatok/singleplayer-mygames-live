@@ -29,9 +29,9 @@
 // on its own screen — the same calculation the knowledge check sets. It is reading the
 // case, not the answer key.
 //
-// FLOW each robot walks (spec §7, §8):
-//   prep paragraph → place order → results, × the configured periods →
-//   final results → the ten-question knowledge check → debrief → done
+// FLOW each robot walks:
+//   the ten-question knowledge check → prep paragraph → place order → results,
+//   × the configured periods → final results → debrief → done
 //
 // Usage (PRODUCTION, via the launcher button or by hand):
 //   node newsvendor-robot-driver.mjs --instance <id> [--students 8] [--pace watch|fast]
@@ -198,7 +198,7 @@ async function doPrep(page, style, log) {
   await page.fill('[data-testid="nv-freetext-input"]', pick(style.prep))
   await page.click('[data-testid="nv-freetext-submit"]')
   await page.waitForSelector('[data-testid="nv-period-heading"], [data-testid="nv-final-heading"]', { timeout: 30000 })
-  log('prep paragraph submitted')
+  log('prep paragraph submitted — starting the game')
 }
 
 /** The period loop: play this robot's style to the last period, reading each period's
@@ -242,7 +242,7 @@ async function readFinal(page, log) {
   const avgOrder = await grab(page, '[data-testid="nv-final-avg-order"]')
   await sleep(thinkTime())
   await page.click('[data-testid="nv-final-continue"]')
-  await page.waitForSelector('[data-testid="nv-kc-prompt"], [data-testid="nv-freetext-input"], [data-testid="nv-all-done"]', { timeout: 30000 })
+  await page.waitForSelector('[data-testid="nv-freetext-input"], [data-testid="nv-all-done"]', { timeout: 30000 })
   log(`final results: total ${total}, average order ${avgOrder}`)
 }
 
@@ -270,7 +270,7 @@ async function doKnowledgeCheck(page, log) {
     await page.click('[data-testid="nv-kc-submit"]')
     await page.waitForSelector('[data-testid="nv-kc-correct"], [data-testid="nv-kc-incorrect"], [data-testid="nv-kc-recorded"]', { timeout: 30000 })
     await page.click('[data-testid="nv-kc-continue"]')
-    await page.waitForSelector('[data-testid="nv-kc-prompt"], [data-testid="nv-freetext-input"], [data-testid="nv-all-done"]', { timeout: 30000 })
+    await page.waitForSelector('[data-testid="nv-kc-prompt"], [data-testid="nv-freetext-input"], [data-testid="nv-period-heading"], [data-testid="nv-all-done"]', { timeout: 30000 })
     answered++
   }
   log(`knowledge check done (${answered} answered at random)`)
@@ -304,6 +304,11 @@ async function runRobot(robot) {
     // screen" is not enough to tell them apart. The prep is identified by its own
     // field-scoped test id; anything else free-text at this point is the debrief, which
     // the tail of this function handles.
+    // ⚠ THE GRADED KC RUNS FIRST, then the prep. Both are handled defensively rather
+    // than positionally, so a resumed robot that is already past one of them simply
+    // skips it — the driver follows the screens it finds, it does not assume a step.
+    await doKnowledgeCheck(page, log)
+
     if (await visible(page, '[data-testid="nv-freetext-prompt-prep_strategy"]')) {
       await doPrep(page, style, log)
     }
@@ -317,7 +322,6 @@ async function runRobot(robot) {
     }
 
     await readFinal(page, log)
-    await doKnowledgeCheck(page, log)
     await doDebrief(page, style, log)
     return { done: true }
   } catch (e) {

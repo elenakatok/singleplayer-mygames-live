@@ -18,20 +18,30 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 // ═══════════════════════════════════════════════════════════════════════════════
 // Newsvendor — student entry. THE WHOLE FLOW, in one sequence:
 //
-//   prep  →  the period loop  →  final results  →  KC  →  debrief  →  done
-//  (free    (place order →      (totals; the      (10       (free
-//   text,    results, ×N)        benchmark is      graded,   text,
-//   ungraded)                    NOT here)         no gate)  ungraded)
+//   KC  →  prep  →  the period loop  →  final results  →  debrief  →  done
+//  (10     (free    (place order →      (totals; the     (free
+//   graded, text,    results, ×N)        benchmark is     text,
+//   no gate) ungraded)                   NOT here)        ungraded)
 //
-// ⚠ THE KC COMES AFTER PLAY, unlike pricing's, which comes before. Spec §8: "prep
-// question before play, graded KC after". The prep asks how a student INTENDS to
-// decide; the KC is the assessed component (spec §9.1) and tests the newsvendor logic
-// the periods were meant to teach. Do not reorder these to match the sibling game.
+// ⚠ THE GRADED KC COMES FIRST, and the two screens after it depend on that. Students
+// arrive having had the newsvendor lecture, so the KC checks the LECTURE rather than
+// the play — and the prep can then ask the question that is actually interesting:
+// having just computed the optimal order, do you intend to USE it? That wording lives
+// in functions newsvendor/config.ts and is written against this order, so the two
+// cannot be resequenced independently.
+//
+// ⚠ MOVING THE KC DID NOT TOUCH HOW IT GRADES. Position is all that changed: the
+// questions are still resolved by resolveNewsvendorKcQuestions(participantId) and
+// still graded by newsvendorSubmitKcAnswer against that same call, which is what
+// keeps a moved screen from throwing "not a knowledge-check question in this game".
+// The server has no notion of where in the flow a question was answered.
 //
 // RESUME, one rule for the whole flow: every step's completion is a fact stored on the
-// server, so `startIndex` is just "how many steps are already done" — the prep answer,
-// then the loop's own position, then the KC answers, then the debrief. Nothing is kept
-// in the browser; a student resumes identically on another device.
+// server, so `startIndex` is just "how many steps are already done" — the KC answers,
+// then the prep answer, then the loop's own position, then the debrief. Nothing is kept
+// in the browser; a student resumes identically on another device. The arithmetic lives
+// in resume.ts and is unit-tested against every branch (resume.test.ts), because an
+// off-by-one here puts a student back through a question the server has already locked.
 //
 // ⚠ THE BENCHMARK NEVER REACHES THIS FILE (spec §9.2) — see api.ts. Q_opt and
 // profitOpt are stored for every period and appear in no student response, so there is
@@ -175,7 +185,17 @@ export default function Play() {
     const { params: gameParams, kc, prep, debrief } = loaded
 
     const screens: SequenceScreen[] = [
-      // ── The prep paragraph, before anything else (spec §8) ───────────────────
+      // ── The knowledge check FIRST: one graded screen per question, no gate ────
+      // Graded, and NOT a gate — a wrong answer is recorded, scored, and the student
+      // continues regardless. Only its POSITION moved; the grading path is untouched.
+      ...kc.map((q, i) => ({
+        id: q.field,
+        render: ({ onDone }: { onDone: () => void }) => (
+          <KcScreen question={q} index={i} total={kc.length} onDone={onDone} />
+        ),
+      })),
+
+      // ── Then the prep paragraph — which asks about the KC they just did ───────
       ...(prep ? [{
         id: prep.field,
         render: ({ onDone }: { onDone: () => void }) => (
@@ -218,7 +238,8 @@ export default function Play() {
         ),
       }),
 
-      // ── Final results (spec §7d), as a STEP: the KC and debrief follow it ─────
+      // ── Final results (spec §7d) — the last content screen; only the debrief
+      //    follows it now that the KC has moved to the front.
       {
         id: 'newsvendor-final',
         render: ({ onDone }: { onDone: () => void }) => (
@@ -232,14 +253,6 @@ export default function Play() {
           />
         ),
       },
-
-      // ── The knowledge check: one graded screen per question, no gate ──────────
-      ...kc.map((q, i) => ({
-        id: q.field,
-        render: ({ onDone }: { onDone: () => void }) => (
-          <KcScreen question={q} index={i} total={kc.length} onDone={onDone} />
-        ),
-      })),
 
       // ── The debrief paragraph, IF the instructor left it on ───────────────────
       ...(debrief ? [{

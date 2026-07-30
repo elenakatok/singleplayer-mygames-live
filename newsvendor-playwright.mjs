@@ -12,7 +12,8 @@
 // selectors and the assertions are this game's.
 //
 // WHAT IT COVERS, end to end:
-//   • the prep paragraph, before the first period (spec §8);
+//   • the TEN-QUESTION GRADED KC FIRST, before anything else;
+//   • the prep paragraph, after the KC and before the first period;
 //   • the place-order screen — the parameter box (with zero-valued lines SUPPRESSED),
 //     the demand box, the bounds, and the calculator;
 //   • the whole period loop to the CONFIGURED period count, with every profit, every
@@ -20,10 +21,11 @@
 //     against the rendered results screen AND the rendered history row;
 //   • browser-side order validation gating submit;
 //   • resume — reload mid-loop and land on the right period with history intact;
-//   • the final-results screen, then the ten-question KC, then the debrief;
+//   • the final-results screen, then the debrief;
 //   • ⚠ NO BENCHMARK ANYWHERE — not in the page text, not in any callable response the
 //     browser actually received, at any point in the flow (spec §9.2);
-//   • the INSTRUCTOR dashboard and all four report tiles against a MIXED population.
+//   • the INSTRUCTOR dashboard and all five report tiles against a MIXED population;
+//   • ⚠ the dashboard UPDATING LIVE as students play, with no reload of any kind.
 //
 // Run:
 //   npm install && npx playwright install chromium     (once)
@@ -169,13 +171,19 @@ async function openInstance(gid, cfg, seed) {
 
 // ── Flow steps ─────────────────────────────────────────────────────────────────
 
-/** The prep paragraph (spec §8) — the first thing a student meets. */
+/** The prep paragraph — asked AFTER the knowledge check and BEFORE the first period. */
 async function doPrep(page, label) {
   await page.waitForSelector('[data-testid="nv-freetext-input"]')
   check(await exists(page, '[data-testid="nv-freetext-prompt-prep_strategy"]'),
-    `${label}: the PREP question comes first, before any period`)
+    `${label}: the PREP question follows the knowledge check`)
   check(!(await exists(page, '[data-testid="nv-period-heading"]')),
     `${label}: …and the order screen is not on it`)
+  // ⚠ The prompt is written against the KC having already run — it asks what the
+  // student intends to do with the optimal quantity they just computed. If this
+  // assertion ever fails, the two were resequenced independently.
+  const prompt = await testId(page, 'nv-freetext-prompt-prep_strategy')
+  check(/optimal order quantity/i.test(prompt),
+    `${label}: …and it asks about the optimal quantity they just worked out`)
   await page.fill('[data-testid="nv-freetext-input"]', 'I will start near the mean and adjust.')
   await page.click('[data-testid="nv-freetext-submit"]')
 }
@@ -248,6 +256,18 @@ async function playPeriod(page, n, Q, cfg, label) {
   check(await testId(page, `nv-history-order-${n}`) === fmtUnits(Q), `${label} p${n}: the history row's order agrees`)
   check(await testId(page, `nv-history-demand-${n}`) === fmtUnits(D), `${label} p${n}: …its demand agrees`)
   check(await testId(page, `nv-history-profit-${n}`) === fmtMoney(want.profit), `${label} p${n}: …and its profit`)
+  if (n === 1) {
+    // ⚠ CUMULATIVE WAS REMOVED. Asserted on the CELL's absence rather than on a text
+    // search of the table, because "Average" contains no giveaway string and a header
+    // grep for "Cumulative" would pass for the wrong reason once the word is gone
+    // from the markup entirely.
+    check(!(await exists(page, `[data-testid="nv-history-total-${n}"]`)),
+      `${label}: the history table has NO cumulative-profit cell`)
+    check(await exists(page, `[data-testid="nv-history-average-${n}"]`),
+      `${label}: …but keeps the average-profit cell`)
+    const header = await testId(page, 'nv-history')
+    check(!/Cumulative/i.test(header), `${label}: …and no "Cumulative" header`)
+  }
 
   await page.click('[data-testid="nv-continue"]')
   return { Q, D, ...want }
@@ -266,6 +286,8 @@ async function doKc(page, label) {
   for (let i = 0; i < 10; i++) {
     await page.waitForSelector('[data-testid="nv-kc-prompt"]')
     if (i === 0) {
+      check(!(await exists(page, '[data-testid="nv-period-heading"]')),
+        `${label}: ⚠ the GRADED KC comes first — no period has been played yet`)
       check(await page.locator('[data-testid="nv-kc-submit"]').isDisabled(),
         `${label}: KC submit is gated until an option is chosen`)
       const prompt = await testId(page, 'nv-kc-prompt')
@@ -307,6 +329,10 @@ async function main() {
     captureResponses(page, responses)
     await page.goto(studentUrl(GID, PID))
 
+    // ⚠ THE ORDER UNDER TEST: graded KC → prep → periods. A regression that put the
+    // prep back in front would fail inside doKc, not here, because doKc asserts that
+    // no period has been played when the first question renders.
+    await doKc(page, 'Main')
     await doPrep(page, 'Main')
     const b = bounds(CFG)
     const schedule = [600, 1000, 1500, b.max]
@@ -337,12 +363,12 @@ async function main() {
 
     await page.click('[data-testid="nv-final-continue"]')
 
-    // ── 3. The knowledge check, then the debrief ───────────────────────────────
-    console.log('\n[3] Knowledge check, then debrief')
-    await doKc(page, 'Main')
-
+    // ── 3. The debrief closes the flow ─────────────────────────────────────────
+    console.log('\n[3] Debrief')
     await page.waitForSelector('[data-testid="nv-freetext-prompt-debrief_regular"]')
-    check(true, 'the DEBRIEF comes after the knowledge check, at the end of the flow')
+    check(true, 'the DEBRIEF is the last screen, straight after the final results')
+    check(!(await exists(page, '[data-testid="nv-kc-prompt"]')),
+      '⚠ …and the knowledge check is NOT here — it ran before the game')
     await page.fill('[data-testid="nv-freetext-input"]', 'I drifted above the mean as I kept running short.')
     await page.click('[data-testid="nv-freetext-submit"]')
 
@@ -356,6 +382,7 @@ async function main() {
     const ctxR = await browser.newContext()
     const pageR = await ctxR.newPage()
     await pageR.goto(studentUrl(GID, RPID))
+    await doKc(pageR, 'Resume')
     await doPrep(pageR, 'Resume')
     for (let n = 1; n <= 2; n++) {
       await pageR.waitForSelector('[data-testid="nv-period-heading"]')
@@ -371,6 +398,8 @@ async function main() {
       'after a reload the student is on period 3, not back at the prep or period 1')
     check(!(await exists(pageR, '[data-testid="nv-freetext-input"]')),
       '…and is not asked the prep question again')
+    check(!(await exists(pageR, '[data-testid="nv-kc-prompt"]')),
+      '⚠ …and is NOT sent back through the knowledge check the server has already locked')
     check(await pageR.locator('[data-testid="nv-history"]').innerText() === beforeReload,
       '…with the history intact')
 
@@ -381,6 +410,7 @@ async function main() {
     const ctxZ = await browser.newContext()
     const pageZ = await ctxZ.newPage()
     await pageZ.goto(studentUrl(GID_Z, 'nvpw-z'))
+    await doKc(pageZ, 'Zero')
     await doPrep(pageZ, 'Zero')
     await playPeriod(pageZ, 1, 800, CFG_NO_EXTRAS, 'Zero')
 
@@ -454,7 +484,8 @@ async function main() {
     check(/Outcomes — all students/.test(board), 'Tier 1 tile is present')
     check(/Prep paragraphs/.test(board), '⚠ Tier 2a — the PREP tile is present')
     check(/Debrief paragraphs/.test(board), '⚠ Tier 2b — the DEBRIEF tile is present, separately')
-    check(/Order and profit by period/.test(board), 'Tier 3 tile is present')
+    check(/Order by period/.test(board), '⚠ Tier 3a — the ORDER chart is its own tile')
+    check(/Profit by period/.test(board), '⚠ Tier 3b — the PROFIT chart is a SEPARATE tile')
 
     await pageI.click('text=Outcomes — all students')
     await pageI.waitForSelector('[data-testid="nv-report-outcomes"]')
@@ -467,16 +498,28 @@ async function main() {
 
     await pageI.goto(instrUrl('/reports', GID_I))
     await pageI.waitForSelector('[data-testid="nv-instance-header"]')
-    await pageI.click('text=Order and profit by period')
+    await pageI.click('text=Order by period')
     await pageI.waitForSelector('[data-testid="nv-order-chart"]')
-    check(await exists(pageI, '[data-testid="nv-profit-chart"]'),
-      'both charts render on the same tile')
     check(await exists(pageI, '[data-testid="nv-order-ref-qopt"]'),
       'the order chart draws the optimal-order reference line')
+    check(!(await exists(pageI, '[data-testid="nv-profit-chart"]')),
+      '⚠ …and the PROFIT chart is not on this tile — they are genuinely split')
     const n1 = await pageI.locator('[data-testid="nv-order-n-1"]').first().textContent()
     const n3 = await pageI.locator('[data-testid="nv-order-n-3"]').first().textContent()
     check(n1.trim() === 'n=2' && n3.trim() === 'n=1',
       `⚠ the per-period denominator thins from 2 to 1 (${n1.trim()} → ${n3.trim()})`)
+
+    // The profit chart, on its own tile — and averaging over the SAME students.
+    await pageI.goto(instrUrl('/reports', GID_I))
+    await pageI.waitForSelector('[data-testid="nv-instance-header"]')
+    await pageI.click('text=Profit by period')
+    await pageI.waitForSelector('[data-testid="nv-profit-chart"]')
+    check(!(await exists(pageI, '[data-testid="nv-order-chart"]')),
+      'the profit tile carries only the profit chart')
+    const p1 = await pageI.locator('[data-testid="nv-profit-n-1"]').first().textContent()
+    const p3 = await pageI.locator('[data-testid="nv-profit-n-3"]').first().textContent()
+    check(p1.trim() === n1.trim() && p3.trim() === n3.trim(),
+      `⚠ SPLITTING THE TILE DID NOT SPLIT THE DENOMINATORS — both charts still average over the same students (${p1.trim()}, ${p3.trim()})`)
 
     await pageI.goto(instrUrl('/reports', GID_I))
     await pageI.waitForSelector('[data-testid="nv-instance-header"]')
@@ -508,6 +551,49 @@ async function main() {
     await pageI.waitForSelector('[data-testid="nv-settings-error"]')
     check(/above the unit cost|greater/i.test(await testId(pageI, 'nv-settings-error')),
       'an illegal edit is refused with the reason on screen')
+
+    // ── 9. ⚠ THE DASHBOARD UPDATES LIVE, WITH NO RELOAD ────────────────────────
+    // The regression this guards: the dashboard used to be a one-shot fetch, so it
+    // showed whatever was true when the page opened and never moved again — Elena had
+    // to hard-refresh to see the class progress. The assertion below is deliberately
+    // NOT "reload and check": the page is left completely untouched between the two
+    // reads, so the only thing that can update it is the live listener.
+    console.log('\n[9] ⚠ The dashboard follows the class without a reload')
+    const GID_L = `nvpw-live-${stamp}`
+    await openInstance(GID_L, { ...CFG, periods: 5 }, 'pw-live')
+    await callFn('newsvendorBootstrap', asStudent(GID_L, 'live-stu'))
+    await callFn('newsvendorSubmitRound', asStudent(GID_L, 'live-stu', { round: 1, order: 1000 }))
+
+    const ctxL = await browser.newContext()
+    const pageL = await ctxL.newPage()
+    await pageL.goto(instrUrl('/dashboard', GID_L))
+    await pageL.waitForSelector('[data-testid="nv-roster"]', { timeout: 30000 })
+    const before = await pageL.locator('[data-testid="nv-roster"]').innerText()
+    check(/In progress \(1 period\)/.test(before),
+      'the dashboard opens showing one period played')
+
+    // Two more periods, submitted from OUTSIDE the browser entirely.
+    await callFn('newsvendorSubmitRound', asStudent(GID_L, 'live-stu', { round: 2, order: 1100 }))
+    await callFn('newsvendorSubmitRound', asStudent(GID_L, 'live-stu', { round: 3, order: 1200 }))
+
+    // ⚠ NO RELOAD, NO CLICK, NO NAVIGATION between `before` and this wait.
+    let live = false
+    try {
+      await pageL.waitForFunction(
+        () => /In progress \(3 periods\)/.test(
+          document.querySelector('[data-testid="nv-roster"]')?.textContent ?? ''),
+        { timeout: 15000 })
+      live = true
+    } catch { live = false }
+    check(live, '⚠ …and updates itself to three periods with NO reload (the live listener)')
+
+    const after = await pageL.locator('[data-testid="nv-roster"]').innerText()
+    check(before !== after, 'the rendered roster genuinely changed in place')
+    check(/In progress \(3 periods\)/.test(after), `the roster now reads three periods`)
+
+    // …and the numeric columns moved with the status, not just the label.
+    check(/1,100|1,100.0/.test(after) || /1,1\d\d/.test(after),
+      'the average-order column refreshed too, not only the status text')
 
     console.log(`\n${'═'.repeat(70)}`)
     console.log(`Newsvendor browser harness: ${passed} passed, ${failed} failed`)

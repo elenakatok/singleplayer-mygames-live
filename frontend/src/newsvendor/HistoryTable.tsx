@@ -9,10 +9,19 @@ import { formatMoney, formatPercent, formatUnits } from './format'
 // so "Units" doesn't need a per-side suffix.
 //
 //   Period │      You       │  What happened   │   Your profit
-//          │ Order  Met [%] │ Demand Over Short│ This period Cumulative Average
+//          │ Order  Met [%] │ Demand Over Short│ This period  Average
 //
 // The demand-proportion column appears only when the instance has
 // showServiceLevel on (spec §2, §7c).
+//
+// ⚠ NO CUMULATIVE COLUMN — removed deliberately, and it is not coming back. Running
+// total and running average say nearly the same thing at a glance, and carrying both
+// pushed the table past the readable width on a laptop for no extra insight. The
+// AVERAGE is the one that survives, because it is the figure comparable across
+// students and across periods; a cumulative total mostly measures how far through the
+// game you are, which the Period column already says. `yourTotal` is still on the row
+// type and still comes from the server, unrendered — the final screen reports the
+// total once, which is where a running sum actually pays off.
 //
 // ⚠ NO BENCHMARK COLUMN, AND THERE NEVER WILL BE ONE HERE (spec §9.2). The optimal
 // order and the profit it would have earned are stored for every period and are on
@@ -84,7 +93,7 @@ export function HistoryTable({
             <th colSpan={3} data-testid="nv-hist-block-happened" style={{ ...th, textAlign: 'center', ...blockSep }}>
               What happened
             </th>
-            <th colSpan={3} data-testid="nv-hist-block-profit" style={mine({ ...th, textAlign: 'center', ...blockSep })}>
+            <th colSpan={2} data-testid="nv-hist-block-profit" style={mine({ ...th, textAlign: 'center', ...blockSep })}>
               Your profit
             </th>
           </tr>
@@ -96,7 +105,6 @@ export function HistoryTable({
             <th style={th}>Units over</th>
             <th style={th}>Units short</th>
             <th style={mine({ ...th, ...blockSep })}>This period</th>
-            <th style={mine(th)}>Cumulative</th>
             <th style={mine(th)}>Average</th>
           </tr>
         </thead>
@@ -118,7 +126,6 @@ export function HistoryTable({
               <td style={td}>{formatUnits(r.unitsOver)}</td>
               <td style={td}>{formatUnits(r.unitsShort)}</td>
               <ProfitCell value={r.profit} style={mine({ ...td, ...blockSep })} testId={`nv-history-profit-${r.round}`} />
-              <ProfitCell value={r.yourTotal} style={mine(td)} testId={`nv-history-total-${r.round}`} />
               <ProfitCell value={r.yourAverage} style={mine(td)} testId={`nv-history-average-${r.round}`} />
             </tr>
           ))}

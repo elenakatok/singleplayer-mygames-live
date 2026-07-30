@@ -9,29 +9,27 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Screen layout, in order (spec §7, §8):
+ * Screen layout, in order:
  *
+ *   [KC 0…n−1, IF ENABLED]          ← graded, first
  *   [the prep paragraph, IF ENABLED]
  *   [the period loop]
- *   [the final-results screen]
- *   [KC 0…n−1, IF ENABLED]
+ *   [the final-results screen]      ← terminal content, last
  *   [the debrief paragraph, IF ENABLED]
  *
  * A return value past the last screen means everything is behind them.
  *
- * ⚠ THE ORDER IS THE SPEC'S, NOT PRICING'S. Pricing runs its knowledge check BEFORE
- * play, because its KC is about reading the market you are about to price in. This
- * game's KC comes AFTER (spec §8: "prep question before play, graded KC after") — it
- * is the assessed component (spec §9.1) and it tests the newsvendor logic the twenty
- * periods were meant to teach. Do not "align" the two.
+ * ⚠ THE KC COMES FIRST, AND THE PREP DEPENDS ON THAT. Students arrive having had the
+ * newsvendor lecture: the graded KC checks the lecture, and the prep then asks whether
+ * they intend to ORDER the optimal quantity they just computed. That question only
+ * makes sense downstream of the KC, so these two cannot be reordered independently —
+ * the prep's wording (functions newsvendor/config.ts) is written against this order.
  *
- * The FINAL-RESULTS screen is a step in the sequence rather than the terminal state,
- * because the KC and the debrief come after it. There is no server fact recording
- * that it was READ — it is a display screen, and inventing a stamp for it would gate
- * a student out of their own knowledge check if the write ever failed. So its
- * position is derived from what surrounds it: a student whose game is over but who
- * has not started the KC lands on it, and one who is part-way through the KC is past
- * it. A student who re-reads their totals once is not being harmed.
+ * ⚠ AND THE FINAL SCREEN MOVED WITH THEM. It used to sit mid-sequence, because the KC
+ * came after play; now that the KC is first, nothing follows the game except the
+ * debrief, so the final screen is the last content screen. That also removes the odd
+ * step it used to be — a display screen with no server fact recording that it was
+ * read, wedged between two things that did have one.
  *
  * Every input is a fact READ FROM THE SERVER (answers stored, game finished, text
  * stored) — never browser state — which is what lets a student resume on a different
@@ -47,22 +45,23 @@ export function newsvendorResumeIndex(args: {
   debriefSubmitted: boolean
 }): number {
   const { prepEnabled, prepSubmitted, gameOver, kcCount, kcAnswered, debriefEnabled, debriefSubmitted } = args
-  const prepOffset = prepEnabled ? 1 : 0
 
+  // Still in the knowledge check — it is the first block now.
+  if (kcAnswered < kcCount) return kcAnswered
   // The prep paragraph, if it is on and unanswered.
-  if (prepEnabled && !prepSubmitted) return 0
+  if (prepEnabled && !prepSubmitted) return kcCount
+  const played = kcCount + (prepEnabled ? 1 : 0)
   // The period loop.
-  if (!gameOver) return prepOffset
-  // The final-results screen, then the knowledge check.
-  if (kcAnswered < kcCount) {
-    return kcAnswered === 0
-      ? prepOffset + 1              // the final screen, not yet read past
-      : prepOffset + 2 + kcAnswered // part-way through the KC
-  }
-  // Everything before the debrief is done.
-  if (!debriefEnabled) return prepOffset + 2 + kcCount        // past the end
-  if (!debriefSubmitted) return prepOffset + 2 + kcCount      // the debrief
-  return prepOffset + 3 + kcCount                             // past the end
+  if (!gameOver) return played
+  // The game is over: the final-results screen, then the debrief.
+  //
+  // ⚠ A FINISHED STUDENT WITH NO DEBRIEF PENDING IS *PAST* THE END, not sitting on the
+  // final screen — Play.tsx renders the same component as the terminal state, so
+  // returning the final screen's index here would show it twice with a Continue button
+  // that leads nowhere.
+  if (!debriefEnabled) return played + 2                      // past the end (== screenCount)
+  if (!debriefSubmitted) return played + 1                    // the final screen, then the debrief
+  return played + 3                                           // past the end (== screenCount)
 }
 
 /** How many screens the sequence has, given the same inputs. `newsvendorResumeIndex
@@ -73,8 +72,8 @@ export function newsvendorScreenCount(
   kcCount: number,
   debriefEnabled: boolean,
 ): number {
-  // prep? + the loop + the final screen + the KC questions + the debrief?
-  return (prepEnabled ? 1 : 0) + 1 + 1 + kcCount + (debriefEnabled ? 1 : 0)
+  // the KC questions + prep? + the loop + the final screen + the debrief?
+  return kcCount + (prepEnabled ? 1 : 0) + 1 + 1 + (debriefEnabled ? 1 : 0)
 }
 
 /** The first period NOT yet played (0-based) — for a contiguous history, its length.

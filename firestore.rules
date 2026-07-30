@@ -197,15 +197,29 @@ service cloud.firestore {
       // Participant document — per-INSTANCE subcollection, same structural isolation
       // as the rest of the family.
       //
-      // ⚠ READ IS DENIED OUTRIGHT, not scoped to "your own doc", and here that is
-      // load-bearing for a specific reason: every stored period carries `q_opt` and
-      // `profit_opt`, the benchmark the student must NEVER see (spec §9.2). A
-      // self-read would hand them the optimal order for their own instance through
-      // the Firestore SDK without a single callable being involved. Every student read
-      // goes through a callable whose response is a hand-built whitelist
-      // (functions newsvendor/rounds.ts). No client writes either (callables only).
+      // ⚠ NO STUDENT MAY EVER READ A PARTICIPANT DOC, and that is load-bearing for a
+      // specific reason: every stored period carries `q_opt` and `profit_opt`, the
+      // benchmark the student must NEVER see (spec §9.2). A self-read would hand them
+      // the optimal order for their own instance through the Firestore SDK without a
+      // single callable being involved. Every student read goes through a callable
+      // whose response is a hand-built whitelist (functions newsvendor/rounds.ts).
+      //
+      // ⚠ THE INSTANCE'S OWN INSTRUCTOR MAY READ, AND ONLY AS A CHANGE SIGNAL. The
+      // dashboard subscribes to this subcollection so it refreshes as students play
+      // (see frontend newsvendor/Dashboard.tsx); it reads NO FIELD off the snapshot and
+      // renders nothing from it — every number on screen still comes from
+      // newsvendorGetReport, which stays the one authority. The gate is the instructor
+      // session's own custom claims, minted by makeSinglePlayerInstructorSession:
+      // role 'instructor' AND this exact instance. A student's token carries neither
+      // claim (their uid is their participant_id and their role defaults to 'student'),
+      // so this widens nothing for them. It also exposes the instructor to nothing new:
+      // the benchmark is already in every newsvendorGetReport response they receive.
+      //
+      // Writes stay closed to every client, instructor included — callables only.
       match /participants/{participantId} {
-        allow read: if false;
+        allow read: if request.auth != null
+                    && request.auth.token.role == 'instructor'
+                    && request.auth.token.game_instance_id == instanceId;
         allow write: if false;
       }
     }

@@ -16,13 +16,23 @@ import { formatAverageUnits, formatMoney, formatPercent, formatUnits } from './f
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Newsvendor reports, through the shared ReportBoard + a modal per tile — the same
-// shape poll, PD and pricing use. FOUR tiles:
+// shape poll, PD and pricing use. FIVE tiles:
 //
-//   Tier 1  Outcomes roster            — every student, finished or not, WITH the
-//                                        benchmark and the optimality gap
-//   Tier 2a Prep paragraphs            — "how will you decide?", before play
-//   Tier 2b Debrief paragraphs         — "how did you decide?", after play
-//   Tier 3  Order and profit by period — the two charts that carry the lesson
+//   Tier 1  Outcomes roster    — every student, finished or not, WITH the benchmark
+//                                and the optimality gap
+//   Tier 2a Prep paragraphs    — "do you plan to order the optimal amount?", before play
+//   Tier 2b Debrief paragraphs — "how did you actually decide?", after play
+//   Tier 3a Order by period    — class average order vs the demand that turned up,
+//                                with the dashed optimal-order line
+//   Tier 3b Profit by period   — what those orders earned vs the benchmark
+//
+// ⚠ THE TWO CHARTS ARE SEPARATE TILES, and they used to be one. Split because they
+// answer different questions and get projected separately: the order chart is the one
+// that shows pull-to-centre against Q*, and stacking the profit chart under it meant
+// scrolling past the finding to reach the money. They still average over EXACTLY the
+// same students period for period — both arrays come from one newsvendorGetReport call
+// built by one server-side helper — and the browser harness asserts that rather than
+// trusting it.
 //
 // ⚠ TWO TIER-2 TILES, NOT ONE (spec §8, last line: "every free-text question needs its
 // own Tier-2 report"). The prep and the debrief are different questions asked at
@@ -182,12 +192,21 @@ function Stat({ label, value, testId }: { label: string; value: string; testId: 
   )
 }
 
-function ChartsReport({ data }: { data: NewsvendorReportData }) {
+/**
+ * (a) ORDER BY PERIOD — what the class ordered against the demand that turned up, with
+ * the dashed optimal-order line.
+ *
+ * ⚠ THE Q* LINE IS INSTRUCTOR-ONLY (spec §9.2), and it is safe here for a structural
+ * reason rather than a careful one: `benchmark` arrives on the newsvendorGetReport
+ * response, which is behind an instructor session, and NO STUDENT MODULE IMPORTS THIS
+ * FILE. Splitting the tile in two did not change that — both halves still read from the
+ * one instructor payload, and neither is reachable from Play.tsx.
+ */
+function OrderChartReport({ data }: { data: NewsvendorReportData }) {
   const { charts, summary, benchmark, params } = data
 
-  // The order chart's y-domain starts from the ORDER BOX's bounds, so where the class
-  // sat between the floor and the ceiling is legible — the same reasoning pricing's
-  // price chart uses for its price band.
+  // The y-domain starts from the ORDER BOX's bounds, so where the class sat between the
+  // floor and the ceiling is legible — the same reasoning pricing's price chart uses.
   //
   // ⚠ …but it is WIDENED to cover the data, because unlike a posted price, DEMAND is
   // not bounded by the order box. A Normal draw beyond three sigma is rare but not rare
@@ -203,93 +222,105 @@ function ChartsReport({ data }: { data: NewsvendorReportData }) {
     ? [{ key: 'qopt', value: benchmark.Qopt, label: `Optimal order ${formatUnits(benchmark.Qopt)}` }]
     : []
 
+  return (
+    <div data-testid="nv-report-order-chart" style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+      <div style={{ flex: '1 1 24rem', minWidth: 0 }}>
+        <RoundSeriesChartSVG
+          points={charts.orders}
+          refLines={orderRefs}
+          yDomain={orderDomain}
+          formatValue={v => formatUnits(v)}
+          seriesLabels={{ student: 'Class average order', competitor: 'Demand that turned up' }}
+          ids={{ root: 'nv-order-chart', line: 'nv-order-line', ref: 'nv-order-ref', count: 'nv-order-n' }}
+          ariaLabel="Average order quantity and realized demand by period"
+          xAxisLabel="Period (n = students who had played it)"
+          caption={
+            <>
+              What the class <strong>ordered</strong> each period against the demand that
+              actually turned up. The denominator is the students who had played that
+              period — shown as n= under the axis — so later periods average over fewer
+              students while the class is still mid-week. A wobble at the tail is usually
+              who is left, not what they did.
+              {benchmark && <> The dashed line is the optimal order for this instance&rsquo;s
+                parameters; students never see it.</>}
+            </>
+          }
+        />
+      </div>
+      <div style={summaryBox}>
+        <Stat label="Class average order" value={units(summary.averageOrder)} testId="nv-summary-avg-order" />
+        <Stat label="Average demand" value={units(summary.averageDemand)} testId="nv-summary-avg-demand" />
+        {benchmark && (
+          <>
+            <Stat label="Optimal order Q*" value={formatUnits(benchmark.Qopt)} testId="nv-summary-qopt" />
+            <Stat label="Critical ratio" value={benchmark.CR.toFixed(3)} testId="nv-summary-cr" />
+          </>
+        )}
+        {params.showServiceLevel && (
+          <Stat label="Average demand met" value={pct(summary.averageServiceLevel)} testId="nv-summary-avg-sl" />
+        )}
+        <p style={{ fontSize: '0.75rem', color: colors.textSecondary, margin: 0, lineHeight: 1.5 }}>
+          Q* and the critical ratio are derived from this instance&rsquo;s own parameters,
+          so they move when the settings do. Instructor-only.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * (b) PROFIT BY PERIOD — what those orders earned, against what the optimal order would
+ * have earned on the same demand draws.
+ *
+ * ⚠ IT STILL AVERAGES OVER EXACTLY THE SAME STUDENTS as the order chart, period for
+ * period: both series come from the same newsvendorGetReport call, whose two chart
+ * arrays are built by the same byPeriod() helper server-side (functions
+ * newsvendor/reportStats.ts). Splitting the tile did NOT split the denominators — that
+ * is asserted in the browser harness rather than assumed.
+ */
+function ProfitChartReport({ data }: { data: NewsvendorReportData }) {
+  const { charts, summary } = data
+
   const profitValues = charts.profits.flatMap(p => [p.student, p.competitor])
   const profitDomain = fitDomainIncludingZero(profitValues)
-  const profitRefs: ReferenceLine[] = []
 
   return (
-    <div data-testid="nv-report-charts">
-      <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
-        <div style={{ flex: '1 1 24rem', minWidth: 0 }}>
-          <RoundSeriesChartSVG
-            points={charts.orders}
-            refLines={orderRefs}
-            yDomain={orderDomain}
-            formatValue={v => formatUnits(v)}
-            seriesLabels={{ student: 'Class average order', competitor: 'Demand that turned up' }}
-            ids={{ root: 'nv-order-chart', line: 'nv-order-line', ref: 'nv-order-ref', count: 'nv-order-n' }}
-            ariaLabel="Average order quantity and realized demand by period"
-            xAxisLabel="Period (n = students who had played it)"
-            caption={
-              <>
-                What the class <strong>ordered</strong> each period against the demand that
-                actually turned up. The denominator is the students who had played that
-                period — shown as n= under the axis — so later periods average over fewer
-                students while the class is still mid-week. A wobble at the tail is usually
-                who is left, not what they did.
-                {benchmark && <> The dashed line is the optimal order for this instance&rsquo;s
-                  parameters; students never see it.</>}
-              </>
-            }
-          />
-        </div>
-        <div style={summaryBox}>
-          <Stat label="Class average order" value={units(summary.averageOrder)} testId="nv-summary-avg-order" />
-          <Stat label="Average demand" value={units(summary.averageDemand)} testId="nv-summary-avg-demand" />
-          {benchmark && (
+    <div data-testid="nv-report-profit-chart" style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+      <div style={{ flex: '1 1 24rem', minWidth: 0 }}>
+        <RoundSeriesChartSVG
+          points={charts.profits}
+          refLines={[]}
+          yDomain={profitDomain}
+          formatValue={v => formatMoney(v)}
+          seriesLabels={{ student: 'Class average profit', competitor: 'Benchmark profit' }}
+          ids={{ root: 'nv-profit-chart', line: 'nv-profit-line', ref: 'nv-profit-ref', count: 'nv-profit-n' }}
+          ariaLabel="Average realized profit and benchmark profit by period"
+          xAxisLabel="Period (n = students who had played it)"
+          caption={
             <>
-              <Stat label="Optimal order Q*" value={formatUnits(benchmark.Qopt)} testId="nv-summary-qopt" />
-              <Stat label="Critical ratio" value={benchmark.CR.toFixed(3)} testId="nv-summary-cr" />
+              What those orders <strong>earned</strong>, against what the optimal order
+              would have earned <strong>against the same demand draws</strong> — so the
+              distance between the two lines is the optimality gap, not luck. It averages
+              over exactly the same students as the order chart, period for period. Below
+              the zero line the class was losing money.
             </>
-          )}
-          {params.showServiceLevel && (
-            <Stat label="Average demand met" value={pct(summary.averageServiceLevel)} testId="nv-summary-avg-sl" />
-          )}
-          <p style={{ fontSize: '0.75rem', color: colors.textSecondary, margin: 0, lineHeight: 1.5 }}>
-            Q* and the critical ratio are derived from this instance&rsquo;s own parameters,
-            so they move when the settings do. Instructor-only.
-          </p>
-        </div>
+          }
+        />
       </div>
-
-      <h3 style={{ margin: '1.5rem 0 0.5rem', fontSize: '1rem' }}>Average profit by period</h3>
-      <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', alignItems: 'flex-start' }}>
-        <div style={{ flex: '1 1 24rem', minWidth: 0 }}>
-          <RoundSeriesChartSVG
-            points={charts.profits}
-            refLines={profitRefs}
-            yDomain={profitDomain}
-            formatValue={v => formatMoney(v)}
-            seriesLabels={{ student: 'Class average profit', competitor: 'Benchmark profit' }}
-            ids={{ root: 'nv-profit-chart', line: 'nv-profit-line', ref: 'nv-profit-ref', count: 'nv-profit-n' }}
-            ariaLabel="Average realized profit and benchmark profit by period"
-            xAxisLabel="Period (n = students who had played it)"
-            caption={
-              <>
-                What those orders <strong>earned</strong>, against what the optimal order
-                would have earned <strong>against the same demand draws</strong> — so the
-                distance between the two lines is the optimality gap, not luck. It averages
-                over exactly the same students as the chart above, period for period. Below
-                the zero line the class was losing money.
-              </>
-            }
-          />
-        </div>
-        <div style={summaryBox}>
-          <Stat label="Avg profit / period" value={money(summary.averageProfit)} testId="nv-summary-avg-profit" />
-          <Stat label="Benchmark / period" value={money(summary.averageBenchmarkProfit)} testId="nv-summary-avg-benchmark" />
-          <Stat
-            label="Average gap / period"
-            value={summary.averageProfit == null || summary.averageBenchmarkProfit == null
-              ? '—'
-              : formatMoney(summary.averageBenchmarkProfit - summary.averageProfit)}
-            testId="nv-summary-avg-gap"
-          />
-          <p style={{ fontSize: '0.75rem', color: colors.textSecondary, margin: 0, lineHeight: 1.5 }}>
-            The benchmark is evaluated against each student&rsquo;s own demand draws, so the
-            gap is a decision difference rather than a difference in luck.
-          </p>
-        </div>
+      <div style={summaryBox}>
+        <Stat label="Avg profit / period" value={money(summary.averageProfit)} testId="nv-summary-avg-profit" />
+        <Stat label="Benchmark / period" value={money(summary.averageBenchmarkProfit)} testId="nv-summary-avg-benchmark" />
+        <Stat
+          label="Average gap / period"
+          value={summary.averageProfit == null || summary.averageBenchmarkProfit == null
+            ? '—'
+            : formatMoney(summary.averageBenchmarkProfit - summary.averageProfit)}
+          testId="nv-summary-avg-gap"
+        />
+        <p style={{ fontSize: '0.75rem', color: colors.textSecondary, margin: 0, lineHeight: 1.5 }}>
+          The benchmark is evaluated against each student&rsquo;s own demand draws, so the
+          gap is a decision difference rather than a difference in luck.
+        </p>
       </div>
     </div>
   )
@@ -358,13 +389,22 @@ export default function Reports() {
       onOpen: () => setActive('debrief'),
     },
     {
-      id: 'charts',
-      title: 'Order and profit by period',
+      id: 'orders',
+      title: 'Order by period',
       disabled: played.length === 0,
       preview: played.length === 0
         ? <span style={{ color: '#94a3b8' }}>No periods played yet.</span>
         : <span>{data.maxPeriodsPlayed} periods — against the optimal order</span>,
-      onOpen: () => setActive('charts'),
+      onOpen: () => setActive('orders'),
+    },
+    {
+      id: 'profit',
+      title: 'Profit by period',
+      disabled: played.length === 0,
+      preview: played.length === 0
+        ? <span style={{ color: '#94a3b8' }}>No periods played yet.</span>
+        : <span>{data.maxPeriodsPlayed} periods — against the benchmark</span>,
+      onOpen: () => setActive('profit'),
     },
   ]
 
@@ -388,9 +428,14 @@ export default function Reports() {
           <TextAnswers rows={data.participants} prompt={data.debriefPrompt} pick={r => r.debrief} testId="nv-report-debrief" />
         </Modal>
       )}
-      {active === 'charts' && (
-        <Modal title="Order and profit by period" onClose={() => setActive(null)}>
-          <ChartsReport data={data} />
+      {active === 'orders' && (
+        <Modal title="Order by period" onClose={() => setActive(null)}>
+          <OrderChartReport data={data} />
+        </Modal>
+      )}
+      {active === 'profit' && (
+        <Modal title="Profit by period" onClose={() => setActive(null)}>
+          <ProfitChartReport data={data} />
         </Modal>
       )}
     </>,

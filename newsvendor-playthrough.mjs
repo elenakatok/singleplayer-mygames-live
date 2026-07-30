@@ -242,6 +242,13 @@ async function main() {
     'the prep question is served and unanswered')
   check(q0.result.kc.authored.length === 10,
     `the authored KC is the full TEN questions (got ${q0.result.kc.authored.length})`)
+  // ⚠ THE PROMPT IS WRITTEN AGAINST THE KC RUNNING FIRST — it asks what the student
+  // intends to do with the optimal quantity they have just computed. The flow order
+  // itself is a CLIENT concern (the server accepts these two in any order, by design:
+  // it stores facts, not positions), so this assertion is the only thing tying the
+  // wording to the sequence. If the screens are ever reordered, it fails here.
+  check(/optimal order quantity/i.test(q0.result.prep.prompt),
+    'the prep prompt asks about the optimal quantity from the knowledge check')
   const prepRes = await callFn('newsvendorSubmitFreeText',
     asStudent(GID, PID, { field: q0.result.prep.field, answer: 'I will aim a bit above the mean.' }))
   check(prepRes.ok && prepRes.result.stored === false, 'the prep paragraph is accepted')

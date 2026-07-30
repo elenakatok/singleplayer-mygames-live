@@ -61,11 +61,24 @@ export const DEFAULT_PERIODS = 20
 export const HARD_MIN_PERIODS = 1
 export const HARD_MAX_PERIODS = 100
 
-/** The shipped prep prompt (spec §8) — asked BEFORE play, free text, ungraded. */
+/**
+ * The shipped prep prompt — asked AFTER the knowledge check and BEFORE play. Free
+ * text, ungraded.
+ *
+ * ⚠ IT DEPENDS ON THE KC HAVING RUN FIRST. The question asks what the student intends
+ * to do with the optimal quantity they have just worked out, which is only a coherent
+ * question because the graded KC now precedes it (see Play.tsx's flow comment). If the
+ * order is ever changed back, this wording has to change with it.
+ *
+ * What it is FOR: the gap between knowing the answer and using it. A student who can
+ * compute Q* and still plans to order the mean is the most interesting row in the
+ * Tier-2 report, and this is the only place that intention is captured before play
+ * can talk them out of it.
+ */
 export const DEFAULT_PREP_PROMPT =
-  'Before you start: you order once, before you know demand. If you order too many ' +
-  "you're stuck with leftovers; too few and you miss sales (or, later, must buy from " +
-  'an expensive backup). In a sentence or two, how will you decide how much to order?'
+  "You've just worked out the optimal order quantity for this kind of problem. When " +
+  'you play, do you plan to order that optimal amount each period, or something ' +
+  'different — and why?'
 
 /** The shipped debrief prompt for REGULAR mode (spec §8). The dual-mode prompt is
  *  Part 2's; this file ships only what this build can actually run. */
