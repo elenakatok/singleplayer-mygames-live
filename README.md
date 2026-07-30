@@ -147,6 +147,10 @@ HEADED=1 npm run harness:pricing:browser   # …and watch it play
 # Robot cohorts (spec §11) — N independent students, each playing their own full game.
 node bot/pricing-robot-driver.mjs --instance <id> --students 8      # LIVE, via the launcher
 node bot/pricing-robot-driver.mjs --instance demo-1 --emulator --headless   # dry run
+
+# Newsvendor's cohort walks the whole flow: prep → every period → KC → debrief.
+node bot/newsvendor-robot-driver.mjs --instance <id> --students 8   # LIVE, via the launcher
+node bot/newsvendor-robot-driver.mjs --instance demo-1 --emulator --headless --exit-when-done  # dry run
 ```
 
 The browser harness boots the Vite **dev** server itself (dev mode is what enables the
