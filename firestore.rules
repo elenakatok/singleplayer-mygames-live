@@ -163,5 +163,51 @@ service cloud.firestore {
         allow write: if false;
       }
     }
+
+    // ── Newsvendor (game_id: newsvendor) ───────────────────────────────────────
+
+    match /newsvendor_game_instances/{instanceId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+
+      // Per-instance instructor config (config/main). STUDENT-READABLE, and safe to
+      // be: it holds the prices and costs (P, c, v, g, h), the demand distribution
+      // and its parameters, and the period count — every one of which is printed on
+      // the place-order screen anyway (spec §7a). Unlike pricing, the period count
+      // is NOT a secret in this game.
+      match /config/{doc} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+
+      // TRUTH (truth/main → the DETERMINISM SEED). DENY ALL CLIENT ACCESS — read AND
+      // write, unconditionally, with NO exception for the instructor (who reads and
+      // writes it only through an authenticated callable).
+      //
+      // ⚠ WHY THE SEED IS HERE RATHER THAN IN config/main, WHERE PRICING KEEPS ITS
+      // OWN: this game's seed derives every FUTURE DEMAND DRAW (functions
+      // newsvendor/demand.ts). config/ above is student-readable, so a seed stored
+      // there could be read with the plain SDK and used to compute period 12's demand
+      // before ordering in period 11 — which is the whole game. Do not move it, and
+      // do not relax this rule, ever.
+      match /truth/{doc} {
+        allow read, write: if false;
+      }
+
+      // Participant document — per-INSTANCE subcollection, same structural isolation
+      // as the rest of the family.
+      //
+      // ⚠ READ IS DENIED OUTRIGHT, not scoped to "your own doc", and here that is
+      // load-bearing for a specific reason: every stored period carries `q_opt` and
+      // `profit_opt`, the benchmark the student must NEVER see (spec §9.2). A
+      // self-read would hand them the optimal order for their own instance through
+      // the Firestore SDK without a single callable being involved. Every student read
+      // goes through a callable whose response is a hand-built whitelist
+      // (functions newsvendor/rounds.ts). No client writes either (callables only).
+      match /participants/{participantId} {
+        allow read: if false;
+        allow write: if false;
+      }
+    }
   }
 }

@@ -14,6 +14,13 @@ import type { ReactNode } from 'react'
 // composition footnote — is one implementation, so the two charts cannot drift into
 // telling the same story two different ways.
 //
+// ⚠ IT LIVES IN shared/ BECAUSE IT IS SHARED. It began in pricing/ with two consumers
+// and now has four across two games (Newsvendor draws its order-vs-demand and
+// profit-vs-benchmark charts with it). Moving it was the parity rule applied
+// literally: a general component is the SAME code every game uses, not a copy per
+// game. Nothing about the drawing is pricing's — the only pricing-shaped thing left
+// was the x-axis caption, which is now a prop.
+//
 // ⚠ THE COUNT ROW IS NOT OPTIONAL, in either chart. Horizons are per student and play
 // is async, so the later rounds average over a handful while the early ones average
 // over the class. A thin n= row under the axis is what stops a tail wobble reading as
@@ -55,6 +62,7 @@ export function RoundSeriesChartSVG({
   ids,
   ariaLabel,
   caption,
+  xAxisLabel = 'Round (n = students who had played it)',
 }: {
   points: RoundSeriesPoint[]
   refLines: ReferenceLine[]
@@ -67,6 +75,9 @@ export function RoundSeriesChartSVG({
   ids: ChartIds
   ariaLabel: string
   caption: ReactNode
+  /** The x-axis caption. Defaults to pricing's original wording, so the two charts
+   *  that predate the move render byte-identically without passing it. */
+  xAxisLabel?: string
 }) {
   if (points.length === 0) {
     return <p style={{ color: '#94a3b8', margin: 0 }}>No rounds played yet.</p>
@@ -169,7 +180,7 @@ export function RoundSeriesChartSVG({
           </text>
         ))}
         <text x={padL + plotW / 2} y={H - 10} textAnchor="middle" fontSize="12" fill="#555">
-          Round (n = students who had played it)
+          {xAxisLabel}
         </text>
 
         {/* The two series */}

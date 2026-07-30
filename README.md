@@ -18,6 +18,34 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | `poll` | Poll | `poll.mygames.live` | `poll-mygames` |
 | `pd` | Repeated Prisoner's Dilemma | `pd.mygames.live` | `pd-mygames-live` |
 | `pricing` | Pricing Game (Cheyenne Shipping) | `pricing.mygames.live` | `pricing-mygames-live` |
+| `newsvendor` | Newsvendor | `newsvendor.mygames.live` | `newsvendor-mygames-live` |
+
+> `newsvendor` is **PART 1 COMPLETE — the REGULAR (single-source) game**: prep → the
+> period loop → final results → a ten-question graded knowledge check → debrief,
+> participation scoring + the gradebook push, the instructor dashboard, four report
+> tiles, and instructor settings. **Nothing is deployed**, there is no hosting site, no
+> secret and no classroom registry entry yet.
+>
+> ⚠ **Dual sourcing is PART 2 and is NOT built.** It is a per-instance `dual` config
+> flag on this same game — never a second `game_id`, never a second set of callables —
+> and `newsvendorUpdateConfig` **refuses** to set it until the branch exists.
+>
+> ⚠ **Newsvendor's two invariants, in code:**
+> 1. **The benchmark never reaches a student.** Every period stores `q_opt` and
+>    `profit_opt` (the optimal order, and what it would have earned against that
+>    student's *own* demand draw) for the instructor's reports; spec §9.2 keeps both off
+>    every student screen, during play and on the final screen. The student responses are
+>    hand-built whitelists (`rounds.ts`, `clientState.ts`), participant docs are
+>    rules-denied, and `newsvendor-playthrough.mjs` §2 audits every response tree for
+>    benchmark keys *and* for the numeric value of Q*.
+> 2. **The seed lives in `truth/`, not `config/`** — unlike pricing's. It derives every
+>    future demand draw, and `config/main` is student-readable by rules, so a seed stored
+>    there could be read with the plain SDK to compute period 12's demand before ordering
+>    in period 11.
+>
+> Demand is drawn **per student, per period, server-side, after the order is committed**,
+> inside the same transaction — and a resubmit for a played period returns the stored
+> period, so a retry cannot buy a second draw.
 
 > `pricing` is **FEATURE-COMPLETE** (Slice 5): (PMG rules →) knowledge check → round
 > loop → debrief, participation scoring + the gradebook push, classroom registration,
@@ -112,6 +140,8 @@ npm run harness:pennies
 npm run harness:poll
 npm run harness:pricing          # HTTP    — the whole server contract
 npm run harness:pricing:browser  # BROWSER — both modes, clicked through
+npm run harness:newsvendor          # HTTP    — the server contract + the negative controls
+npm run harness:newsvendor:browser  # BROWSER — the whole game, clicked through
 HEADED=1 npm run harness:pricing:browser   # …and watch it play
 
 # Robot cohorts (spec §11) — N independent students, each playing their own full game.

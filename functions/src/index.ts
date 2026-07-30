@@ -6,6 +6,7 @@ import { PENNIES_COLLECTION_PREFIX, PENNIES_CORS_ORIGINS } from './pennies/confi
 import { POLL_COLLECTION_PREFIX, POLL_CORS_ORIGINS } from './poll/config'
 import { PD_COLLECTION_PREFIX, PD_CORS_ORIGINS } from './pd/config'
 import { PRICING_COLLECTION_PREFIX, PRICING_CORS_ORIGINS } from './pricing/config'
+import { NEWSVENDOR_COLLECTION_PREFIX, NEWSVENDOR_CORS_ORIGINS } from './newsvendor/config'
 
 admin.initializeApp()
 
@@ -112,6 +113,37 @@ export { pricingScoreAndRecord } from './pricing/scoreAndRecord'
 export { pricingGetReport } from './pricing/report'
 export { pricingGetConfig, pricingUpdateConfig } from './pricing/instructorConfig'
 
+// ── Newsvendor (game_id: newsvendor) ──────────────────────────────────────────
+//
+// PART 1 — the REGULAR (single-source) game: prep → period loop → final results →
+// knowledge check → debrief, participation scoring + the gradebook push, the
+// instructor dashboard, all report tiers, and instructor settings.
+//
+// ⚠ DUAL SOURCING IS PART 2 and is NOT built. It is a per-instance config flag on
+// this same game (never a second game_id, never a second set of callables), and
+// newsvendorUpdateConfig refuses to set it until the branch exists.
+
+export const newsvendorBootstrap = makeSinglePlayerBootstrap({
+  collectionPrefix: NEWSVENDOR_COLLECTION_PREFIX,
+  corsOrigins: NEWSVENDOR_CORS_ORIGINS,
+})
+export const newsvendorInstructorSession = makeSinglePlayerInstructorSession({
+  corsOrigins: NEWSVENDOR_CORS_ORIGINS,
+})
+
+// Student.
+export { newsvendorGetState } from './newsvendor/getState'
+export { newsvendorSubmitRound } from './newsvendor/submitRound'
+export { newsvendorGetQuestions } from './newsvendor/getQuestions'
+export { newsvendorSubmitKcAnswer } from './newsvendor/submitKcAnswer'
+export { newsvendorSubmitFreeText } from './newsvendor/submitFreeText'
+
+// Instructor.
+export { newsvendorSyncRoster } from './newsvendor/syncRoster'
+export { newsvendorScoreAndRecord } from './newsvendor/scoreAndRecord'
+export { newsvendorGetReport } from './newsvendor/report'
+export { newsvendorGetConfig, newsvendorUpdateConfig } from './newsvendor/instructorConfig'
+
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 
 function makeHealth(game: string, origins: string[]) {
@@ -132,3 +164,4 @@ export const penniesHealth = makeHealth('pennies', PENNIES_CORS_ORIGINS)
 export const pollHealth = makeHealth('poll', POLL_CORS_ORIGINS)
 export const pdHealth = makeHealth('pd', PD_CORS_ORIGINS)
 export const pricingHealth = makeHealth('pricing', PRICING_CORS_ORIGINS)
+export const newsvendorHealth = makeHealth('newsvendor', NEWSVENDOR_CORS_ORIGINS)

@@ -1,6 +1,6 @@
 import type { PricingLabels, PricingProfitEquilibrium, PricingProfitPoint } from './api'
 import { formatProfitM } from './format'
-import { RoundSeriesChartSVG, fitDomainIncludingZero, type ReferenceLine } from './RoundSeriesChartSVG'
+import { RoundSeriesChartSVG, fitDomainIncludingZero, type ReferenceLine } from '../shared/RoundSeriesChartSVG'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Tier 3, second chart (spec §10) — class average PROFIT per round, the competitor's

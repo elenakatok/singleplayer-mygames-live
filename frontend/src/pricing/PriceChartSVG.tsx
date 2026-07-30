@@ -1,6 +1,6 @@
 import type { PricingEquilibrium, PricingLabels, PricingMarket, PricingPricePoint } from './api'
 import { formatPrice } from './format'
-import { RoundSeriesChartSVG, type ReferenceLine } from './RoundSeriesChartSVG'
+import { RoundSeriesChartSVG, type ReferenceLine } from '../shared/RoundSeriesChartSVG'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Tier 3 (spec §10) — THE SLIDE-19 CHART: class average POSTED price per round, the

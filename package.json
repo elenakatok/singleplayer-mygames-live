@@ -9,6 +9,8 @@
     "harness:pennies": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pennies-playthrough.mjs\"",
     "harness:poll": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node poll-playthrough.mjs\"",
     "harness:pricing": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pricing-playthrough.mjs\"",
+    "harness:newsvendor": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node newsvendor-playthrough.mjs\"",
+    "harness:newsvendor:browser": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node newsvendor-playwright.mjs\"",
     "harness:pd:browser": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pd-playwright.mjs\"",
     "harness:pricing:browser": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pricing-playwright.mjs\"",
     "repro:pd:student-session": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pd-student-session-repro.mjs\""

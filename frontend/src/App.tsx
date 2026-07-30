@@ -17,6 +17,10 @@ import PricingPlay from './pricing/Play'
 import PricingDashboard from './pricing/Dashboard'
 import PricingSettings from './pricing/Settings'
 import PricingReports from './pricing/Reports'
+import NewsvendorPlay from './newsvendor/Play'
+import NewsvendorDashboard from './newsvendor/Dashboard'
+import NewsvendorSettings from './newsvendor/Settings'
+import NewsvendorReports from './newsvendor/Reports'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ONE Vite app serves EVERY single-player game (architecture: one bundle, many
@@ -29,11 +33,11 @@ import PricingReports from './pricing/Reports'
 // games' sites serve on their next hosting deploy. Adding a game must therefore
 // never change another game's routing — hence the explicit per-game map below.
 //
-// DEV override: ?game=poll / ?game=pd / ?game=pricing (nav preserves the query string,
-// so it carries across pages). Production keys off the hostname alone.
+// DEV override: ?game=poll / ?game=pd / ?game=pricing / ?game=newsvendor (nav preserves
+// the query string, so it carries across pages). Production keys off the hostname alone.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-type Game = 'pennies' | 'poll' | 'pd' | 'pricing'
+type Game = 'pennies' | 'poll' | 'pd' | 'pricing' | 'newsvendor'
 
 /** Hostname prefix → game. Checked in order; the first match wins. These are
  *  PREFIXES, not exact labels, because a site's default domain carries a suffix
@@ -43,6 +47,7 @@ const HOST_PREFIXES: ReadonlyArray<readonly [string, Game]> = [
   ['poll', 'poll'],
   ['pd', 'pd'],
   ['pricing', 'pricing'],
+  ['newsvendor', 'newsvendor'],
 ]
 
 function resolveGame(): Game {
@@ -55,6 +60,7 @@ function resolveGame(): Game {
     if (q === 'poll') return 'poll'
     if (q === 'pd') return 'pd'
     if (q === 'pricing') return 'pricing'
+    if (q === 'newsvendor') return 'newsvendor'
   }
   return 'pennies'
 }
@@ -83,6 +89,10 @@ const GAMES: Record<Game, GameScreens> = {
   pricing: {
     title: 'Cheyenne Shipping',
     Play: PricingPlay, Dashboard: PricingDashboard, Settings: PricingSettings, Reports: PricingReports,
+  },
+  newsvendor: {
+    title: 'Newsvendor',
+    Play: NewsvendorPlay, Dashboard: NewsvendorDashboard, Settings: NewsvendorSettings, Reports: NewsvendorReports,
   },
 }
 

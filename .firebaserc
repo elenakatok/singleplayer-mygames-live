@@ -16,6 +16,9 @@
         ],
         "pricing": [
           "pricing-mygames-live"
+        ],
+        "newsvendor": [
+          "newsvendor-mygames-live"
         ]
       }
     }
