@@ -91,6 +91,28 @@ export const averageDemand = (r: NewsvendorGameRow): number | null =>
 export const averageServiceLevel = (r: NewsvendorGameRow): number | null =>
   r.serviceLevels.length === 0 ? null : mean(r.serviceLevels)
 
+/**
+ * IN-STOCK RATE — the fraction of a student's periods in which they were FULLY stocked
+ * (Q ≥ D, nothing short).
+ *
+ * ⚠ THIS IS NOT THE AVERAGE DEMAND-MET FRACTION, and it replaced that column precisely
+ * because the two are different questions. "Demand met" averages a ratio within each
+ * period and lands high for a student who is nearly-but-not-quite covered every time.
+ * This counts PERIODS, so it is directly comparable to the critical ratio: order at Q*
+ * and you are fully stocked about CR of the time (≈0.81 at the shipped regular
+ * defaults). That comparability is the whole point — it lets an instructor read the
+ * column against one number they already have on screen.
+ *
+ * Computed from orders and demands rather than from the stored service level, because
+ * a service level of exactly 1 is the same event as Q ≥ D and this way the definition
+ * is visible rather than inferred.
+ */
+export function inStockRate(r: NewsvendorGameRow): number | null {
+  if (r.orders.length === 0) return null
+  const fullyStocked = r.orders.filter((q, i) => q >= r.demands[i]).length
+  return fullyStocked / r.orders.length
+}
+
 export const averageProfit = (r: NewsvendorGameRow): number | null =>
   r.profits.length === 0 ? null : mean(r.profits)
 

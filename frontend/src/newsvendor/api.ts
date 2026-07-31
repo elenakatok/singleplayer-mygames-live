@@ -247,6 +247,8 @@ export type NewsvendorReportParticipant = {
   average_order: number | null
   average_demand: number | null
   average_service_level: number | null
+  /** Fraction of periods FULLY stocked (Q ≥ D) — comparable to the critical ratio. */
+  in_stock_rate: number | null
   average_profit: number | null
   total_profit: number
   /** ⚠ Instructor-only. */
@@ -281,6 +283,9 @@ export type NewsvendorReportData = {
   /** Has Score & Record been run for this instance? */
   scored: boolean
   params: NewsvendorParams
+  /** Instructor-only: the full second-supplier cost, sent whatever the mode, so the
+   *  expected-profit chart can draw the dual curve on a regular instance too. */
+  secondSourceCost: number
   /** Null when the config cannot produce a benchmark at all; `configError` says why. */
   benchmark: NewsvendorBenchmark | null
   configError: string | null

@@ -12,7 +12,8 @@ import {
   type NewsvendorReportData, type NewsvendorReportParticipant,
 } from './api'
 import { InstanceHeader } from './Dashboard'
-import { formatAverageUnits, formatMoney, formatPercent, formatUnits } from './format'
+import { formatAverageUnits, formatMoney, formatMoneyCompact, formatPercent, formatUnits } from './format'
+import { ExpectedProfitChartSVG } from './ExpectedProfitChartSVG'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Newsvendor reports, through the shared ReportBoard + a modal per tile — the same
@@ -25,6 +26,8 @@ import { formatAverageUnits, formatMoney, formatPercent, formatUnits } from './f
 //   Tier 3a Order by period    — class average order vs the demand that turned up,
 //                                with the dashed optimal-order line
 //   Tier 3b Profit by period   — what those orders earned vs the benchmark
+//   Tier 3c Expected profit by order quantity — ANALYTICAL, no student data: both
+//                                modes' profit curves with their optima marked
 //
 // ⚠ THE TWO CHARTS ARE SEPARATE TILES, and they used to be one. Split because they
 // answer different questions and get projected separately: the order chart is the one
@@ -70,13 +73,16 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 const tnum = { fontVariantNumeric: 'tabular-nums' as const }
 const units = (v: number | null) => (v == null ? '—' : formatAverageUnits(v))
 const money = (v: number | null) => (v == null ? '—' : formatMoney(v))
+/** ⚠ ABBREVIATED — the roster's three dollar columns use this so the table fits its
+ *  modal without a horizontal scrollbar. See format.ts for why the unit is per-value. */
+const moneyC = (v: number | null) => (v == null ? '—' : formatMoneyCompact(v))
 const pct = (v: number | null) => (v == null ? '—' : formatPercent(v))
 
 // ── Tier 1: the outcomes roster ────────────────────────────────────────────────
 
 type RosterKey =
-  | 'name' | 'status' | 'periods' | 'avgOrder' | 'avgDemand' | 'avgSl'
-  | 'total' | 'benchmark' | 'gap' | 'kc' | 'participation'
+  | 'name' | 'status' | 'periods' | 'avgOrder' | 'avgDemand' | 'inStock'
+  | 'total' | 'benchmark' | 'gap' | 'kc'
 
 function OutcomesTable({ rows }: { rows: NewsvendorReportParticipant[] }) {
   const columns: readonly SortableColumn<NewsvendorReportParticipant, RosterKey>[] = [
@@ -89,9 +95,11 @@ function OutcomesTable({ rows }: { rows: NewsvendorReportParticipant[] }) {
     { key: 'periods', label: 'Periods', render: r => <span style={tnum}>{r.rounds_played}</span>, compare: (a, b) => a.rounds_played - b.rounds_played },
     { key: 'avgOrder', label: 'Avg order', render: r => <span style={tnum}>{units(r.average_order)}</span>, nullsLast: true, isNull: r => r.average_order == null, compare: (a, b) => (a.average_order ?? 0) - (b.average_order ?? 0) },
     { key: 'avgDemand', label: 'Avg demand', render: r => <span style={tnum}>{units(r.average_demand)}</span>, nullsLast: true, isNull: r => r.average_demand == null, compare: (a, b) => (a.average_demand ?? 0) - (b.average_demand ?? 0) },
-    { key: 'avgSl', label: 'Avg demand met', render: r => <span style={tnum}>{pct(r.average_service_level)}</span>, nullsLast: true, isNull: r => r.average_service_level == null, compare: (a, b) => (a.average_service_level ?? 0) - (b.average_service_level ?? 0) },
-    { key: 'total', label: 'Total profit', render: r => <span style={tnum}>{r.rounds_played === 0 ? '—' : formatMoney(r.total_profit)}</span>, nullsLast: true, isNull: r => r.rounds_played === 0, compare: (a, b) => a.total_profit - b.total_profit },
-    { key: 'benchmark', label: 'Benchmark profit', render: r => <span style={tnum}>{r.rounds_played === 0 ? '—' : formatMoney(r.benchmark_profit)}</span>, nullsLast: true, isNull: r => r.rounds_played === 0, compare: (a, b) => a.benchmark_profit - b.benchmark_profit },
+    // ⚠ IN-STOCK %, NOT "avg demand met" — a different question, and the one that is
+    // comparable to the critical ratio the instructor already has on screen.
+    { key: 'inStock', label: 'In-stock %', render: r => <span data-testid={`nv-instock-${r.participant_id}`} style={tnum}>{pct(r.in_stock_rate)}</span>, nullsLast: true, isNull: r => r.in_stock_rate == null, compare: (a, b) => (a.in_stock_rate ?? 0) - (b.in_stock_rate ?? 0) },
+    { key: 'total', label: 'Total profit', render: r => <span style={tnum}>{r.rounds_played === 0 ? '—' : moneyC(r.total_profit)}</span>, nullsLast: true, isNull: r => r.rounds_played === 0, compare: (a, b) => a.total_profit - b.total_profit },
+    { key: 'benchmark', label: 'Benchmark', render: r => <span style={tnum}>{r.rounds_played === 0 ? '—' : moneyC(r.benchmark_profit)}</span>, nullsLast: true, isNull: r => r.rounds_played === 0, compare: (a, b) => a.benchmark_profit - b.benchmark_profit },
     {
       key: 'gap', label: 'Gap',
       render: r => (
@@ -99,17 +107,20 @@ function OutcomesTable({ rows }: { rows: NewsvendorReportParticipant[] }) {
           data-testid={`nv-gap-${r.participant_id}`}
           style={{ ...tnum, color: (r.optimality_gap ?? 0) < 0 ? colors.kcCorrectText : colors.text }}
         >
-          {money(r.optimality_gap)}
+          {moneyC(r.optimality_gap)}
         </span>
       ),
       nullsLast: true, isNull: r => r.optimality_gap == null,
       compare: (a, b) => (a.optimality_gap ?? 0) - (b.optimality_gap ?? 0),
     },
     { key: 'kc', label: 'KC', render: r => <span style={tnum}>{r.knowledge_check_score == null ? '—' : `${Math.round(r.knowledge_check_score * 100)}%`}</span>, nullsLast: true, isNull: r => r.knowledge_check_score == null, compare: (a, b) => (a.knowledge_check_score ?? 0) - (b.knowledge_check_score ?? 0) },
-    { key: 'participation', label: 'Participation', render: r => <span style={tnum}>{r.participation_score == null ? '—' : r.participation_score}</span>, nullsLast: true, isNull: r => r.participation_score == null, compare: (a, b) => (a.participation_score ?? 0) - (b.participation_score ?? 0) },
   ]
   return (
-    <div data-testid="nv-report-outcomes">
+    // ⚠ `overflowX: hidden` IS THE ASSERTION, not a style preference. The table has to
+    // FIT — dropping Participation and abbreviating the three dollar columns is what
+    // buys the width, and pinning the overflow here means a future column that breaks
+    // the budget clips visibly instead of quietly reintroducing the scrollbar.
+    <div data-testid="nv-report-outcomes" style={{ overflowX: 'hidden', maxWidth: '100%' }}>
       <SortableTable<NewsvendorReportParticipant, RosterKey>
         rows={rows} columns={columns} getRowKey={r => r.participant_id}
         initialSortKey="status" initialSortDir="desc" emptyMessage="No students yet." wrapHeaders
@@ -118,7 +129,10 @@ function OutcomesTable({ rows }: { rows: NewsvendorReportParticipant[] }) {
         “Gap” is the benchmark&rsquo;s profit minus the student&rsquo;s, over the periods they
         played. It is <strong>signed</strong>: a negative gap (green) means the student
         beat the benchmark, which happens over a short game because the benchmark is
-        optimal in expectation, not period by period. A student who has not started
+        optimal in expectation, not period by period. “In-stock %” is the share of
+        PERIODS a student was fully stocked (Q ≥ D) — read it against the critical ratio,
+        which an optimal orderer would match. Dollar columns are abbreviated to fit.
+        A student who has not started
         shows “—” rather than a zero. Profit and the gap are OUTCOMES, never grades —
         participation is scored on finishing, and the knowledge check is the assessed
         component.
@@ -389,6 +403,15 @@ export default function Reports() {
       onOpen: () => setActive('debrief'),
     },
     {
+      // ⚠ ALWAYS ENABLED — it is analytical, so it renders from config alone with no
+      // students and no periods played. That is the point: it is usable the moment the
+      // instance is configured, and identical before and after the class.
+      id: 'expected',
+      title: 'Expected profit by order quantity',
+      preview: <span>Single source vs dual — from the parameters, no student data</span>,
+      onOpen: () => setActive('expected'),
+    },
+    {
       id: 'orders',
       title: 'Order by period',
       disabled: played.length === 0,
@@ -426,6 +449,22 @@ export default function Reports() {
       {active === 'debrief' && (
         <Modal title="Debrief paragraphs — after play" onClose={() => setActive(null)}>
           <TextAnswers rows={data.participants} prompt={data.debriefPrompt} pick={r => r.debrief} testId="nv-report-debrief" />
+        </Modal>
+      )}
+      {active === 'expected' && (
+        <Modal title="Expected profit by order quantity" onClose={() => setActive(null)}>
+          <ExpectedProfitChartSVG
+            params={{
+              P: data.params.P, c: data.params.c, v: data.params.v,
+              g: data.params.g, h: data.params.h,
+              // ⚠ The instructor-only c_l, NOT data.params.cL — that one is zeroed on a
+              // regular instance (clientState.ts), and the dual curve needs a real cost.
+              cL: data.secondSourceCost,
+              isNormal: data.params.isNormal,
+              mean: data.params.mean, sd: data.params.sd,
+              minD: data.params.minD, maxD: data.params.maxD,
+            }}
+          />
         </Modal>
       )}
       {active === 'orders' && (

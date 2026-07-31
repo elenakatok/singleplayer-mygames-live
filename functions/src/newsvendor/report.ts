@@ -11,7 +11,7 @@ import { clientParams } from './clientState'
 import { prepQuestion, debriefQuestion } from './questions'
 import {
   ordersByPeriod, profitsByPeriod,
-  averageOrder, averageDemand, averageServiceLevel, averageProfit,
+  averageOrder, averageDemand, averageServiceLevel, averageProfit, inStockRate,
   totalProfit, totalBenchmarkProfit, optimalityGap,
   classAverageOrder, classAverageDemand, classAverageServiceLevel,
   classAverageProfit, classAverageBenchmarkProfit,
@@ -47,8 +47,11 @@ export interface NewsvendorReportParticipant {
   average_order: number | null
   /** Mean realized demand they faced. Null likewise. */
   average_demand: number | null
-  /** Mean demand proportion met (0–1). Null likewise. */
+  /** Mean demand proportion met (0–1). Null likewise. Still reported; no longer a
+   *  roster column — see `in_stock_rate`, which replaced it. */
   average_service_level: number | null
+  /** Fraction of periods FULLY stocked (Q ≥ D). Comparable to the critical ratio. */
+  in_stock_rate: number | null
   /** Mean profit per period PLAYED. Null likewise. */
   average_profit: number | null
   total_profit: number
@@ -111,6 +114,7 @@ export const newsvendorGetReport = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, asy
       average_order: averageOrder(row),
       average_demand: averageDemand(row),
       average_service_level: averageServiceLevel(row),
+      in_stock_rate: inStockRate(row),
       average_profit: averageProfit(row),
       total_profit: totalProfit(row),
       benchmark_profit: totalBenchmarkProfit(row),
@@ -149,6 +153,16 @@ export const newsvendorGetReport = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, asy
     scored,
     /** Everything the instance is configured with — the dashboard banner reads it. */
     params: clientParams(config),
+    /**
+     * The full second-supplier cost, INSTRUCTOR-ONLY and sent regardless of mode.
+     *
+     * ⚠ WHY IT IS NOT JUST READ OFF `params`: clientParams deliberately zeroes c_l on a
+     * regular instance, because a student there has no second source and should not be
+     * shown a price for one. The expected-profit chart needs a real c_l either way — it
+     * draws the dual curve even for a regular instance so the two can be compared — so
+     * it comes from config directly, on this instructor-only payload.
+     */
+    secondSourceCost: config.cL,
     /**
      * ⚠ INSTRUCTOR-ONLY. The critical ratio and the benchmark order this instance's
      * own parameters imply (spec §4), so the Tier-3 chart can draw the reference line

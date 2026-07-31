@@ -26,6 +26,9 @@
 //     browser actually received, at any point in the flow (spec §9.2);
 //   • a FULL DUAL-SOURCING game — the dual KC, the relabelled screens, both the
 //     top-up and leftover paths, the dual debrief, and its own leak audit;
+//   • the ANALYTICAL expected-profit chart — rendering with NO students, starting
+//     regular-only, and revealing the dual curve when its legend entry is clicked;
+//   • the outcomes table — In-stock %, no Participation column, and no overflow;
 //   • the INSTRUCTOR dashboard and all five report tiles against a MIXED population;
 //   • ⚠ the dashboard's manual REFRESH button picking up play that happened after the
 //     page opened — and staying stale until it is clicked, which is the design.
@@ -161,6 +164,10 @@ const instrUrl = (p, gid) => `${APP}${p}?game=newsvendor&_gid=${gid}`
 const text = async (page, sel) => (await page.locator(sel).first().innerText()).trim()
 const testId = async (page, id) => text(page, `[data-testid="${id}"]`)
 const exists = async (page, sel) => (await page.locator(sel).count()) > 0
+/** innerText is an HTMLElement API and THROWS on an SVG node, so anything inside a
+ *  chart (its <text> labels) has to be read with textContent instead. */
+const svgText = async (page, id) =>
+  ((await page.locator(`[data-testid="${id}"]`).first().textContent()) ?? '').trim()
 
 /** Every callable response this browser actually received, for the leak audit. */
 function captureResponses(page, sink) {
@@ -522,7 +529,8 @@ async function main() {
     await pageI.click('text=Outcomes — all students')
     await pageI.waitForSelector('[data-testid="nv-report-outcomes"]')
     const outcomes = await pageI.locator('[data-testid="nv-report-outcomes"]').innerText()
-    check(/Benchmark profit/.test(outcomes) && /Gap/.test(outcomes),
+    // The header reads "Benchmark", not "Benchmark profit" — shortened to buy table width.
+    check(/Benchmark/.test(outcomes) && /Gap/.test(outcomes),
       '⚠ the Tier-1 table DOES carry the benchmark and the gap — instructor-only, by design')
     check(await exists(pageI, '[data-testid="nv-gap-fin"]'), 'the finisher has a gap figure')
     check(await testId(pageI, 'nv-gap-never') === '—',
@@ -761,6 +769,112 @@ async function main() {
       '⚠ …and hides the shortage-cost field, which dual never uses')
     const premiumNote = await testId(pageDI, 'nv-settings-premium')
     check(/1,000/.test(premiumNote), `the settings page shows the DERIVED premium (${premiumNote})`)
+
+    // ── 11. ⚠ THE EXPECTED-PROFIT CHART — analytical, and empty-class-proof ────
+    // Opened on an instance with a config and NO PARTICIPANTS AT ALL. If the chart
+    // needed student data this section could not exist.
+    console.log('\n[11] The expected-profit comparison chart (no students at all)')
+    const GID_EP = `nvpw-expected-${stamp}`
+    await openInstance(GID_EP, CFG, 'pw-expected')   // config only; nobody bootstrapped
+
+    const ctxE = await browser.newContext()
+    const pageE = await ctxE.newPage()
+    await pageE.goto(instrUrl('/reports', GID_EP))
+    await pageE.waitForSelector('[data-testid="nv-instance-header"]', { timeout: 30000 })
+    check(/Expected profit by order quantity/.test(await pageE.locator('body').innerText()),
+      'the expected-profit tile is present')
+    await pageE.click('text=Expected profit by order quantity')
+    await pageE.waitForSelector('[data-testid="nv-ep-chart"]')
+    check(true, '⚠ …and it RENDERS with zero participants — it is analytical, not empirical')
+
+    // ⚠ ON LOAD: regular only, dual hidden — the lecture-pacing requirement.
+    check(await exists(pageE, '[data-testid="nv-ep-line-regular"]'),
+      '⚠ ON LOAD the SINGLE-SOURCE line is drawn')
+    check(!(await exists(pageE, '[data-testid="nv-ep-line-dual"]')),
+      '⚠ …and the DUAL line is HIDDEN')
+    check(await exists(pageE, '[data-testid="nv-ep-marker-regular"]'),
+      'the regular Q* marker is drawn with its line')
+    check(!(await exists(pageE, '[data-testid="nv-ep-marker-dual"]')),
+      '⚠ …and the dual marker is absent while its line is — a hidden line leaves nothing')
+    check(await exists(pageE, '[data-testid="nv-ep-legend-dual"]'),
+      '⚠ …but the dual LEGEND entry is still there, ready to be clicked')
+
+    const regQopt = await svgText(pageE, 'nv-ep-qopt-regular')
+    check(/1,265/.test(regQopt), `⚠ the regular peak is marked at Q* = 1265 (got "${regQopt}")`)
+
+    // Click the dual legend entry — the reveal.
+    await pageE.click('[data-testid="nv-ep-legend-dual"]')
+    await pageE.waitForSelector('[data-testid="nv-ep-line-dual"]')
+    check(true, '⚠ clicking the dual legend entry REVEALS its line')
+    const dualQopt = await svgText(pageE, 'nv-ep-qopt-dual')
+    check(/1,129/.test(dualQopt), `⚠ …marked at the dual Q* = 1129 (got "${dualQopt}")`)
+    check(await exists(pageE, '[data-testid="nv-ep-line-regular"]'),
+      '…and the regular line is still there beside it')
+
+    // Toggling the regular line off hides its marker too.
+    await pageE.click('[data-testid="nv-ep-legend-regular"]')
+    check(!(await exists(pageE, '[data-testid="nv-ep-line-regular"]')),
+      'clicking the regular entry hides that line')
+    check(!(await exists(pageE, '[data-testid="nv-ep-marker-regular"]')),
+      '⚠ …and its Q* marker goes with it')
+
+    // ⚠ NOT PERSISTED — a fresh open must start regular-only again.
+    await pageE.goto(instrUrl('/reports', GID_EP))
+    await pageE.waitForSelector('[data-testid="nv-instance-header"]')
+    await pageE.click('text=Expected profit by order quantity')
+    await pageE.waitForSelector('[data-testid="nv-ep-chart"]')
+    check(await exists(pageE, '[data-testid="nv-ep-line-regular"]')
+      && !(await exists(pageE, '[data-testid="nv-ep-line-dual"]')),
+      '⚠ a FRESH open starts regular-only again — toggle state is not persisted')
+
+    // ── 12. ⚠ THE OUTCOMES TABLE — In-stock %, no Participation, no overflow ───
+    console.log('\n[12] The outcomes table')
+    // A student who orders exactly Q* should be in stock about CR of the time. Twenty
+    // periods is enough for the rate to land near 0.81 without being a coin flip.
+    const GID_IS = `nvpw-instock-${stamp}`
+    await openInstance(GID_IS, { ...CFG, periods: 20 }, 'pw-instock')
+    await callFn('newsvendorBootstrap', asStudent(GID_IS, 'optimal-stu'))
+    let fullyStocked = 0
+    for (let n = 1; n <= 20; n++) {
+      const res = await callFn('newsvendorSubmitRound', asStudent(GID_IS, 'optimal-stu', { round: n, order: 1265 }))
+      if (res.ok && 1265 >= res.result.round.demand) fullyStocked++
+    }
+    const expectedRate = fullyStocked / 20
+    check(fullyStocked > 0 && fullyStocked < 20,
+      `the optimal-ordering student was stocked out at least once (${fullyStocked}/20 in stock)`)
+
+    const ctxT = await browser.newContext()
+    const pageT = await ctxT.newPage()
+    await pageT.goto(instrUrl('/reports', GID_IS))
+    await pageT.waitForSelector('[data-testid="nv-instance-header"]', { timeout: 30000 })
+    await pageT.click('text=Outcomes — all students')
+    await pageT.waitForSelector('[data-testid="nv-report-outcomes"]')
+
+    const shownRate = await testId(pageT, 'nv-instock-optimal-stu')
+    check(shownRate === fmtPct(expectedRate),
+      `In-stock % is periods-fully-stocked / periods-played (${shownRate} = ${fullyStocked}/20)`)
+    // ⚠ …and it is COMPARABLE TO THE CRITICAL RATIO, which is the reason the column
+    // exists. A ±0.2 band over 20 periods is generous but still falsifiable — the
+    // demand-met average this replaced would sit far higher.
+    check(Math.abs(expectedRate - 0.8113) < 0.2,
+      `⚠ …and an optimal orderer's rate ≈ the critical ratio 0.81 (got ${expectedRate.toFixed(2)})`)
+
+    const tableText = await pageT.locator('[data-testid="nv-report-outcomes"]').innerText()
+    check(/In-stock %/.test(tableText), 'the In-stock % column is present')
+    check(!/Avg demand met/.test(tableText), '⚠ …and "Avg demand met" is gone — it was replaced')
+    check(!/Participation/.test(tableText), '⚠ the Participation column is REMOVED')
+
+    // ⚠ NO HORIZONTAL OVERFLOW at a normal instructor width.
+    const overflow = await pageT.evaluate(() => {
+      const el = document.querySelector('[data-testid="nv-report-outcomes"]')
+      if (!el) return null
+      return { scroll: el.scrollWidth, client: el.clientWidth }
+    })
+    check(overflow !== null, 'measured the outcomes table')
+    check(overflow.scroll <= overflow.client + 1,
+      `⚠ the table FITS its modal — no horizontal scroll (${overflow.scroll}px content in ${overflow.client}px)`)
+    check(/\$[\d.]+M|\$[\d.]+K/.test(tableText),
+      'the dollar columns are abbreviated ($37.3M / $748.5K) — which is what buys the width')
 
     console.log(`\n${'═'.repeat(70)}`)
     console.log(`Newsvendor browser harness: ${passed} passed, ${failed} failed`)
