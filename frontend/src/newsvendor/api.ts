@@ -255,6 +255,9 @@ export type NewsvendorReportParticipant = {
   benchmark_profit: number
   /** Benchmark minus realized. SIGNED — a lucky student really can beat it. */
   optimality_gap: number | null
+  /** The three figures the roster renders — all PER PERIOD (see report.ts). */
+  average_benchmark_profit: number | null
+  average_optimality_gap: number | null
   knowledge_check_score: number | null
   participation_score: number | null
   prep: string | null

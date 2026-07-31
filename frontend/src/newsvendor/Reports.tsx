@@ -73,16 +73,27 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 const tnum = { fontVariantNumeric: 'tabular-nums' as const }
 const units = (v: number | null) => (v == null ? '—' : formatAverageUnits(v))
 const money = (v: number | null) => (v == null ? '—' : formatMoney(v))
-/** ⚠ ABBREVIATED — the roster's three dollar columns use this so the table fits its
- *  modal without a horizontal scrollbar. See format.ts for why the unit is per-value. */
+/** ⚠ ABBREVIATED — kept for anywhere that still needs the compact form. */
 const moneyC = (v: number | null) => (v == null ? '—' : formatMoneyCompact(v))
+
+/**
+ * The roster's three dollar columns, in ONE place so the format is a single decision.
+ *
+ * ⚠ FULL PRECISION, and that is a MEASURED choice rather than a preference. Dropping
+ * the KC column and moving from period TOTALS to per-period averages together shortened
+ * these values by roughly a digit, and the browser harness measures the rendered
+ * table's scrollWidth against its box: it fits, so the exact figures are shown. The
+ * harness asserts the fit, so if a future column reintroduces overflow it fails there
+ * rather than being discovered on a projector.
+ */
+const rosterMoney = (v: number | null) => (v == null ? '—' : formatMoney(v))
 const pct = (v: number | null) => (v == null ? '—' : formatPercent(v))
 
 // ── Tier 1: the outcomes roster ────────────────────────────────────────────────
 
 type RosterKey =
   | 'name' | 'status' | 'periods' | 'avgOrder' | 'avgDemand' | 'inStock'
-  | 'total' | 'benchmark' | 'gap' | 'kc'
+  | 'avgProfit' | 'benchmark' | 'gap'
 
 function OutcomesTable({ rows }: { rows: NewsvendorReportParticipant[] }) {
   const columns: readonly SortableColumn<NewsvendorReportParticipant, RosterKey>[] = [
@@ -98,22 +109,25 @@ function OutcomesTable({ rows }: { rows: NewsvendorReportParticipant[] }) {
     // ⚠ IN-STOCK %, NOT "avg demand met" — a different question, and the one that is
     // comparable to the critical ratio the instructor already has on screen.
     { key: 'inStock', label: 'In-stock %', render: r => <span data-testid={`nv-instock-${r.participant_id}`} style={tnum}>{pct(r.in_stock_rate)}</span>, nullsLast: true, isNull: r => r.in_stock_rate == null, compare: (a, b) => (a.in_stock_rate ?? 0) - (b.in_stock_rate ?? 0) },
-    { key: 'total', label: 'Total profit', render: r => <span style={tnum}>{r.rounds_played === 0 ? '—' : moneyC(r.total_profit)}</span>, nullsLast: true, isNull: r => r.rounds_played === 0, compare: (a, b) => a.total_profit - b.total_profit },
-    { key: 'benchmark', label: 'Benchmark', render: r => <span style={tnum}>{r.rounds_played === 0 ? '—' : moneyC(r.benchmark_profit)}</span>, nullsLast: true, isNull: r => r.rounds_played === 0, compare: (a, b) => a.benchmark_profit - b.benchmark_profit },
+    // ⚠ ALL THREE DOLLAR COLUMNS ARE PER PERIOD, not totals. A total scales with how
+    // far through the game a student is, so a mid-week roster would rank by progress;
+    // and the averages sit on the same scale as the expected-profit chart, so an
+    // optimal orderer's Avg profit lands on that chart's peak.
+    { key: 'avgProfit', label: 'Avg profit', render: r => <span data-testid={`nv-avgprofit-${r.participant_id}`} style={tnum}>{rosterMoney(r.average_profit)}</span>, nullsLast: true, isNull: r => r.average_profit == null, compare: (a, b) => (a.average_profit ?? 0) - (b.average_profit ?? 0) },
+    { key: 'benchmark', label: 'Benchmark', render: r => <span data-testid={`nv-avgbench-${r.participant_id}`} style={tnum}>{rosterMoney(r.average_benchmark_profit)}</span>, nullsLast: true, isNull: r => r.average_benchmark_profit == null, compare: (a, b) => (a.average_benchmark_profit ?? 0) - (b.average_benchmark_profit ?? 0) },
     {
       key: 'gap', label: 'Gap',
       render: r => (
         <span
           data-testid={`nv-gap-${r.participant_id}`}
-          style={{ ...tnum, color: (r.optimality_gap ?? 0) < 0 ? colors.kcCorrectText : colors.text }}
+          style={{ ...tnum, color: (r.average_optimality_gap ?? 0) < 0 ? colors.kcCorrectText : colors.text }}
         >
-          {moneyC(r.optimality_gap)}
+          {rosterMoney(r.average_optimality_gap)}
         </span>
       ),
-      nullsLast: true, isNull: r => r.optimality_gap == null,
-      compare: (a, b) => (a.optimality_gap ?? 0) - (b.optimality_gap ?? 0),
+      nullsLast: true, isNull: r => r.average_optimality_gap == null,
+      compare: (a, b) => (a.average_optimality_gap ?? 0) - (b.average_optimality_gap ?? 0),
     },
-    { key: 'kc', label: 'KC', render: r => <span style={tnum}>{r.knowledge_check_score == null ? '—' : `${Math.round(r.knowledge_check_score * 100)}%`}</span>, nullsLast: true, isNull: r => r.knowledge_check_score == null, compare: (a, b) => (a.knowledge_check_score ?? 0) - (b.knowledge_check_score ?? 0) },
   ]
   return (
     // ⚠ `overflowX: hidden` IS THE ASSERTION, not a style preference. The table has to
@@ -131,7 +145,9 @@ function OutcomesTable({ rows }: { rows: NewsvendorReportParticipant[] }) {
         beat the benchmark, which happens over a short game because the benchmark is
         optimal in expectation, not period by period. “In-stock %” is the share of
         PERIODS a student was fully stocked (Q ≥ D) — read it against the critical ratio,
-        which an optimal orderer would match. Dollar columns are abbreviated to fit.
+        which an optimal orderer would match. The three dollar columns are PER PERIOD,
+        so they sit on the same scale as the expected-profit chart — an optimal
+        orderer&rsquo;s average profit lands on that chart&rsquo;s peak.
         A student who has not started
         shows “—” rather than a zero. Profit and the gap are OUTCOMES, never grades —
         participation is scored on finishing, and the knowledge check is the assessed

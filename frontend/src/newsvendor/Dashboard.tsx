@@ -279,6 +279,13 @@ export function InstanceHeader({ params, benchmark, configError }: {
         {params.v !== 0 && <> · salvage {formatMoney(params.v)}</>}
         {params.h !== 0 && <> · holding {formatMoney(params.h)}</>}
         {params.g !== 0 && <> · shortage {formatMoney(params.g)}</>}
+        {/* ⚠ DUAL ONLY, and it is the FULL second-supplier price the instructor typed
+            into Settings — not the derived premium. `params.cL` is zeroed by
+            clientState.ts on a regular instance, so this cannot render there even if
+            the guard were dropped. */}
+        {params.dual && (
+          <span data-testid="nv-instance-cl"> · second source {formatMoney(params.cL)}</span>
+        )}
       </div>
       {benchmark && (
         <div

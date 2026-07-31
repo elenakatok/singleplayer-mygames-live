@@ -123,6 +123,33 @@ export const totalBenchmarkProfit = (r: NewsvendorGameRow): number =>
   r.benchmarkProfits.reduce((a, b) => a + b, 0)
 
 /**
+ * The benchmark's mean profit PER PERIOD — the figure the roster shows.
+ *
+ * ⚠ PER PERIOD, NOT TOTAL, and that is the point of the column. A total scales with
+ * how many periods a student has played, so a mid-week roster silently ranks the
+ * furthest-along student top; and it sits on a different scale from the
+ * expected-profit chart, which is per period by construction. The averages line the
+ * two up: an optimal orderer's Avg profit lands on the chart's peak.
+ */
+export const averageBenchmarkProfit = (r: NewsvendorGameRow): number | null =>
+  r.benchmarkProfits.length === 0 ? null : mean(r.benchmarkProfits)
+
+/**
+ * The optimality gap PER PERIOD — benchmark minus realized, averaged.
+ *
+ * Identically (averageBenchmarkProfit − averageProfit), which is exactly why it is
+ * computed from the same arrays rather than by dividing the total somewhere else: the
+ * three dollar columns must stay arithmetically consistent on screen.
+ *
+ * ⚠ STILL SIGNED. A negative average gap means the student beat the benchmark over the
+ * periods they played — see optimalityGap for why the sign is kept.
+ */
+export function averageOptimalityGap(r: NewsvendorGameRow): number | null {
+  if (r.profits.length === 0) return null
+  return (totalBenchmarkProfit(r) - totalProfit(r)) / r.profits.length
+}
+
+/**
  * The optimality gap: what the benchmark earned MINUS what the student earned, over
  * the periods they actually played (spec §9.2).
  *

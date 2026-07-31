@@ -80,17 +80,30 @@ export function ExpectedProfitChartSVG({ params }: { params: ExpectedProfitParam
 
   const toggle = (key: keyof Shown) => setShown(s => ({ ...s, [key]: !s[key] }))
 
-  /** One series' peak marker: a dashed vertical to the curve, a dot, and a label.
-   *  Rendered ONLY while its own line is shown — a hidden line leaves nothing behind. */
+  /**
+   * One series' peak marker: a dashed vertical to the curve, a dot, and a label.
+   * Rendered ONLY while its own line is shown — a hidden line leaves nothing behind.
+   *
+   * ⚠ THE TWO LABELS DIVERGE BY CONSTRUCTION, which is what stops them colliding when
+   * both lines are revealed. The dual marker anchors its text END just left of its dot
+   * and sits ABOVE it; the regular marker anchors START just right of its dot and sits
+   * BELOW. They therefore grow in opposite directions from opposite corners — so they
+   * stay clear even in the worst case, where a config puts the two Q* at the SAME x
+   * (which happens whenever c_l is tuned to make the dual critical ratio match the
+   * regular one). A fixed above/below offset alone would not survive that case.
+   *
+   * The words "Single"/"Dual" are gone: the label is just Q*, and its COLOUR says which
+   * line it belongs to — matching the legend the instructor is already reading.
+   */
   const marker = (
     opt: { Qopt: number; peak: number } | null,
     colour: string,
     id: string,
-    label: string,
-    labelAbove: boolean,
+    side: 'left-above' | 'right-below',
   ) => {
     if (!opt || opt.Qopt < qMin || opt.Qopt > qMax) return null
     const x = xOf(opt.Qopt), y = yOf(opt.peak)
+    const left = side === 'left-above'
     return (
       <g data-testid={`nv-ep-marker-${id}`}>
         <line
@@ -100,10 +113,12 @@ export function ExpectedProfitChartSVG({ params }: { params: ExpectedProfitParam
         <circle cx={x} cy={y} r={4.5} fill={colour} />
         <text
           data-testid={`nv-ep-qopt-${id}`}
-          x={x} y={labelAbove ? y - 10 : y + 18}
-          textAnchor="middle" fontSize="11" fontWeight={600} fill={colour}
+          x={left ? x - 8 : x + 8}
+          y={left ? y - 9 : y + 17}
+          textAnchor={left ? 'end' : 'start'}
+          fontSize="11" fontWeight={600} fill={colour}
         >
-          {label} Q* = {formatUnits(opt.Qopt)}
+          Q* = {formatUnits(opt.Qopt)}
         </text>
       </g>
     )
@@ -179,8 +194,9 @@ export function ExpectedProfitChartSVG({ params }: { params: ExpectedProfitParam
           />
         )}
 
-        {shown.regular && marker(reg, STUDENT_COLOR, 'regular', 'Single', true)}
-        {shown.dual && marker(dual, COMPETITOR_COLOR, 'dual', 'Dual', true)}
+        {/* Regular grows right-and-down, dual left-and-up — see marker(). */}
+        {shown.regular && marker(reg, STUDENT_COLOR, 'regular', 'right-below')}
+        {shown.dual && marker(dual, COMPETITOR_COLOR, 'dual', 'left-above')}
       </svg>
 
       <figcaption style={{ fontSize: '0.78rem', color: '#555', marginTop: '0.4rem', lineHeight: 1.55 }}>

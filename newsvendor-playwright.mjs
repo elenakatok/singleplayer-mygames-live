@@ -506,6 +506,8 @@ async function main() {
     check(/Not started/.test(roster), 'and the never-launched student shows Not started')
     check((await testId(pageI, 'nv-counts')).includes('1 finished / 2 started / 3 on roster'),
       'the action bar counts finished / started / on roster')
+    check(!(await exists(pageI, '[data-testid="nv-instance-cl"]')),
+      '⚠ a REGULAR instance shows no second-source line in the banner')
 
     // ⚠ THE DASHBOARD IS FIVE COLUMNS, and the gap is NOT one of them.
     const headerRow = rosterRows[0] ?? ''
@@ -758,6 +760,12 @@ async function main() {
       `⚠ the dashboard states the DUAL Q* = 1,129 (got ${await testId(pageDI, 'nv-instance-qopt')})`)
     check(await testId(pageDI, 'nv-instance-cr') === '0.667',
       `⚠ …and the dual critical ratio 0.667 (got ${await testId(pageDI, 'nv-instance-cr')})`)
+    // ⚠ FIX 3 — the banner names the FULL second-supplier price in dual mode.
+    const dualBanner = await testId(pageDI, 'nv-instance-cl')
+    check(/second source/.test(dualBanner) && dualBanner.includes(fmtMoney(DUAL_CFG.cL)),
+      `⚠ the dual banner shows "second source ${fmtMoney(DUAL_CFG.cL)}" (got "${dualBanner.trim()}")`)
+    check(!dualBanner.includes(fmtMoney(DUAL_CFG.cL - DUAL_CFG.c)),
+      '⚠ …the FULL price, not the derived premium')
 
     await pageDI.goto(instrUrl('/settings', GID_D))
     await pageDI.waitForSelector('[data-testid="nv-set-dual"]', { timeout: 30000 })
@@ -801,6 +809,8 @@ async function main() {
 
     const regQopt = await svgText(pageE, 'nv-ep-qopt-regular')
     check(/1,265/.test(regQopt), `⚠ the regular peak is marked at Q* = 1265 (got "${regQopt}")`)
+    check(!/Single|Dual/.test(regQopt),
+      '⚠ the label is JUST the Q* — colour identifies the line, not a word')
 
     // Click the dual legend entry — the reveal.
     await pageE.click('[data-testid="nv-ep-legend-dual"]')
@@ -808,8 +818,32 @@ async function main() {
     check(true, '⚠ clicking the dual legend entry REVEALS its line')
     const dualQopt = await svgText(pageE, 'nv-ep-qopt-dual')
     check(/1,129/.test(dualQopt), `⚠ …marked at the dual Q* = 1129 (got "${dualQopt}")`)
+    check(!/Single|Dual/.test(dualQopt), '⚠ …and it too is just the Q*')
     check(await exists(pageE, '[data-testid="nv-ep-line-regular"]'),
       '…and the regular line is still there beside it')
+
+    // ⚠ THE TWO LABELS MUST NOT COLLIDE with both lines shown — the bug this fixes.
+    // Measured from the rendered boxes, not inferred from the offsets that produce them.
+    const boxes = await pageE.evaluate(() => {
+      const one = document.querySelector('[data-testid="nv-ep-qopt-regular"]')
+      const two = document.querySelector('[data-testid="nv-ep-qopt-dual"]')
+      if (!one || !two) return null
+      const a = one.getBoundingClientRect(), b = two.getBoundingClientRect()
+      return {
+        a: { l: a.left, r: a.right, t: a.top, b: a.bottom },
+        b: { l: b.left, r: b.right, t: b.top, b_: b.bottom },
+      }
+    })
+    check(boxes !== null, 'measured both Q* label boxes')
+    const overlapX = Math.min(boxes.a.r, boxes.b.r) - Math.max(boxes.a.l, boxes.b.l)
+    const overlapY = Math.min(boxes.a.b, boxes.b.b_) - Math.max(boxes.a.t, boxes.b.t)
+    check(!(overlapX > 0 && overlapY > 0),
+      `⚠ THE TWO Q* LABELS DO NOT OVERLAP with both lines shown `
+      + `(x-overlap ${overlapX.toFixed(0)}px, y-overlap ${overlapY.toFixed(0)}px — `
+      + `they collide only if BOTH are positive)`)
+    check(overlapX < 0,
+      `…and they are separated horizontally by ${(-overlapX).toFixed(0)}px, which holds `
+      + 'even when a config puts both Q* at the same x')
 
     // Toggling the regular line off hides its marker too.
     await pageE.click('[data-testid="nv-ep-legend-regular"]')
@@ -863,18 +897,65 @@ async function main() {
     check(/In-stock %/.test(tableText), 'the In-stock % column is present')
     check(!/Avg demand met/.test(tableText), '⚠ …and "Avg demand met" is gone — it was replaced')
     check(!/Participation/.test(tableText), '⚠ the Participation column is REMOVED')
+    check(!/\bKC\b/.test(tableText), '⚠ the KC column is REMOVED')
+    check(/Avg profit/.test(tableText) && !/Total profit/.test(tableText),
+      '⚠ the profit column is "Avg profit", not "Total profit"')
+
+    // ⚠ THE DOLLAR COLUMNS ARE PER-PERIOD AVERAGES, not 20× totals. This student ordered
+    // exactly Q* for twenty periods, so their average profit must land on the
+    // expected-profit chart's peak (~$1.785M) rather than at ~$35M.
+    const shownAvgProfit = await testId(pageT, 'nv-avgprofit-optimal-stu')
+    const avgProfitNum = Number(shownAvgProfit.replace(/[^0-9.-]/g, ''))
+    check(avgProfitNum > 1_500_000 && avgProfitNum < 2_100_000,
+      `⚠ Avg profit is PER PERIOD — ${shownAvgProfit}, on the chart's ~$1.78M scale, not a 20× total`)
+    const shownBench = await testId(pageT, 'nv-avgbench-optimal-stu')
+    const benchNum = Number(shownBench.replace(/[^0-9.-]/g, ''))
+    check(benchNum > 1_500_000 && benchNum < 2_100_000,
+      `⚠ …and so is Benchmark (${shownBench})`)
+    const shownGap = await testId(pageT, 'nv-gap-optimal-stu')
+    const gapNum = Number(shownGap.replace(/[^0-9.-]/g, ''))
+    check(Math.abs(gapNum) < 200_000,
+      `⚠ …and Gap, which is now a per-period difference (${shownGap})`)
+    check(Math.abs((benchNum - avgProfitNum) - Math.abs(gapNum)) < 2,
+      'the three dollar columns are arithmetically consistent: Benchmark − Avg profit = Gap')
 
     // ⚠ NO HORIZONTAL OVERFLOW at a normal instructor width.
+    //
+    // ⚠⚠ MEASURING scrollWidth ON THE WRAPPER IS USELESS HERE, and an earlier version of
+    // this check did exactly that and passed for the wrong reason. game-ui's
+    // SortableTable renders `<table style={{ width: '100%' }}>` with wrapping cells, so
+    // the table can NEVER exceed its container: scrollWidth always equals clientWidth
+    // and the assertion is vacuous. A table that "doesn't fit" shows up as CRAMPED
+    // COLUMNS AND WRAPPED TEXT, not as a scrollbar.
+    //
+    // So this measures the table's INTRINSIC width — what it would occupy if allowed to
+    // size to its content — by flipping it to `max-content`, reading it, and restoring.
+    // That number can genuinely exceed the box, which is what makes the comparison mean
+    // something.
     const overflow = await pageT.evaluate(() => {
-      const el = document.querySelector('[data-testid="nv-report-outcomes"]')
-      if (!el) return null
-      return { scroll: el.scrollWidth, client: el.clientWidth }
+      const box = document.querySelector('[data-testid="nv-report-outcomes"]')
+      const table = box?.querySelector('table')
+      if (!box || !table) return null
+      const client = box.clientWidth
+      const laidOut = table.scrollWidth
+      const prev = table.style.width
+      table.style.width = 'max-content'
+      const intrinsic = table.scrollWidth
+      table.style.width = prev
+      return { scroll: intrinsic, laidOut, client }
     })
     check(overflow !== null, 'measured the outcomes table')
+    check(overflow.scroll > 0 && overflow.client > 0, 'both widths are real numbers')
     check(overflow.scroll <= overflow.client + 1,
       `⚠ the table FITS its modal — no horizontal scroll (${overflow.scroll}px content in ${overflow.client}px)`)
-    check(/\$[\d.]+M|\$[\d.]+K/.test(tableText),
-      'the dollar columns are abbreviated ($37.3M / $748.5K) — which is what buys the width')
+    // ⚠ MEASURED, THEN CHOSEN. Dropping KC and moving to per-period averages shortened
+    // the dollar values enough that full precision fits, so the roster shows exact
+    // figures rather than abbreviations. If a later column pushes it over, the fit
+    // assertion above fails first.
+    console.log(`  [width] outcomes table: intrinsic ${overflow.scroll}px in a ${overflow.client}px box `
+      + `(laid out at ${overflow.laidOut}px)`)
+    check(/\$[\d,]{7,}/.test(tableText),
+      'the dollar columns are FULL PRECISION ($1,785,189) — measured to fit')
 
     console.log(`\n${'═'.repeat(70)}`)
     console.log(`Newsvendor browser harness: ${passed} passed, ${failed} failed`)

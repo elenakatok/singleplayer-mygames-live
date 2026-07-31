@@ -13,6 +13,7 @@ import {
   ordersByPeriod, profitsByPeriod,
   averageOrder, averageDemand, averageServiceLevel, averageProfit, inStockRate,
   totalProfit, totalBenchmarkProfit, optimalityGap,
+  averageBenchmarkProfit, averageOptimalityGap,
   classAverageOrder, classAverageDemand, classAverageServiceLevel,
   classAverageProfit, classAverageBenchmarkProfit,
   type NewsvendorGameRow, type SeriesPoint,
@@ -54,11 +55,19 @@ export interface NewsvendorReportParticipant {
   in_stock_rate: number | null
   /** Mean profit per period PLAYED. Null likewise. */
   average_profit: number | null
+  /** Running totals. Still reported; the roster shows the per-period averages below. */
   total_profit: number
   /** ⚠ INSTRUCTOR-ONLY (spec §9.2). */
   benchmark_profit: number
   /** Benchmark minus realized, over periods played. SIGNED — see reportStats.ts. */
   optimality_gap: number | null
+  /**
+   * The three figures the roster actually renders — all PER PERIOD, so they share one
+   * scale with each other and with the expected-profit chart. `average_profit` is
+   * above; these two complete the set.
+   */
+  average_benchmark_profit: number | null
+  average_optimality_gap: number | null
   knowledge_check_score: number | null
   /** The participation score, once Score & Record has run. Null before that. */
   participation_score: number | null
@@ -119,6 +128,8 @@ export const newsvendorGetReport = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, asy
       total_profit: totalProfit(row),
       benchmark_profit: totalBenchmarkProfit(row),
       optimality_gap: optimalityGap(row),
+      average_benchmark_profit: averageBenchmarkProfit(row),
+      average_optimality_gap: averageOptimalityGap(row),
       knowledge_check_score: typeof p.knowledge_check_score === 'number' ? p.knowledge_check_score : null,
       participation_score: typeof p.normalized_score === 'number' ? p.normalized_score : null,
       prep: text(prepQuestion.field),
