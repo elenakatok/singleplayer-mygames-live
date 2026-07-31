@@ -12,7 +12,7 @@ import {
   type NewsvendorReportData, type NewsvendorReportParticipant,
 } from './api'
 import { InstanceHeader } from './Dashboard'
-import { formatAverageUnits, formatMoney, formatMoneyCompact, formatPercent, formatUnits } from './format'
+import { formatAverageUnits, formatMoney, formatPercent, formatUnits } from './format'
 import { ExpectedProfitChartSVG } from './ExpectedProfitChartSVG'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -73,9 +73,6 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 const tnum = { fontVariantNumeric: 'tabular-nums' as const }
 const units = (v: number | null) => (v == null ? '—' : formatAverageUnits(v))
 const money = (v: number | null) => (v == null ? '—' : formatMoney(v))
-/** ⚠ ABBREVIATED — kept for anywhere that still needs the compact form. */
-const moneyC = (v: number | null) => (v == null ? '—' : formatMoneyCompact(v))
-
 /**
  * The roster's three dollar columns, in ONE place so the format is a single decision.
  *
