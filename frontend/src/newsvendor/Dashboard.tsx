@@ -1,13 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { collection, onSnapshot } from 'firebase/firestore'
 import { SortableTable, colors, type SortableColumn } from '@mygames/game-ui'
-import { auth, db } from '../firebase'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   newsvendorGetReport, newsvendorScoreAndRecord, newsvendorSyncRoster, newsvendorInstructorSession,
-  CLASSROOM_URL, type NewsvendorParams, type NewsvendorReportParticipant,
+  CLASSROOM_URL,
+  type NewsvendorBenchmark, type NewsvendorParams, type NewsvendorReportParticipant,
 } from './api'
 import { formatAverageUnits, formatMoney, formatUnits } from './format'
 
@@ -87,16 +86,18 @@ export default function Dashboard() {
   const session = useInstructorSession(newsvendorInstructorSession)
   const navigate = useNavigate()
   const [rows, setRows] = useState<NewsvendorReportParticipant[] | null>(null)
-  const [header, setHeader] = useState<{ params: NewsvendorParams; configError: string | null } | null>(null)
+  const [header, setHeader] = useState<
+    { params: NewsvendorParams; benchmark: NewsvendorBenchmark | null; configError: string | null } | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [scoring, setScoring] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [scoreMsg, setScoreMsg] = useState<string | null>(null)
 
   const load = useCallback(() => {
     newsvendorGetReport()
       .then(res => {
         setRows(res.participants)
-        setHeader({ params: res.params, configError: res.configError })
+        setHeader({ params: res.params, benchmark: res.benchmark, configError: res.configError })
       })
       .catch(err => setLoadError(err instanceof Error ? err.message : 'Failed to load roster.'))
   }, [])
@@ -108,60 +109,23 @@ export default function Dashboard() {
     newsvendorSyncRoster().catch(() => {}).finally(load)
   }, [session.kind, load])
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // LIVE REFRESH — the dashboard follows the class as it plays.
-  //
-  // ⚠ THIS IS A CHANGE SIGNAL, NOT A DATA SOURCE. The snapshot below is subscribed
-  // purely to learn THAT something changed; not one field is read off it and nothing
-  // renders from it. Every number on screen still comes from newsvendorGetReport,
-  // which stays the single authority — so the averages, the status wording and the
-  // optimality gap can never be computed two different ways and disagree. Deriving
-  // them client-side from raw docs is exactly the drift this avoids.
-  //
-  // ⚠ AND IT IS NOT A POLL. Firestore pushes; there is no timer asking "anything
-  // yet?". The debounce coalesces a burst (forty students submitting a period within
-  // the same second) into ONE refetch — it rate-limits pushes that already happened,
-  // it does not schedule requests that have no reason to exist.
-  //
-  // The subscription needs the instructor read granted in firestore.rules, gated on
-  // this instance's own instructor claims. See that file for why it widens nothing.
-  //
-  // ⚠ NOTE FOR PD AND PRICING: they do NOT have this. Their dashboards are one-shot
-  // fetches — the data path here was byte-identical to pricing's before this block —
-  // so they still need a manual reload to show progress. This is the family's first
-  // live dashboard, not a newsvendor-specific repair; port it across if it earns its
-  // keep in class.
-  // ═══════════════════════════════════════════════════════════════════════════
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => {
-    if (session.kind !== 'ready') return
-    // The instance id comes from the SESSION, not the URL: the signed-in uid is
-    // `instructor_${gameInstanceId}` by construction (functions
-    // shared/singlePlayerInstructorSession.ts), so it is present whenever the session
-    // is ready and it cannot disagree with the identity the rules will check. Reading
-    // a query param instead would break the moment a link omitted it.
-    const uid = auth.currentUser?.uid ?? ''
-    const gid = uid.startsWith('instructor_') ? uid.slice('instructor_'.length) : ''
-    // No resolvable instance means nothing to subscribe to. The one-shot load above has
-    // already run, so the page is correct — it simply will not self-update.
-    if (!gid) return
 
-    const unsubscribe = onSnapshot(
-      collection(db, 'newsvendor_game_instances', gid, 'participants'),
-      () => {
-        if (debounceRef.current) clearTimeout(debounceRef.current)
-        debounceRef.current = setTimeout(load, 400)
-      },
-      // A denied or dropped listener must NOT blank the page: the table is already
-      // populated from the authoritative fetch, and losing live updates is a
-      // degradation, not a failure. Logged, never surfaced as a load error.
-      (err) => console.warn('[newsvendor] live roster listener stopped:', err.message),
-    )
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current)
-      unsubscribe()
-    }
-  }, [session.kind, load])
+  /**
+   * ⚠ THE REFRESH BUTTON IS THE MOUNT LOAD, ON DEMAND — nothing more.
+   *
+   * It runs exactly what opening the page runs: syncRoster (so a student added to the
+   * course since the page opened appears) and then newsvendorGetReport. No listener, no
+   * timer, no extra permission — a live subscription was tried and rolled back, and this
+   * is deliberately the simplest thing that answers "has anyone played since I looked?".
+   *
+   * `syncRoster` stays best-effort, as on mount: with no classroom wired it fails, and
+   * the table must still refresh regardless — hence catch-then-finally, not a chain.
+   */
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    setLoadError(null)
+    try { await newsvendorSyncRoster().catch(() => {}); load() } finally { setRefreshing(false) }
+  }
 
   const handleScore = async () => {
     setScoring(true)
@@ -220,6 +184,19 @@ export default function Dashboard() {
       >
         {scoring ? 'Scoring…' : 'Score & Record'}
       </button>
+      <button
+        data-testid="nv-refresh"
+        onClick={() => void handleRefresh()}
+        disabled={refreshing}
+        style={{
+          padding: '0.6rem 1.1rem', fontSize: '0.95rem', fontWeight: 600,
+          cursor: refreshing ? 'not-allowed' : 'pointer',
+          backgroundColor: colors.white, color: colors.text,
+          border: `1px solid ${colors.borderMid}`, borderRadius: 6,
+        }}
+      >
+        {refreshing ? 'Refreshing…' : '↻ Refresh'}
+      </button>
       <span data-testid="nv-counts" style={{ color: colors.textSecondary }}>
         {rows ? `${finished} finished / ${started} started / ${rows.length} on roster` : ''}
       </span>
@@ -229,8 +206,14 @@ export default function Dashboard() {
 
   return (
     <InstructorChrome title={TITLE} actions={actions} navLinks={navLinks} onNavigate={navigate}>
-      {header && <InstanceHeader params={header.params} configError={header.configError} />}
-      {loadError && <p style={{ color: '#c00' }}>{loadError}</p>}
+      {header && (
+        <InstanceHeader
+          params={header.params}
+          benchmark={header.benchmark}
+          configError={header.configError}
+        />
+      )}
+      {loadError && <p data-testid="nv-load-error" style={{ color: '#c00' }}>{loadError}</p>}
       {rows && (
         <div data-testid="nv-roster">
           <SortableTable<NewsvendorReportParticipant, SortKey>
@@ -258,11 +241,24 @@ export default function Dashboard() {
  * The instance banner — which settings am I looking at? Shared by the dashboard and
  * the reports page so the two can never label the same instance differently.
  *
- * ⚠ IT STATES THE PARAMETERS, NOT THE BENCHMARK. Q* is on the Reports page beside the
- * chart it explains; a banner on every page is the wrong place for the answer.
+ * ⚠ IT NOW ALSO STATES THE BENCHMARK — the critical ratio and Q* this config implies —
+ * because both pages that render it are INSTRUCTOR-ONLY and both are places Elena needs
+ * the reference number to hand: on the dashboard to read the Avg-order column against
+ * something, on Reports to read the chart.
+ *
+ * ⚠⚠ AND THAT IS SAFE ONLY BECAUSE OF WHERE THE VALUE COMES FROM. `benchmark` arrives
+ * on the newsvendorGetReport payload, which is behind an instructor session; it is NOT
+ * on clientParams, so no student response carries it and no student screen could render
+ * it even by mistake. Do NOT pass this component a benchmark derived on the client from
+ * `params` — P, c, v, g and h are student-visible, so recomputing CR in shared code
+ * would put the answer one careless import away from a student screen. The one
+ * authority is the server (functions newsvendor/economics.ts), reached through the one
+ * instructor-only callable.
  */
-export function InstanceHeader({ params, configError }: {
+export function InstanceHeader({ params, benchmark, configError }: {
   params: NewsvendorParams
+  /** ⚠ INSTRUCTOR-ONLY (spec §9.2). Null when the config cannot produce one. */
+  benchmark: NewsvendorBenchmark | null
   configError: string | null
 }) {
   const demand = params.isNormal
@@ -284,6 +280,23 @@ export function InstanceHeader({ params, configError }: {
         {params.h !== 0 && <> · holding {formatMoney(params.h)}</>}
         {params.g !== 0 && <> · shortage {formatMoney(params.g)}</>}
       </div>
+      {benchmark && (
+        <div
+          data-testid="nv-instance-benchmark"
+          style={{
+            color: colors.textSecondary, marginTop: '0.35rem',
+            paddingTop: '0.35rem', borderTop: `1px solid ${colors.borderMid}`,
+          }}
+        >
+          Critical ratio <strong data-testid="nv-instance-cr" style={{ color: colors.text }}>
+            {benchmark.CR.toFixed(3)}
+          </strong>
+          {' · '}optimal order Q* <strong data-testid="nv-instance-qopt" style={{ color: colors.text }}>
+            {formatUnits(benchmark.Qopt)}
+          </strong>
+          {' — instructor reference; students never see either.'}
+        </div>
+      )}
       {configError && (
         <div data-testid="nv-config-error" style={{ color: colors.errorAction, marginTop: '0.35rem', fontWeight: 600 }}>
           {configError}

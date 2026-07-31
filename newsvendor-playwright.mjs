@@ -25,7 +25,8 @@
 //   • ⚠ NO BENCHMARK ANYWHERE — not in the page text, not in any callable response the
 //     browser actually received, at any point in the flow (spec §9.2);
 //   • the INSTRUCTOR dashboard and all five report tiles against a MIXED population;
-//   • ⚠ the dashboard UPDATING LIVE as students play, with no reload of any kind.
+//   • ⚠ the dashboard's manual REFRESH button picking up play that happened after the
+//     page opened — and staying stale until it is clicked, which is the design.
 //
 // Run:
 //   npm install && npx playwright install chromium     (once)
@@ -345,10 +346,13 @@ async function main() {
     console.log('\n[2] Final results')
     await page.waitForSelector('[data-testid="nv-final-heading"]')
     const wantTotal = played.reduce((a, p) => a + p.profit, 0)
+    const wantAvgProfit = wantTotal / played.length
     const wantAvgOrder = played.reduce((a, p) => a + p.Q, 0) / played.length
     const wantAvgSl = played.reduce((a, p) => a + p.sl, 0) / played.length
-    check(await testId(page, 'nv-final-total') === fmtMoney(wantTotal),
-      `the final screen states the total profit (${fmtMoney(wantTotal)})`)
+    check(await testId(page, 'nv-final-avg-profit') === fmtMoney(wantAvgProfit),
+      `the final screen states the AVERAGE profit per period (${fmtMoney(wantAvgProfit)})`)
+    check(!(await exists(page, '[data-testid="nv-final-total"]')),
+      '⚠ …and NOT the total — it scales with the period count and compares to nothing')
     check(await testId(page, 'nv-final-avg-order')
       === wantAvgOrder.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }),
       'and the average order')
@@ -458,6 +462,20 @@ async function main() {
       'the dashboard banner states this instance’s demand distribution')
     check(banner.includes('3 periods'), '…and its period count')
 
+    // ── 1e: the instructor reference values, in the banner ──────────────────
+    // ⚠ Q* = 1265 at the shipped defaults; this instance uses them, so the number is
+    // checked rather than merely "something rendered".
+    const refLine = (await testId(pageI, 'nv-instance-benchmark')).replace(/\s+/g, ' ')
+    check(/Critical ratio/.test(refLine) && /optimal order/i.test(refLine),
+      'the dashboard banner states the critical ratio and Q* (instructor reference)')
+    check(await testId(pageI, 'nv-instance-qopt') === '1,265',
+      `…with the right Q* for these parameters (${await testId(pageI, 'nv-instance-qopt')})`)
+    check(await testId(pageI, 'nv-instance-cr') === '0.811',
+      `…and the right critical ratio (${await testId(pageI, 'nv-instance-cr')})`)
+
+    // ── 1b: the manual refresh button ───────────────────────────────────────
+    check(await exists(pageI, '[data-testid="nv-refresh"]'), 'the dashboard has a Refresh button')
+
     const roster = await pageI.locator('[data-testid="nv-roster"]').innerText()
     const rosterRows = roster.split('\n')
     check(rosterRows.length > 1, `the roster rendered rows (${rosterRows.length} lines)`)
@@ -552,15 +570,14 @@ async function main() {
     check(/above the unit cost|greater/i.test(await testId(pageI, 'nv-settings-error')),
       'an illegal edit is refused with the reason on screen')
 
-    // ── 9. ⚠ THE DASHBOARD UPDATES LIVE, WITH NO RELOAD ────────────────────────
-    // The regression this guards: the dashboard used to be a one-shot fetch, so it
-    // showed whatever was true when the page opened and never moved again — Elena had
-    // to hard-refresh to see the class progress. The assertion below is deliberately
-    // NOT "reload and check": the page is left completely untouched between the two
-    // reads, so the only thing that can update it is the live listener.
-    console.log('\n[9] ⚠ The dashboard follows the class without a reload')
-    const GID_L = `nvpw-live-${stamp}`
-    await openInstance(GID_L, { ...CFG, periods: 5 }, 'pw-live')
+    // ── 9. ⚠ THE REFRESH BUTTON PICKS UP NEW PLAY, WITHOUT A PAGE RELOAD ──────
+    // These dashboards are one-shot fetches by design (a live listener was tried and
+    // rolled back). The contract the button has to honour is therefore narrow and
+    // worth pinning: clicking it must show play that happened AFTER the page opened,
+    // without reloading the page.
+    console.log('\n[9] ⚠ The Refresh button picks up play that happened after load')
+    const GID_L = `nvpw-refresh-${stamp}`
+    await openInstance(GID_L, { ...CFG, periods: 5 }, 'pw-refresh')
     await callFn('newsvendorBootstrap', asStudent(GID_L, 'live-stu'))
     await callFn('newsvendorSubmitRound', asStudent(GID_L, 'live-stu', { round: 1, order: 1000 }))
 
@@ -568,32 +585,36 @@ async function main() {
     const pageL = await ctxL.newPage()
     await pageL.goto(instrUrl('/dashboard', GID_L))
     await pageL.waitForSelector('[data-testid="nv-roster"]', { timeout: 30000 })
+
+    // ⚠ 1c: no error on FIRST PAINT. The "Missing token" flash showed up here, as a
+    // load error that a later refetch silently cleared.
+    check(!(await exists(pageL, '[data-testid="nv-load-error"]')),
+      '⚠ the dashboard shows NO error on first paint (the "Missing token" flash)')
+    const bodyText = await pageL.locator('body').innerText()
+    check(!/Missing token/i.test(bodyText), '⚠ …and the words "Missing token" appear nowhere')
+
     const before = await pageL.locator('[data-testid="nv-roster"]').innerText()
-    check(/In progress \(1 period\)/.test(before),
-      'the dashboard opens showing one period played')
+    check(/In progress \(1 period\)/.test(before), 'it opens showing one period played')
 
     // Two more periods, submitted from OUTSIDE the browser entirely.
     await callFn('newsvendorSubmitRound', asStudent(GID_L, 'live-stu', { round: 2, order: 1100 }))
     await callFn('newsvendorSubmitRound', asStudent(GID_L, 'live-stu', { round: 3, order: 1200 }))
 
-    // ⚠ NO RELOAD, NO CLICK, NO NAVIGATION between `before` and this wait.
-    let live = false
-    try {
-      await pageL.waitForFunction(
-        () => /In progress \(3 periods\)/.test(
-          document.querySelector('[data-testid="nv-roster"]')?.textContent ?? ''),
-        { timeout: 15000 })
-      live = true
-    } catch { live = false }
-    check(live, '⚠ …and updates itself to three periods with NO reload (the live listener)')
+    // Still stale — which is the DESIGNED behaviour, and asserting it is what stops
+    // this test passing for the wrong reason (a page that happened to reload itself).
+    const stillStale = await pageL.locator('[data-testid="nv-roster"]').innerText()
+    check(stillStale === before,
+      '…and does NOT update on its own — one-shot by design, no listener')
 
+    await pageL.click('[data-testid="nv-refresh"]')
+    await pageL.waitForFunction(
+      () => /In progress \(3 periods\)/.test(
+        document.querySelector('[data-testid="nv-roster"]')?.textContent ?? ''),
+      { timeout: 15000 })
     const after = await pageL.locator('[data-testid="nv-roster"]').innerText()
+    check(/In progress \(3 periods\)/.test(after),
+      '⚠ …but ONE CLICK of Refresh brings it up to three periods, with no page reload')
     check(before !== after, 'the rendered roster genuinely changed in place')
-    check(/In progress \(3 periods\)/.test(after), `the roster now reads three periods`)
-
-    // …and the numeric columns moved with the status, not just the label.
-    check(/1,100|1,100.0/.test(after) || /1,1\d\d/.test(after),
-      'the average-order column refreshed too, not only the status text')
 
     console.log(`\n${'═'.repeat(70)}`)
     console.log(`Newsvendor browser harness: ${passed} passed, ${failed} failed`)

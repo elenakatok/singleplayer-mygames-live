@@ -89,8 +89,9 @@ export default function Play() {
   // period's response (the server returns the entire history every time, so this
   // cannot drift), along with the running figures it computed.
   const [history, setHistory] = useState<NewsvendorHistoryRow[]>([])
-  const [totals, setTotals] = useState<{ profit: number; order: number; serviceLevel: number }>(
-    { profit: 0, order: 0, serviceLevel: 0 })
+  const [totals, setTotals] = useState<
+    { profit: number; averageProfit: number; order: number; serviceLevel: number }>(
+    { profit: 0, averageProfit: 0, order: 0, serviceLevel: 0 })
 
   useEffect(() => {
     if (session.kind !== 'ready') return
@@ -113,6 +114,7 @@ export default function Play() {
         setHistory(state.history)
         setTotals({
           profit: state.totalProfit,
+          averageProfit: state.averageProfit,
           order: state.averageOrder,
           serviceLevel: state.averageServiceLevel,
         })
@@ -173,7 +175,7 @@ export default function Play() {
         <EndScreen
           params={loaded.params}
           history={history}
-          totalProfit={totals.profit}
+          averageProfit={totals.averageProfit}
           averageOrder={totals.order}
           averageServiceLevel={totals.serviceLevel}
         />
@@ -221,6 +223,7 @@ export default function Play() {
               setHistory(res.history)
               setTotals({
                 profit: res.totalProfit,
+                averageProfit: res.averageProfit,
                 order: res.averageOrder,
                 serviceLevel: res.averageServiceLevel,
               })
@@ -246,7 +249,7 @@ export default function Play() {
           <EndScreen
             params={gameParams}
             history={history}
-            totalProfit={totals.profit}
+            averageProfit={totals.averageProfit}
             averageOrder={totals.order}
             averageServiceLevel={totals.serviceLevel}
             onContinue={onDone}

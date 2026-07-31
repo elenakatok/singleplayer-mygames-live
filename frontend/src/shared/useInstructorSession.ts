@@ -34,6 +34,38 @@ export type InstructorSessionState =
   | { kind: 'error'; message: string }
   | { kind: 'ready' }
 
+/**
+ * Mints and caches a real ID token before the session is called ready.
+ *
+ * ⚠ WHY THIS EXISTS — the "Missing token" flash. `signInWithCustomToken` resolving
+ * means the USER is signed in; it does not mean the callables SDK has an ID token in
+ * hand yet. The SDK picks the token up from the auth instance asynchronously, so a
+ * callable fired in the same tick can go out with NO `Authorization: Bearer` header —
+ * and every instructor callable ends at game-server's extractInstructorGameId, which
+ * falls through to `data.token` and throws `invalid-argument: Missing token`. The
+ * dashboard rendered that as a load error until something re-triggered the fetch, by
+ * which time the token existed and the retry succeeded. Hence: an error that "fixes
+ * itself on refresh".
+ *
+ * Awaiting getIdToken() makes `ready` mean what its consumers already assume — that an
+ * authenticated call will carry credentials. It only ever ADDS a wait, so it cannot
+ * break a flow that was already working.
+ *
+ * ⚠ IT WILL NOT REPRODUCE AGAINST THE EMULATOR. The race is latency-shaped: locally
+ * the sign-in round trip is sub-millisecond and the token is always ready in time. That
+ * is precisely why every harness stayed green while the live dashboard showed the
+ * error, and why the fix is to remove the precondition gap rather than to chase a
+ * failure the harness can observe.
+ */
+async function ensureIdToken(): Promise<void> {
+  try {
+    await auth.currentUser?.getIdToken()
+  } catch {
+    // A token we cannot mint here will fail loudly on the first real callable, with a
+    // far better message than anything this helper could invent. Never block the page.
+  }
+}
+
 export function useInstructorSession(exchange: ExchangeSession): InstructorSessionState {
   const [state, setState] = useState<InstructorSessionState>({ kind: 'loading' })
 
@@ -70,7 +102,8 @@ export function useInstructorSession(exchange: ExchangeSession): InstructorSessi
 
         if (plan.action === 'resume') {
           // The existing Firebase session IS the credential. The JWT is not read.
-          setState({ kind: 'ready' })
+          await ensureIdToken()
+          if (!cancelled) setState({ kind: 'ready' })
           return
         }
 
@@ -82,6 +115,7 @@ export function useInstructorSession(exchange: ExchangeSession): InstructorSessi
         if (cancelled) return
         if (tabSession) await setPersistence(auth, browserSessionPersistence)
         await signInWithCustomToken(auth, customToken)
+        await ensureIdToken()
         if (!cancelled) setState({ kind: 'ready' })
       } catch (err) {
         if (!cancelled) {

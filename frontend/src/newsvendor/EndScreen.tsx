@@ -11,6 +11,15 @@ import { card } from './ParamsPanel'
 // component means the totals a student is sent away with are the totals they were
 // shown, character for character.
 //
+// ⚠ IT REPORTS THE AVERAGE PER PERIOD, NOT THE TOTAL. The total is a bigger, more
+// satisfying number, and it is the wrong one: it scales with how many periods the
+// instance happens to run, so it compares to nothing — not to another student on a
+// different instance, not to the per-period figures the history table shows right
+// underneath, and not to the Avg profit / period column the instructor is reading on
+// the dashboard. The average is the one that means the same thing everywhere it
+// appears. (The running total is still on the server and still in the reports; it is
+// simply not the headline a student is sent away with.)
+//
 // ⚠⚠ WHAT THIS SCREEN DOES NOT SHOW, AND WHY IT IS THE MOST TEMPTING PLACE TO SHOW
 // IT: the benchmark. Σ profitOpt and the optimality gap are computed and stored for
 // every period, and the natural instinct on a results screen is to close the loop —
@@ -46,14 +55,15 @@ function Stat({ label, value, testId, negative }: {
 export function EndScreen({
   params,
   history,
-  totalProfit,
+  averageProfit,
   averageOrder,
   averageServiceLevel,
   onContinue,
 }: {
   params: NewsvendorParams
   history: NewsvendorHistoryRow[]
-  totalProfit: number
+  /** ⚠ AVERAGE per period, not the total — see the header. */
+  averageProfit: number
   averageOrder: number
   averageServiceLevel: number
   /** Present when this is a STEP in the sequence; absent on the terminal screen. */
@@ -70,10 +80,10 @@ export function EndScreen({
 
       <section data-testid="nv-final-stats" style={{ ...card, ...statBox }}>
         <Stat
-          label="Total profit"
-          value={formatMoney(totalProfit)}
-          testId="nv-final-total"
-          negative={totalProfit < 0}
+          label="Average profit per period"
+          value={formatMoney(averageProfit)}
+          testId="nv-final-avg-profit"
+          negative={averageProfit < 0}
         />
         <Stat
           label="Average order"

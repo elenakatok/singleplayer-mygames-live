@@ -93,6 +93,7 @@ export default function Dashboard() {
   const [header, setHeader] = useState<{ pmg: boolean; rule: string } | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [scoring, setScoring] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [scoreMsg, setScoreMsg] = useState<string | null>(null)
 
   const load = useCallback(() => {
@@ -110,6 +111,23 @@ export default function Dashboard() {
     // graded −2), then load. `finally` so the table still loads with no classroom wired.
     pricingSyncRoster().catch(() => {}).finally(load)
   }, [session.kind, load])
+
+  /**
+   * Manual refresh — the mount load, on demand.
+   *
+   * These dashboards are one-shot fetches: they show what was true when the page opened
+   * and do not follow the class. Rather than a live listener (tried on newsvendor and
+   * rolled back — it needed a security-rule change and did not update reliably), the
+   * button simply re-runs what opening the page runs. Poll has shipped exactly this
+   * since its first slice; this is that same handler, and no new permission is involved.
+   *
+   * `syncRoster` stays best-effort, as on mount: with no classroom wired it fails, and
+   * the table must still refresh regardless.
+   */
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    try { await pricingSyncRoster().catch(() => {}); load() } finally { setRefreshing(false) }
+  }
 
   const handleScore = async () => {
     setScoring(true)
@@ -167,6 +185,19 @@ export default function Dashboard() {
         }}
       >
         {scoring ? 'Scoring…' : 'Score & Record'}
+      </button>
+      <button
+        data-testid="pricing-refresh"
+        onClick={() => void handleRefresh()}
+        disabled={refreshing}
+        style={{
+          padding: '0.6rem 1.1rem', fontSize: '0.95rem', fontWeight: 600,
+          cursor: refreshing ? 'not-allowed' : 'pointer',
+          backgroundColor: colors.white, color: colors.text,
+          border: `1px solid ${colors.borderMid}`, borderRadius: 6,
+        }}
+      >
+        {refreshing ? 'Refreshing…' : '↻ Refresh'}
       </button>
       <span data-testid="pricing-counts" style={{ color: colors.textSecondary }}>
         {rows ? `${finished} finished / ${started} started / ${rows.length} on roster` : ''}

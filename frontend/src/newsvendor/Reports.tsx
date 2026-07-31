@@ -410,7 +410,7 @@ export default function Reports() {
 
   return chrome(
     <>
-      <InstanceHeader params={data.params} configError={data.configError} />
+      <InstanceHeader params={data.params} benchmark={data.benchmark} configError={data.configError} />
       <ReportBoard tiles={tiles} />
 
       {active === 'outcomes' && (
