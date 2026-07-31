@@ -5,7 +5,7 @@ import { extractStudentOnCallIds } from '@mygames/game-server'
 import { NEWSVENDOR_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION } from './config'
 import { loadInstance } from './instance'
 import { drawDemand } from './demand'
-import { assertRegular, computePeriod, benchmarkProfit, isValidOrder, orderBounds, economicsError } from './economics'
+import { computePeriod, benchmarkProfit, isValidOrder, orderBounds, economicsError } from './economics'
 import { parseStoredRounds, totals, toClientHistory, type StoredRound } from './rounds'
 import { phaseOf } from './clientState'
 
@@ -59,7 +59,6 @@ export const newsvendorSubmitRound = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, a
   // the reports a week later.
   const configError = economicsError(config)
   if (configError) throw new HttpsError('failed-precondition', configError)
-  assertRegular(config)
 
   // Order validation needs the instance's bounds, so it happens after the config load
   // — but still before the transaction, so a bad order costs no write and no draw.
@@ -110,6 +109,7 @@ export const newsvendorSubmitRound = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, a
       sales: outcome.sales,
       leftover: outcome.leftover,
       units_short: outcome.unitsShort,
+      topup: outcome.topup,
       profit: outcome.profit,
       service_level: outcome.serviceLevel,
       q_opt: Qopt,
@@ -157,6 +157,7 @@ export const newsvendorSubmitRound = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, a
       sales: result.round.sales,
       unitsOver: result.round.leftover,
       unitsShort: result.round.units_short,
+      unitsFromSecondSource: result.round.topup,
       profit: result.round.profit,
       serviceLevel: result.round.service_level,
     },

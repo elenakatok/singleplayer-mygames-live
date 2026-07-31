@@ -25,8 +25,14 @@ export interface StoredRound {
   sales: number
   /** max(Q − D, 0) — salvaged at the net (v − h). */
   leftover: number
-  /** max(D − Q, 0) — each unit costs goodwill g. */
+  /** REGULAR: max(D − Q, 0), each unit costing goodwill g. Always 0 in dual. */
   units_short: number
+  /**
+   * DUAL: units bought from the expensive second source, max(D − Q, 0). Always 0 in
+   * regular. See economics.ts for why this is a separate field from `units_short`
+   * rather than one field read two ways.
+   */
+  topup: number
   /** Realized profit. MAY BE NEGATIVE. */
   profit: number
   /** Demand proportion met, capped at 1; 1 when D = 0 (spec §6). */
@@ -58,7 +64,10 @@ export interface ClientRound {
   demand: number
   sales: number
   unitsOver: number
+  /** REGULAR: demand you could not meet. 0 in dual — nothing is ever short. */
   unitsShort: number
+  /** DUAL: units bought in from the expensive source. 0 in regular. */
+  unitsFromSecondSource: number
   profit: number
   /** Demand proportion met, 0–1. Rendered only when showServiceLevel (spec §7c). */
   serviceLevel: number
@@ -86,6 +95,11 @@ export function parseStoredRounds(raw: unknown): StoredRound[] {
     if (!num(r.q) || !num(r.d)) break
     if (!num(r.sales) || !num(r.leftover) || !num(r.units_short)) break
     if (!num(r.profit) || !num(r.service_level)) break
+    // ⚠ `topup` is OPTIONAL, deliberately: regular-mode periods written before dual
+    // sourcing existed have no such field, and this game is LIVE with that data. A
+    // required check here would drop every stored period of every finished student
+    // and silently blank their reports. Absent reads as 0, which is exactly what a
+    // regular period's top-up is.
     // The benchmark fields are required too: a period without them cannot be reported
     // on, and silently reading them as 0 would put a fabricated gap in Elena's table.
     if (!num(r.q_opt) || !num(r.profit_opt)) break
@@ -97,6 +111,7 @@ export function parseStoredRounds(raw: unknown): StoredRound[] {
       sales: r.sales,
       leftover: r.leftover,
       units_short: r.units_short,
+      topup: num(r.topup) ? r.topup : 0,
       profit: r.profit,
       service_level: r.service_level,
       q_opt: r.q_opt,
@@ -146,6 +161,7 @@ export function toClientHistory(rounds: readonly StoredRound[]): ClientRound[] {
       sales: r.sales,
       unitsOver: r.leftover,
       unitsShort: r.units_short,
+      unitsFromSecondSource: r.topup,
       profit: r.profit,
       serviceLevel: r.service_level,
       yourTotal,

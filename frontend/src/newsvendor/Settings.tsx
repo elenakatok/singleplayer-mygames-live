@@ -149,6 +149,7 @@ export default function Settings() {
   // server's own view, so they only update after a save — the note says so.
   const previewParams = {
     P: draft.P, c: draft.c, v: draft.v, g: draft.g, h: draft.h,
+    dual: draft.dual, cL: draft.dual ? draft.cL : 0,
     isNormal: draft.isNormal, mean: draft.mean, sd: draft.sd, minD: draft.minD, maxD: draft.maxD,
     periods: draft.periods,
     orderMin: loaded.orderBounds.min, orderMax: loaded.orderBounds.max,
@@ -163,24 +164,81 @@ export default function Settings() {
         </p>
       )}
 
+      {/* ── The MODE (spec §5) ─────────────────────────────────────────────── */}
+      <section style={section}>
+        <h2 style={sectionTitle}>Sourcing</h2>
+        <Check
+          label="Dual sourcing"
+          checked={draft.dual}
+          onChange={v => set('dual', v)}
+          testId="nv-set-dual"
+        />
+        <p style={note}>
+          One toggle, and everything follows it: how profit is computed, what the optimal
+          order means, which knowledge check is asked, what the play screens are labelled,
+          and which debrief question is put. Run <strong>two instances of this game</strong>{' '}
+          in the same course — one with this off, one with it on.
+        </p>
+        <p style={note}>
+          <strong>Off (single source).</strong> You order once; demand you cannot meet is a
+          lost sale, plus the shortage cost.{' '}
+          <strong>On (dual sourcing).</strong> Your order is a quantity RESERVED cheaply up
+          front; demand beyond it is still met, bought in from a second supplier at the
+          higher cost below. Nothing is ever short — so the shortage cost{' '}
+          <strong>g is not used at all</strong> in this mode, and students never see it.
+        </p>
+        {draft.dual && (
+          <div style={{ ...fieldRow, marginTop: '0.75rem' }}>
+            <NumField
+              label="Second-supplier cost per unit"
+              value={draft.cL}
+              onChange={v => set('cL', v)}
+              testId="nv-set-cl"
+            />
+          </div>
+        )}
+        {draft.dual && (
+          <p style={note}>
+            This is the <strong>full</strong> price of a top-up unit, not the extra over your
+            own cost. The premium is worked out from it:{' '}
+            <strong data-testid="nv-settings-premium">
+              {formatMoney(draft.cL)} − {formatMoney(draft.c)} = {formatMoney(draft.cL - draft.c)}
+            </strong>{' '}
+            per unit. It must be <strong>above</strong> the unit cost — if the second source
+            were no dearer than reserving, there would be nothing to trade off and no
+            optimal reserve to find.
+          </p>
+        )}
+      </section>
+
       {/* ── Prices and costs (spec §2) ─────────────────────────────────────── */}
       <section style={section}>
         <h2 style={sectionTitle}>Prices and costs</h2>
         <div style={fieldRow}>
           <NumField label="Selling price P" value={draft.P} onChange={v => set('P', v)} testId="nv-set-P" />
-          <NumField label="Unit cost c" value={draft.c} onChange={v => set('c', v)} testId="nv-set-c" />
+          <NumField
+            label={draft.dual ? 'Cost per unit reserved c' : 'Unit cost c'}
+            value={draft.c} onChange={v => set('c', v)} testId="nv-set-c"
+          />
           <NumField label="Salvage value v" value={draft.v} onChange={v => set('v', v)} testId="nv-set-v" />
           <NumField label="Holding cost h" value={draft.h} onChange={v => set('h', v)} testId="nv-set-h" />
-          <NumField label="Shortage cost g" value={draft.g} onChange={v => set('g', v)} testId="nv-set-g" />
+          {!draft.dual && (
+            <NumField label="Shortage cost g" value={draft.g} onChange={v => set('g', v)} testId="nv-set-g" />
+          )}
         </div>
         <p style={note}>
           A line whose value is zero is hidden from the student&rsquo;s screen rather than
           shown as $0. The selling price must exceed the unit cost, and the unit cost must
           exceed the net salvage (v − h) — otherwise leftover units cost nothing and there
           is no optimal order to compare anyone against.
+          {draft.dual && ' The shortage cost is hidden here because dual sourcing never'
+            + ' incurs one; it is left stored, untouched, for if you switch back.'}
         </p>
         {loaded.benchmark && (
           <p data-testid="nv-settings-benchmark" style={note}>
+            {loaded.config.dual && <>Under dual sourcing the underage is the PREMIUM, not the
+              retail margin — the price and the shortage cost drop out entirely, because
+              demand is met either way and only the sourcing cost differs.{' '}</>}
             These numbers give underage <strong>{formatMoney(loaded.benchmark.CU)}</strong>,
             overage <strong>{formatMoney(loaded.benchmark.CO)}</strong>, a critical ratio of{' '}
             <strong>{loaded.benchmark.CR.toFixed(3)}</strong>, and an optimal order of{' '}
@@ -296,8 +354,11 @@ export default function Settings() {
           testId="nv-set-kc-enabled"
         />
         <p style={note}>
-          These <strong>{loaded.authoredKcCount}</strong> questions are graded and are this
-          game&rsquo;s assessed component. They use <strong>fixed teaching numbers that differ
+          These <strong>{loaded.authoredKcPreview.length}</strong>{' '}
+          <strong>{loaded.config.dual ? 'DUAL-SOURCING' : 'single-source'}</strong> questions
+          are graded and are this game&rsquo;s assessed component. The two sets are mutually
+          exclusive — flipping the sourcing toggle swaps the whole set, and they share no
+          questions. They use <strong>fixed teaching numbers that differ
           from this instance on purpose</strong>, so students have to redo the calculation
           rather than read an answer off the play screen — which is why they are not
           editable here. Option order is shuffled per student. They are asked{' '}

@@ -50,7 +50,7 @@ export const newsvendorGetQuestions = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, 
   const pData = participantSnap.data() ?? {}
 
   const authored = config.kcEnabled
-    ? toClientKcQuestions(resolveNewsvendorKcQuestions(participantId))
+    ? toClientKcQuestions(resolveNewsvendorKcQuestions(participantId, config.dual))
     : []
 
   // Added questions, whitelisted field by field — never spread, so a stored
@@ -72,6 +72,8 @@ export const newsvendorGetQuestions = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, 
   return {
     ok: true as const,
     kcEnabled: config.kcEnabled,
+    /** Which mode this instance runs — the client branches its labels on it. */
+    dual: config.dual,
     /** ⚠ Two SOURCES, kept apart all the way to the grader: `authored` is this file's
      *  fixed ten; `added` is the instructor's own list with its own keys. */
     kc: { authored, added },

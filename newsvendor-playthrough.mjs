@@ -108,6 +108,45 @@ function modelPeriod(Q, D, cfg) {
   return { sales, leftover, short, profit, sl }
 }
 
+/**
+ * Spec §5 (DUAL) — written out fresh, not by patching the regular model:
+ *   topup    = max(D − Q, 0)
+ *   leftover = max(Q − D, 0)
+ *   profit   = P·D − c·Q − c_l·topup + (v − h)·leftover
+ * Note the absence of any `g` term. Nothing is ever short.
+ */
+function modelDualPeriod(Q, D, cfg) {
+  const topup = Math.max(D - Q, 0)
+  const leftover = Math.max(Q - D, 0)
+  return {
+    sales: D,
+    topup,
+    leftover,
+    profit: cfg.P * D - cfg.c * Q - cfg.cL * topup + leftover * (cfg.v - cfg.h),
+    sl: D <= 0 ? 1 : Math.min(1, Math.min(Q, D) / D),
+  }
+}
+
+/** Spec §5 (DUAL): CU = c_l − c (the PREMIUM); CO = c − (v − h). No goodwill. */
+function modelDualCriticalRatio(cfg) {
+  const CU = cfg.cL - cfg.c
+  const CO = cfg.c - (cfg.v - cfg.h)
+  return { CU, CO, CR: CU / (CU + CO) }
+}
+
+function modelDualOptimalOrder(cfg, crOverride) {
+  const CR = crOverride ?? modelDualCriticalRatio(cfg).CR
+  const q = cfg.isNormal
+    ? cfg.mean + modelInvNorm(CR) * cfg.sd
+    : cfg.minD + CR * (cfg.maxD - cfg.minD)
+  return Math.max(0, Math.round(q))
+}
+
+function modelDualBenchmark(D, cfg, crOverride) {
+  const Qopt = modelDualOptimalOrder(cfg, crOverride)
+  return { Qopt, profitOpt: modelDualPeriod(Qopt, D, cfg).profit }
+}
+
 /** Spec §4: CU = P − c + g; CO = c − (v − h); CR = CU/(CU+CO). */
 function modelCriticalRatio(cfg) {
   const CU = cfg.P - cfg.c + cfg.g
@@ -187,6 +226,10 @@ async function openInstance(gid, cfg, seed) {
     max_demand: intVal(cfg.maxD),
     // ⚠ ALWAYS EXPLICIT — never inherited from the shipped default.
     periods: intVal(cfg.periods),
+  }
+  if (cfg.dual) {
+    fields.dual = boolVal(true)
+    fields.second_source_cost = intVal(cfg.cL)
   }
   await putDoc(`newsvendor_game_instances/${gid}/config/main`, fields)
   if (seed !== undefined) {
@@ -607,7 +650,9 @@ async function main() {
     [{ isNormal: false, minD: 500, maxD: 500 }, 'a uniform range with maxD ≤ minD'],
     [{ sd: 0 }, 'a zero standard deviation'],
     [{ c: -5 }, 'a negative cost'],
-    [{ dual: true }, '⚠ dual sourcing (Part 2, not built)'],
+    // ⚠ `dual: true` was refused here in Part 1 and is now ACCEPTED — the mode exists.
+    // What replaces it as the dual-specific refusal is c_l ≤ c, tested in §14.
+    [{ dual: true, cL: 900 }, '⚠ dual sourcing with a second-supplier cost BELOW the unit cost'],
   ]
   for (const [patch, label] of rejects) {
     const r = await callFn('newsvendorUpdateConfig', asInstructor(GID_C, patch))
@@ -775,6 +820,237 @@ async function main() {
     'the stored benchmark still matches with the critical ratio perturbed by −0.08',
   )
   check(benchOk, '…while the benchmark DOES match at the true critical ratio (control isolated CR)')
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  section('[14] DUAL SOURCING — the second branch of the same game (spec §5)')
+  // ═══════════════════════════════════════════════════════════════════════════
+  const DUAL = {
+    P: 3000, c: 1000, v: 800, g: 150, h: 300, cL: 2000, dual: true,
+    isNormal: true, mean: 1000, sd: 300, minD: 0, maxD: 100,
+    periods: 6,
+  }
+  const GID_D = `nv-dual-${stamp}`
+  const DPID = 'nv-dual-stu'
+  await openInstance(GID_D, DUAL, 'dual-seed')
+  await callFn('newsvendorBootstrap', asStudent(GID_D, DPID))
+
+  // ── The spec's headline numbers, at the shipped dual defaults ──────────────
+  const dualCR = modelDualCriticalRatio(DUAL)
+  const dualQopt = modelDualOptimalOrder(DUAL)
+  check(Math.abs(dualCR.CR - 2 / 3) < 1e-9,
+    `⚠ SPEC §5: the dual critical ratio at defaults is 0.667 (model says ${dualCR.CR.toFixed(4)})`)
+  check(dualQopt === 1129, `⚠ SPEC §5: Q_opt at defaults is 1129 (model says ${dualQopt})`)
+  check(dualCR.CU === DUAL.cL - DUAL.c,
+    `the dual underage is the PREMIUM c_l − c = ${DUAL.cL - DUAL.c}, not the retail margin`)
+
+  const dualCfgView = await callFn('newsvendorGetConfig', asInstructor(GID_D))
+  check(dualCfgView.ok && dualCfgView.result.config.dual === true,
+    'the instance reports itself as dual')
+  check(dualCfgView.result.benchmark.Qopt === 1129,
+    `⚠ THE SERVER agrees: Q_opt = 1129 (got ${dualCfgView.result.benchmark.Qopt})`)
+  check(Math.abs(dualCfgView.result.benchmark.CR - 2 / 3) < 1e-6,
+    `⚠ …and CR = 0.667 (got ${dualCfgView.result.benchmark.CR.toFixed(4)})`)
+  check(dualCfgView.result.premium === DUAL.cL - DUAL.c,
+    `the premium is DERIVED and returned as ${DUAL.cL - DUAL.c}`)
+
+  // ── A full dual game: the schedule straddles the mean so BOTH paths occur ──
+  const dualBounds = modelOrderBounds(DUAL)
+  const dualOrders = (n) => [300, 1000, 1800, dualBounds.min, dualBounds.max, 1129][(n - 1) % 6]
+  const dualPlayed = []
+  const dualResponses = []
+  for (let n = 1; n <= DUAL.periods; n++) {
+    const Q = dualOrders(n)
+    const res = await callFn('newsvendorSubmitRound', asStudent(GID_D, DPID, { round: n, order: Q }))
+    if (!res.ok) { check(false, `dual period ${n} submitted (${res.error})`); break }
+    dualResponses.push(res.result)
+    const r = res.result.round
+    const D = r.demand
+    dualPlayed.push({ round: n, Q, D })
+    const want = modelDualPeriod(Q, D, DUAL)
+
+    check(r.sales === D, `dual p${n}: ALL demand is sold (${D}) — the second source covers the gap`)
+    check(r.unitsShort === 0, `dual p${n}: units SHORT is 0 — nothing is ever short in dual`)
+    check(r.unitsFromSecondSource === want.topup,
+      `dual p${n}: units from the second source = ${want.topup}`)
+    check(r.unitsOver === want.leftover, `dual p${n}: leftover = ${want.leftover}`)
+    check(r.profit === want.profit, `dual p${n}: profit = ${want.profit} (got ${r.profit})`)
+  }
+  check(dualPlayed.length === DUAL.periods, `all ${DUAL.periods} dual periods played`)
+
+  // ⚠ BOTH PATHS MUST ACTUALLY HAVE OCCURRED, or the profit checks above proved half
+  // the formula. Asserted on the COUNT before any every/some.
+  const topupPeriods = dualPlayed.filter(p => p.D > p.Q)
+  const leftoverPeriods = dualPlayed.filter(p => p.Q > p.D)
+  check(topupPeriods.length > 0, `the dual game really hit the TOP-UP path (${topupPeriods.length} periods)`)
+  check(leftoverPeriods.length > 0, `…and the LEFTOVER path (${leftoverPeriods.length} periods)`)
+
+  // ── ⚠ GOODWILL MUST NOT LEAK INTO THE DUAL BRANCH ─────────────────────────
+  // The instance carries g = 150. If the dual formula touched it, the top-up periods
+  // would come out low by 150 × topup. Re-checking those periods against a model with a
+  // DIFFERENT g proves g is not read at all.
+  const dualWrongG = { ...DUAL, g: 99999 }
+  check(topupPeriods.length > 0 && topupPeriods.every(p =>
+    dualResponses[dualPlayed.indexOf(p)].round.profit === modelDualPeriod(p.Q, p.D, dualWrongG).profit),
+    '⚠ the dual profit is IDENTICAL with g = 99,999 — goodwill is genuinely not in the branch')
+
+  // ── The stored benchmark, against the same draws ──────────────────────────
+  const dualDoc = await getDoc(`newsvendor_game_instances/${GID_D}/participants/${DPID}`)
+  const dualStored = dualDoc?.rounds?.arrayValue?.values ?? []
+  check(dualStored.length === DUAL.periods, `the dual participant doc stores all ${DUAL.periods} periods`)
+  let dualBenchOk = dualStored.length === DUAL.periods
+  for (const el of dualStored) {
+    const f = el.mapValue.fields
+    const D = Number(f.d.integerValue ?? f.d.doubleValue)
+    const want = modelDualBenchmark(D, DUAL)
+    if (Number(f.q_opt.integerValue ?? f.q_opt.doubleValue) !== want.Qopt) dualBenchOk = false
+    if (Number(f.profit_opt.integerValue ?? f.profit_opt.doubleValue) !== want.profitOpt) dualBenchOk = false
+    // The top-up is stored for reporting (spec §6).
+    const storedTopup = Number(f.topup?.integerValue ?? f.topup?.doubleValue ?? -1)
+    if (storedTopup < 0) dualBenchOk = false
+  }
+  check(dualBenchOk, `every stored dual period carries q_opt = 1129 and the dual profitOpt, plus its topup`)
+
+  // ── ⚠ THE LEAK CHECK, on the dual path ───────────────────────────────────
+  const dualStudentResponses = [...dualResponses]
+  const dualLeaks = []
+  for (const resp of dualStudentResponses) {
+    for (const { path, value } of walk(resp)) {
+      const leaf = path.split('.').pop().replace(/\[\d+\]/g, '').toLowerCase()
+      if (['qopt', 'q_opt', 'profitopt', 'profit_opt', 'benchmark', 'cr', 'cu', 'co', 'seed', 'premium'].includes(leaf)) {
+        dualLeaks.push(path)
+      }
+      if (typeof value === 'number' && value === 1129
+        && !/yourOrder|demand|orderMin|orderMax|sales|history/i.test(path)) dualLeaks.push(`${path}=1129`)
+    }
+  }
+  check(dualStudentResponses.length === DUAL.periods,
+    `the dual leak audit scanned every period response (${dualStudentResponses.length})`)
+  check(dualLeaks.length === 0,
+    `⚠ no dual student response carries the benchmark (found: ${dualLeaks.join(', ') || 'none'})`)
+
+  // ── The dual KC replaces the regular one entirely ────────────────────────
+  const dualQ = await callFn('newsvendorGetQuestions', asStudent(GID_D, DPID))
+  check(dualQ.ok && dualQ.result.dual === true, 'getQuestions reports the dual mode')
+  const dualServed = dualQ.result.kc.authored
+  check(dualServed.length === 10, `the dual KC serves TEN questions (${dualServed.length})`)
+  check(dualServed.every(q => q.field.startsWith('kc_dual_')),
+    '⚠ every served question is from the DUAL set')
+  const regularFields = ['kc_cr_concept', 'kc_underage', 'kc_overage', 'kc_critical_ratio',
+    'kc_direction', 'kc_qstar', 'kc_profit_leftover', 'kc_profit_shortage',
+    'kc_salvage_rises', 'kc_variability']
+  check(dualServed.every(q => !regularFields.includes(q.field)),
+    '⚠ …and NONE of the regular ten — the sets are mutually exclusive, no overlap')
+  const dualStems = dualServed.map(q => q.prompt).join(' ')
+  check(/c = 60/.test(dualStems) && /140/.test(dualStems),
+    'the dual stems carry their OWN teaching numbers (c = 60, second source 140)')
+  check(!dualStems.includes(String(DUAL.cL)) || !dualStems.includes('3000'),
+    "…and not the instance's own")
+
+  // Answer 8 of 10 correctly → a predicted score of 0.8.
+  const DUAL_KEY = {
+    kc_dual_second_source: 'never_short', kc_dual_underage: 'd_80',
+    kc_dual_price_drops_out: 'both_met', kc_dual_overage: 'do_20',
+    kc_dual_critical_ratio: 'dcr_080', kc_dual_qstar: 'dq_484',
+    kc_dual_premium_rises: 'dp_up', kc_dual_profit_topup: 'dpt_54000',
+    kc_dual_profit_leftover: 'dpl_52000', kc_dual_vs_single: 'dvs_compare',
+  }
+  check(dualServed.every(q => DUAL_KEY[q.field] !== undefined),
+    'every served dual field is one the KC doc answer key knows')
+  const dualWrong = ['kc_dual_overage', 'kc_dual_qstar']
+  for (const q of dualServed) {
+    const correct = DUAL_KEY[q.field]
+    const answer = dualWrong.includes(q.field)
+      ? q.options.find(o => o.value !== correct).value
+      : correct
+    const r = await callFn('newsvendorSubmitKcAnswer', asStudent(GID_D, DPID, { field: q.field, answer }))
+    check(r.ok && r.result.correct === !dualWrong.includes(q.field),
+      `dual KC ${q.field}: graded ${dualWrong.includes(q.field) ? 'incorrect' : 'correct'}`)
+  }
+  const dualKcDoc = await getDoc(`newsvendor_game_instances/${GID_D}/participants/${DPID}`)
+  const dualScore = Number(dualKcDoc?.knowledge_check_score?.doubleValue ?? dualKcDoc?.knowledge_check_score?.integerValue)
+  check(Math.abs(dualScore - 0.8) < 1e-9,
+    `⚠ the dual KC scored 8/10 = 0.8 as predicted (got ${dualScore})`)
+
+  // A REGULAR field must be rejected outright on a dual instance.
+  const crossMode = await callFn('newsvendorSubmitKcAnswer',
+    asStudent(GID_D, DPID, { field: 'kc_underage', answer: 'cu_90' }))
+  check(!crossMode.ok && /not a knowledge-check question/.test(crossMode.error),
+    '⚠ a REGULAR KC field is refused on a dual instance — the sets cannot cross')
+
+  // ── The debrief switches with the mode (spec §8) ─────────────────────────
+  check(/reserve/i.test(dualQ.result.debrief.prompt) && /second source/i.test(dualQ.result.debrief.prompt),
+    '⚠ the DUAL debrief asks the reserve-vs-second-source question')
+  check(!/aim near/i.test(dualQ.result.debrief.prompt),
+    '…and not the regular wording')
+
+  // ── Validation: c_l must exceed c ────────────────────────────────────────
+  const GID_DV = `nv-dualvalid-${stamp}`
+  await openInstance(GID_DV, DUAL, 'dv-seed')
+  for (const [patch, label] of [
+    [{ cL: 1000 }, 'c_l equal to c (no premium at all)'],
+    [{ cL: 500 }, 'c_l below c (a cheaper "expensive" source)'],
+  ]) {
+    const r = await callFn('newsvendorUpdateConfig', asInstructor(GID_DV, patch))
+    check(!r.ok && /above the unit cost/i.test(r.error), `updateConfig refuses ${label}`)
+  }
+  const dualOk = await callFn('newsvendorUpdateConfig', asInstructor(GID_DV, { cL: 2500 }))
+  check(dualOk.ok && dualOk.result.config.cL === 2500, 'a legal c_l edit is stored')
+  check(dualOk.result.premium === 1500, '…and the premium re-derives to 1500')
+  // Turning dual ON is now accepted, where Part 1 refused it outright.
+  const GID_TOG = `nv-toggle-${stamp}`
+  await openInstance(GID_TOG, REGULAR, 'tog-seed')
+  const toggled = await callFn('newsvendorUpdateConfig', asInstructor(GID_TOG, { dual: true, cL: 2000 }))
+  check(toggled.ok && toggled.result.config.dual === true,
+    '⚠ the Settings toggle turns dual ON — the Part-1 refusal is gone')
+  check(toggled.result.benchmark.Qopt === 1129,
+    '…and the benchmark immediately becomes the dual one (1129)')
+  const backToRegular = await callFn('newsvendorUpdateConfig', asInstructor(GID_TOG, { dual: false }))
+  check(backToRegular.ok && backToRegular.result.benchmark.Qopt === 1265,
+    '…and toggling back restores the regular benchmark (1265)')
+
+  // ───────────────────────────────────────────────────────────────────────────
+  section('[15] ⚠ DUAL NEGATIVE CONTROLS — these MUST fail when c_l or CR is broken')
+  // ───────────────────────────────────────────────────────────────────────────
+  // (a) BREAK c_l — force it equal to c, killing the premium. CU becomes 0, so the
+  //     critical ratio collapses to 0 and Q_opt moves. The benchmark check must break.
+  const brokenCL = { ...DUAL, cL: DUAL.c }
+  check(modelDualCriticalRatio(brokenCL).CU === 0,
+    'forcing c_l = c really does zero the premium (so the control is testing something)')
+  mustFail(
+    () => {
+      if (dualStored.length === 0) return false
+      return dualStored.every(el => {
+        const f = el.mapValue.fields
+        const D = Number(f.d.integerValue ?? f.d.doubleValue)
+        return Number(f.profit_opt.integerValue ?? f.profit_opt.doubleValue)
+          === modelDualBenchmark(D, brokenCL).profitOpt
+      })
+    },
+    'the stored dual benchmark still matches with c_l forced down to c',
+  )
+  check(dualBenchOk, '…while it DOES match at the true c_l (the control isolated c_l)')
+
+  // (b) PERTURB THE CRITICAL RATIO — profitOpt must match ONLY at the true CR.
+  const dualPerturbedCR = modelDualCriticalRatio(DUAL).CR - 0.1
+  check(modelDualOptimalOrder(DUAL, dualPerturbedCR) !== dualQopt,
+    `perturbing the dual CR moves Q* (${modelDualOptimalOrder(DUAL, dualPerturbedCR)} vs ${dualQopt})`)
+  mustFail(
+    () => dualStored.length > 0 && dualStored.every(el => {
+      const f = el.mapValue.fields
+      const D = Number(f.d.integerValue ?? f.d.doubleValue)
+      return Number(f.profit_opt.integerValue ?? f.profit_opt.doubleValue)
+        === modelDualBenchmark(D, DUAL, dualPerturbedCR).profitOpt
+    }),
+    'the stored dual benchmark still matches with the critical ratio perturbed by −0.10',
+  )
+
+  // (c) …and the REGULAR formula must NOT reproduce the dual numbers. If it did, the
+  //     dual branch would be dead code and every dual assertion above vacuous.
+  mustFail(
+    () => dualPlayed.length > 0 && dualPlayed.every((p, i) =>
+      dualResponses[i].round.profit === modelPeriod(p.Q, p.D, DUAL).profit),
+    'the REGULAR profit formula still reproduces the dual results (the branch is live)',
+  )
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(70)}`)

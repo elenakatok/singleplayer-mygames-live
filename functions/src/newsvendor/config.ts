@@ -49,7 +49,17 @@ export const DEFAULT_C = 1000        // production cost per unit
 export const DEFAULT_V = 800         // salvage value per leftover unit
 export const DEFAULT_G = 150         // goodwill (shortage) cost per unit short
 export const DEFAULT_H = 300         // holding cost per leftover unit
-export const DEFAULT_PREMIUM = 1000  // dual only (Part 2); parsed and carried, unused here
+/**
+ * Full cost per unit from the EXPENSIVE second source (dual mode only).
+ *
+ * ⚠ WE STORE THE FULL PRICE, NOT THE PREMIUM — a deliberate departure from spec §2,
+ * which stored `premium` and derived the full cost. Storing the full price is what an
+ * instructor actually knows ("the local supplier charges 2000"), and it makes the
+ * premium a DERIVED quantity that cannot drift from `c`: edit the reserved cost and the
+ * premium moves with it automatically, where a stored premium would silently keep its
+ * old value and change the economics behind the instructor's back.
+ */
+export const DEFAULT_C_L = 2000
 export const DEFAULT_IS_NORMAL = true
 export const DEFAULT_MEAN = 1000
 export const DEFAULT_SD = 300
@@ -60,6 +70,16 @@ export const DEFAULT_PERIODS = 20
 /** Bounds on what any config may set for the period count. */
 export const HARD_MIN_PERIODS = 1
 export const HARD_MAX_PERIODS = 100
+
+/**
+ * The shipped debrief prompt for DUAL mode (spec §8). Selected by the `dual` flag in
+ * loadNewsvendorConfig, exactly as pricing's debrief switches on `pmg` — so a dual
+ * instance that has never had its prompt edited still asks the dual question.
+ */
+export const DEFAULT_DEBRIEF_PROMPT_DUAL =
+  'In a few sentences, explain how you chose how much to reserve up front versus ' +
+  'relying on the expensive second source. How was your strategy different from ' +
+  'ordering a single quantity, and did it change over the game?'
 
 /**
  * The shipped prep prompt — asked AFTER the knowledge check and BEFORE play. Free
@@ -119,14 +139,15 @@ export interface NewsvendorConfig {
   /** Holding cost per leftover unit; applied as the net `v − h`. */
   h: number
   /**
-   * Second-source premium (spec §2, dual only). Parsed and carried so Part 2 flips a
-   * flag rather than migrating every stored config, but it is UNUSED in this build.
+   * FULL cost per unit from the expensive second source (dual mode only). The premium
+   * over the reserved cost is DERIVED — see `premiumOf` below. Ignored when !dual.
    */
-  premium: number
+  cL: number
   /**
-   * Dual-sourcing mode. ⚠ ALWAYS FALSE IN THIS BUILD — Part 1 is the single-source
-   * game only. newsvendorUpdateConfig REFUSES an attempt to set it, and the compute
-   * step asserts on it, so there is no path by which a half-built dual game can run.
+   * Dual-sourcing mode. One flag, and everything follows it: the profit formula (§5),
+   * the critical ratio, the knowledge-check set, the on-screen labels, and the debrief
+   * prompt. ONE GAME, TWO MODES — never a second game_id, never a second instance
+   * prefix, exactly as pricing's `pmg` works.
    */
   dual: boolean
   /** true = Normal demand, false = Uniform (spec §3). Both supported. */
@@ -162,7 +183,7 @@ export const DEFAULT_NEWSVENDOR_CONFIG: NewsvendorConfig = {
   v: DEFAULT_V,
   g: DEFAULT_G,
   h: DEFAULT_H,
-  premium: DEFAULT_PREMIUM,
+  cL: DEFAULT_C_L,
   dual: false,
   isNormal: DEFAULT_IS_NORMAL,
   mean: DEFAULT_MEAN,
@@ -246,6 +267,8 @@ export function loadNewsvendorConfig(configData: Record<string, unknown> | undef
   const d = configData ?? {}
   const prepRaw = d.prep_prompt
   const debriefRaw = d.debrief_prompt
+  // The mode first — it selects the DEFAULT debrief prompt below (spec §8).
+  const dual = d.dual === true
 
   // Uniform bounds are read as a PAIR: an inverted or unusable pair falls back to the
   // shipped pair rather than to one stored number and one default, which would be a
@@ -264,11 +287,8 @@ export function loadNewsvendorConfig(configData: Record<string, unknown> | undef
     v: num(d.salvage, DEFAULT_V),
     g: num(d.goodwill, DEFAULT_G),
     h: num(d.holding, DEFAULT_H),
-    premium: num(d.premium, DEFAULT_PREMIUM),
-    // ⚠ Part 1 is single-source only. The stored value is read honestly (so an
-    // instance that somehow carries dual=true is VISIBLE rather than silently
-    // downgraded), and every consumer refuses to run with it set.
-    dual: d.dual === true,
+    cL: num(d.second_source_cost, DEFAULT_C_L),
+    dual,
     isNormal: d.is_normal !== false,
     mean: num(d.mean, DEFAULT_MEAN),
     sd: num(d.sd, DEFAULT_SD),
@@ -286,8 +306,21 @@ export function loadNewsvendorConfig(configData: Record<string, unknown> | undef
       .filter((q): q is NewsvendorAddedKcQuestion => q !== null),
     debriefEnabled: d.debrief_enabled !== false,
     debriefPrompt: typeof debriefRaw === 'string' && debriefRaw.trim()
-      ? debriefRaw.trim() : DEFAULT_DEBRIEF_PROMPT_REGULAR,
+      ? debriefRaw.trim()
+      : (dual ? DEFAULT_DEBRIEF_PROMPT_DUAL : DEFAULT_DEBRIEF_PROMPT_REGULAR),
   }
+}
+
+/**
+ * The second-source PREMIUM — the extra a top-up unit costs over a reserved one.
+ *
+ * ⚠ DERIVED, NEVER STORED. This is the single definition; every consumer (the critical
+ * ratio, the KC's own arithmetic, the settings preview) calls it rather than doing the
+ * subtraction inline, so `c_l` and `c` can never be edited into a state where two parts
+ * of the game disagree about what the premium is.
+ */
+export function premiumOf(config: Pick<NewsvendorConfig, 'cL' | 'c'>): number {
+  return config.cL - config.c
 }
 
 /**

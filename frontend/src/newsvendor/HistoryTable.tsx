@@ -61,9 +61,12 @@ function ProfitCell({ value, testId, style }: { value: number; testId?: string; 
 export function HistoryTable({
   history,
   showServiceLevel,
+  dual = false,
 }: {
   history: NewsvendorHistoryRow[]
   showServiceLevel: boolean
+  /** DUAL relabels the shortage column — those units were bought, not lost (spec §7b). */
+  dual?: boolean
 }) {
   if (history.length === 0) {
     return (
@@ -100,10 +103,16 @@ export function HistoryTable({
           {/* Row 2 — plain sub-labels, no suffixes. */}
           <tr>
             <th style={mine({ ...th, ...blockSep })}>Order</th>
-            {showServiceLevel && <th style={mine(th)} data-testid="nv-hist-sl-header">Demand met</th>}
+            {showServiceLevel && (
+              <th style={mine(th)} data-testid="nv-hist-sl-header">
+                {dual ? 'From reserve' : 'Demand met'}
+              </th>
+            )}
             <th style={{ ...th, ...blockSep }}>Demand</th>
             <th style={th}>Units over</th>
-            <th style={th}>Units short</th>
+            <th style={th} data-testid="nv-hist-short-header">
+              {dual ? 'From 2nd source' : 'Units short'}
+            </th>
             <th style={mine({ ...th, ...blockSep })}>This period</th>
             <th style={mine(th)}>Average</th>
           </tr>
@@ -124,7 +133,9 @@ export function HistoryTable({
                 {formatUnits(r.demand)}
               </td>
               <td style={td}>{formatUnits(r.unitsOver)}</td>
-              <td style={td}>{formatUnits(r.unitsShort)}</td>
+              <td style={td} data-testid={`nv-history-short-${r.round}`}>
+                {formatUnits(dual ? r.unitsFromSecondSource : r.unitsShort)}
+              </td>
               <ProfitCell value={r.profit} style={mine({ ...td, ...blockSep })} testId={`nv-history-profit-${r.round}`} />
               <ProfitCell value={r.yourAverage} style={mine(td)} testId={`nv-history-average-${r.round}`} />
             </tr>

@@ -57,6 +57,27 @@ export const TEACHING_MARKET: NewsvendorConfig = {
   isNormal: true, mean: 500, sd: 100,
 }
 
+/**
+ * The DUAL set's teaching market — distinct again from both the game AND the regular
+ * KC, so a student who has played the regular game cannot reuse a remembered number.
+ *
+ * Reserved cost c = 60, second-supplier cost c_l = 140 (so the premium is 80), retail
+ * P = 200, salvage v = 50, holding h = 10 → net salvage 40. Normal demand, mean 400,
+ * sd 100.
+ *
+ * Its implied solution, which the stems state: CU = premium = 140 − 60 = 80;
+ * CO = 60 − 40 = 20; CR = 0.80; z(0.80) = 0.84; Q* = 400 + 0.84·100 = 484.
+ */
+export const DUAL_TEACHING_MARKET: NewsvendorConfig = {
+  ...DEFAULT_NEWSVENDOR_CONFIG,
+  dual: true,
+  P: 200, c: 60, cL: 140, v: 50, h: 10,
+  // g is irrelevant under dual and is never read by the dual branch; pinned to 0 so a
+  // harness that checks this market cannot accidentally exercise a goodwill term.
+  g: 0,
+  isNormal: true, mean: 400, sd: 100,
+}
+
 type Option = { value: string; label: string }
 
 interface KcSpec {
@@ -237,10 +258,198 @@ const KC_SPECS: readonly KcSpec[] = [
   },
 ]
 
+
+// ── The ten authored DUAL questions (KC doc D1–D10) ────────────────────────────
+//
+// ⚠ MUTUALLY EXCLUSIVE WITH THE REGULAR SET — no overlap, and never both. The regular
+// set already established CR, Q* and profit for the single-source case; this set
+// assumes that foundation and tests only what CHANGES under dual sourcing: the premium
+// replaces the retail margin as the underage cost, there is no goodwill because nothing
+// is ever short, and the optimal RESERVED quantity follows from premium-vs-overage.
+
+const DUAL_KC_SPECS: readonly KcSpec[] = [
+  {
+    field: 'kc_dual_second_source',
+    prompt:
+      'Under dual sourcing, you reserve a quantity Q up front at the cheap cost, and any '
+      + 'demand above Q is covered by an expensive second source. Compared with the '
+      + 'single-source newsvendor, dual sourcing means:',
+    options: [
+      { value: 'never_short', label: 'You are never truly “short” — unmet demand is filled by the expensive source, at a premium' },
+      { value: 'no_leftover', label: 'You can never have leftover units, because the second source absorbs them' },
+      { value: 'price_irrelevant', label: 'The retail price no longer matters at all to any part of the decision' },
+      { value: 'no_randomness', label: 'Demand is no longer random' },
+    ],
+    correct_value: 'never_short',
+    explanation:
+      'The second source guarantees demand is met, so the cost of “missing” a unit is no '
+      + 'longer a lost sale plus goodwill — it is the premium paid to the expensive source. '
+      + 'You can still be left with unsold reserved units, and demand is still random.',
+  },
+  {
+    field: 'kc_dual_underage',
+    prompt:
+      'Reserving one more unit up front (cost c = 60) saves you from buying that unit later '
+      + 'from the expensive second source (full cost 140). If that unit turns out to be '
+      + 'needed, what is the underage cost — the cost of NOT having reserved it?',
+    options: [
+      { value: 'd_80', label: '$80' },
+      { value: 'd_140', label: '$140' },
+      { value: 'd_60', label: '$60' },
+      { value: 'd_200', label: '$200' },
+    ],
+    correct_value: 'd_80',
+    explanation:
+      'Both a reserved unit and a second-source unit satisfy the same demand at the same '
+      + 'price; the only difference is the premium. So the penalty for under-reserving is '
+      + '140 − 60 = 80 — not the full cost of the expensive unit.',
+  },
+  {
+    field: 'kc_dual_price_drops_out',
+    prompt:
+      'In the single-source newsvendor the underage cost was (P − c + g). Under dual sourcing '
+      + 'it is just the premium. Why do the retail price P and the goodwill cost g no longer '
+      + 'appear?',
+    options: [
+      { value: 'both_met', label: 'Because demand is always met either way, so no sale is lost and no goodwill is incurred — only the sourcing cost differs' },
+      { value: 'assumed_zero', label: 'Because P and g are assumed to be zero in dual sourcing' },
+      { value: 'free_source', label: 'Because the second source is free' },
+      { value: 'paid_supplier', label: 'Because the retail price is paid to the supplier, not the customer' },
+    ],
+    correct_value: 'both_met',
+    explanation:
+      'Under- and over-reserving both still sell the unit at P, so P cancels; and nothing is '
+      + 'ever short, so g never applies. Only the cost of sourcing the marginal unit differs — '
+      + 'the premium.',
+  },
+  {
+    field: 'kc_dual_overage',
+    prompt:
+      'If you reserve a unit (cost c = 60) that turns out NOT to be needed, you salvage it for '
+      + 'v = 50 but pay holding h = 10. What is the overage cost of that leftover reserved unit?',
+    options: [
+      { value: 'do_20', label: '$20' },
+      { value: 'do_10', label: '$10' },
+      { value: 'do_60', label: '$60' },
+      { value: 'do_80', label: '$80' },
+    ],
+    correct_value: 'do_20',
+    explanation:
+      'Same overage logic as the regular game: 60 to make, net recovery 50 − 10 = 40, so the '
+      + 'overage cost is 20. Salvage and holding are unchanged by dual sourcing.',
+  },
+  {
+    field: 'kc_dual_critical_ratio',
+    prompt:
+      'With underage = premium = 80 and overage = 20, the optimal probability that your '
+      + 'reserved quantity covers demand is:',
+    options: [
+      { value: 'dcr_080', label: '0.80' },
+      { value: 'dcr_0875', label: '0.875' },
+      { value: 'dcr_020', label: '0.20' },
+      { value: 'dcr_070', label: '0.70' },
+    ],
+    correct_value: 'dcr_080',
+    explanation:
+      'CR = premium / (premium + overage) = 80 / 100 = 0.80. 0.875 is the classic error of '
+      + 'using the full expensive cost 140 as the underage; 0.70 reverts to the single-source '
+      + 'formula.',
+  },
+  {
+    field: 'kc_dual_qstar',
+    prompt:
+      'Demand is Normal with mean 400 and sd 100. The dual-sourcing critical ratio is 0.80, '
+      + 'corresponding to z = 0.84. The optimal reserved quantity Q* = mean + z·sd is:',
+    options: [
+      { value: 'dq_484', label: '484' },
+      { value: 'dq_400', label: '400' },
+      { value: 'dq_316', label: '316' },
+      { value: 'dq_572', label: '572' },
+    ],
+    correct_value: 'dq_484',
+    explanation:
+      'Q* = 400 + 0.84·100 = 484. 400 ignores that the critical ratio is above 0.5; 316 '
+      + 'subtracts the safety stock instead of adding it.',
+  },
+  {
+    field: 'kc_dual_premium_rises',
+    prompt:
+      'Suppose the second-source premium RISES (the expensive source gets even more '
+      + 'expensive), with everything else fixed. The optimal reserved quantity Q* should:',
+    options: [
+      { value: 'dp_up', label: 'Increase — a larger premium raises the underage cost, so reserving more up front becomes more valuable' },
+      { value: 'dp_down', label: 'Decrease — you should rely on the second source more when it is pricier' },
+      { value: 'dp_same', label: "Stay the same — the premium doesn't affect the reserved quantity" },
+      { value: 'dp_zero', label: "Drop to zero — it's never worth reserving when the premium is high" },
+    ],
+    correct_value: 'dp_up',
+    explanation:
+      'A higher premium raises CU, which raises CR and therefore Q*. The more painful the '
+      + 'expensive source, the more you reserve cheaply up front — the central intuition of '
+      + 'dual sourcing.',
+  },
+  {
+    field: 'kc_dual_profit_topup',
+    prompt:
+      'Using this market (P = 200, c = 60, second-source cost 140, v = 50, h = 10), suppose '
+      + 'you reserve Q = 300 and demand is D = 500. Profit = P·D − c·Q − (second-source cost)·'
+      + '(units from second source) + (v − h)·(leftover). What is your profit?',
+    options: [
+      { value: 'dpt_54000', label: '$54,000' },
+      { value: 'dpt_82000', label: '$82,000' },
+      { value: 'dpt_100000', label: '$100,000' },
+      { value: 'dpt_46000', label: '$46,000' },
+    ],
+    correct_value: 'dpt_54000',
+    explanation:
+      'All 500 sell at 200 → 100,000. Reserved 300 × 60 = 18,000. The second source covers '
+      + '500 − 300 = 200 units × 140 = 28,000. No leftover. '
+      + '100,000 − 18,000 − 28,000 = 54,000.',
+  },
+  {
+    field: 'kc_dual_profit_leftover',
+    prompt: 'Now suppose you reserve Q = 600 and demand is D = 400. What is your profit?',
+    options: [
+      { value: 'dpl_52000', label: '$52,000' },
+      { value: 'dpl_44000', label: '$44,000' },
+      { value: 'dpl_80000', label: '$80,000' },
+      { value: 'dpl_56000', label: '$56,000' },
+    ],
+    correct_value: 'dpl_52000',
+    explanation:
+      'All 400 sell at 200 → 80,000. Reserved 600 × 60 = 36,000. No second source. Leftover '
+      + '200 × net salvage 40 = +8,000. 80,000 − 36,000 + 8,000 = 52,000. $56,000 salvages at '
+      + 'the full 50 instead of the net 40.',
+  },
+  {
+    field: 'kc_dual_vs_single',
+    prompt:
+      'Compared with the single-source newsvendor for the same product, dual sourcing changes '
+      + 'the underage cost from (P − c + g) to just the premium. Whether the optimal reserved '
+      + 'quantity is HIGHER or LOWER than the single-source Q* depends on:',
+    options: [
+      { value: 'dvs_compare', label: 'Whether the premium is larger or smaller than the single-source underage (P − c + g) — a smaller premium lowers CR and reserves less' },
+      { value: 'dvs_lower', label: 'It is always lower, because the second source lets you order less' },
+      { value: 'dvs_higher', label: 'It is always higher, because you have a guaranteed backup' },
+      { value: 'dvs_mean', label: 'It depends only on the mean of demand' },
+    ],
+    correct_value: 'dvs_compare',
+    explanation:
+      'Dual sourcing does not automatically mean reserving less. If the premium is small '
+      + 'relative to the lost margin plus goodwill, the underage cost falls, CR falls, and you '
+      + 'reserve less. If the premium is large, you reserve more. The direction is a '
+      + 'comparison, not a rule.',
+  },
+]
+
 /** How many authored questions this build ships. The denominator is derived from the
  *  served set, never from this constant — it exists so the harness can assert the set
  *  is the full ten rather than a truncated copy. */
 export const AUTHORED_KC_COUNT = KC_SPECS.length
+
+/** …and the dual set's, which must match. Asserted in the harness rather than assumed:
+ *  a mode that quietly served nine questions would score every student out of nine. */
+export const DUAL_KC_COUNT = DUAL_KC_SPECS.length
 
 // ── Per-student option order ───────────────────────────────────────────────────
 
@@ -296,8 +505,16 @@ const kcBase = {
  * (newsvendorSubmitKcAnswer) call this with the same participant id, so the options a
  * student sees and the answer they are graded against cannot disagree.
  */
-export function resolveNewsvendorKcQuestions(participantId: string): NewsvendorKcQuestion[] {
-  return KC_SPECS.map((spec, i) => ({
+export function resolveNewsvendorKcQuestions(
+  participantId: string,
+  dual = false,
+): NewsvendorKcQuestion[] {
+  // ⚠ ONE SET OR THE OTHER, NEVER BOTH (KC doc). An instance shows the dual ten when
+  // `dual` is on and the regular ten when it is off; the two share no field ids, so a
+  // student who somehow answered one set cannot have those answers counted against the
+  // other's denominator.
+  const specs = dual ? DUAL_KC_SPECS : KC_SPECS
+  return specs.map((spec, i) => ({
     ...kcBase,
     field: spec.field,
     order: i + 1,

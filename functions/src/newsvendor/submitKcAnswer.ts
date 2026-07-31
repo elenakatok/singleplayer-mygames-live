@@ -66,7 +66,11 @@ export const newsvendorSubmitKcAnswer = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }
   // Authored FIRST. Added questions are looked up in config with their own stored
   // key. The two lists are never merged — an added question cannot even take a kc_ id
   // (config.ts), so this lookup order can never shadow one with the other.
-  const authored = resolveNewsvendorKcQuestions(participantId)
+  // ⚠ THE MODE IS PART OF THE LOOKUP. Serve and grade must resolve the SAME set, or a
+  // dual student's answer would be checked against the regular set and rejected as "not
+  // a knowledge-check question in this game" — the exact failure the shared
+  // resolve-once discipline exists to prevent.
+  const authored = resolveNewsvendorKcQuestions(participantId, config.dual)
   const authoredQ = authored.find(q => q.field === field)
   const addedQ = authoredQ ? undefined : config.addedKcQuestions.find(q => q.id === field)
 

@@ -4,7 +4,7 @@ import { extractInstructorGameId } from '@mygames/game-server'
 import {
   NEWSVENDOR_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC, TRUTH_DOC,
   HARD_MIN_PERIODS, HARD_MAX_PERIODS,
-  loadNewsvendorConfig, loadNewsvendorSeed, parseAddedKcQuestion,
+  loadNewsvendorConfig, loadNewsvendorSeed, parseAddedKcQuestion, premiumOf,
   type NewsvendorConfig, type NewsvendorAddedKcQuestion,
 } from './config'
 import { criticalRatio, optimalOrder, orderBounds, economicsError } from './economics'
@@ -16,7 +16,8 @@ import { resolveNewsvendorKcQuestions, AUTHORED_KC_COUNT } from './questions'
 // only the fields that were sent, re-read and return what was actually STORED.
 //
 // WHAT IS AND IS NOT EDITABLE:
-//   editable   every scalar in spec §2 — P, c, v, g, h; the demand distribution and
+//   editable   the DUAL-SOURCING toggle and the second-supplier cost c_l; every scalar
+//              in spec §2 — P, c, v, g, h; the demand distribution and
 //              its parameters; the period count; the two display toggles; the prep,
 //              KC and debrief switches and prompts; instructor-added KC questions;
 //              and the determinism SEED (which is written to truth/, not config/).
@@ -24,8 +25,8 @@ import { resolveNewsvendorKcQuestions, AUTHORED_KC_COUNT } from './questions'
 //              (questions.ts), so they are RETURNED read-only for preview and cannot
 //              be edited into agreement with the instance's market. That is the
 //              point: students must recompute.
-//   refused    `dual`. Part 1 ships the single-source game; a config with dual set
-//              would be scored with the wrong profit formula entirely.
+//   refused    a config whose economics do not exist — including dual with c_l ≤ c,
+//              which leaves no premium to trade off against the overage.
 //
 // ⚠ CONFIG-EDIT SAFETY, and it bites harder here than in pricing. PD's precedent is
 // WARN, NEVER BLOCK. Newsvendor keeps that posture for the ECONOMICS — but note what a
@@ -65,6 +66,8 @@ async function readConfigView(db: admin.firestore.Firestore, gameInstanceId: str
     ok: true as const,
     config: {
       P: config.P, c: config.c, v: config.v, g: config.g, h: config.h,
+      dual: config.dual,
+      cL: config.cL,
       isNormal: config.isNormal,
       mean: config.mean, sd: config.sd, minD: config.minD, maxD: config.maxD,
       periods: config.periods,
@@ -89,6 +92,13 @@ async function readConfigView(db: admin.firestore.Firestore, gameInstanceId: str
      * degenerate — `configError` says why.
      */
     benchmark: error === null ? { Qopt: optimalOrder(config), ...criticalRatio(config) } : null,
+    /**
+     * The second-source PREMIUM this config implies — DERIVED, never stored (config.ts).
+     * Surfaced so the settings page can show the instructor what their c_l actually
+     * costs them per unit without doing the subtraction in the browser and risking a
+     * second definition.
+     */
+    premium: config.dual ? premiumOf(config) : null,
     configError: error,
     /**
      * Read-only preview of the AUTHORED knowledge check — the fixed teaching numbers,
@@ -97,7 +107,7 @@ async function readConfigView(db: admin.firestore.Firestore, gameInstanceId: str
      * Resolved with a fixed pseudo-participant so the preview's option order is stable
      * between page loads; every real student gets their own shuffle.
      */
-    authoredKcPreview: resolveNewsvendorKcQuestions('__preview__').map(q => ({
+    authoredKcPreview: resolveNewsvendorKcQuestions('__preview__', config.dual).map(q => ({
       field: q.field,
       prompt: q.prompt,
       options: q.options,
@@ -141,12 +151,6 @@ export const newsvendorUpdateConfig = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, 
   const configSnap = await instanceRef.collection('config').doc(CONFIG_DOC).get()
   const current = loadNewsvendorConfig(configSnap.data())
 
-  // ── Dual is Part 2, and is refused outright ───────────────────────────────
-  if (has(data, 'dual') && data.dual === true) {
-    throw new HttpsError('invalid-argument',
-      'Dual sourcing is not built yet — this build ships the single-source game only.')
-  }
-
   const patch: Record<string, unknown> = {}
   /** The config this save WOULD produce. Validated as a whole before anything is
    *  written, because the §2 rules are relationships (P > c, c > v − h), not
@@ -161,7 +165,21 @@ export const newsvendorUpdateConfig = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, 
     patch[store] = v
   }
 
+  // ── THE MODE ──────────────────────────────────────────────────────────────
+  // One boolean, and everything downstream follows it: the profit formula (economics),
+  // the critical ratio, the knowledge-check set (questions.ts), the on-screen labels,
+  // and the debrief prompt. None of that is duplicated here — flipping this flag is the
+  // whole edit, exactly as pricing's `pmg` works.
+  if (has(data, 'dual')) {
+    if (typeof data.dual !== 'boolean') {
+      throw new HttpsError('invalid-argument', 'Dual sourcing must be true or false.')
+    }
+    next.dual = data.dual
+    patch.dual = data.dual
+  }
+
   scalar('P', 'The retail price', v => { next.P = v }, 'price')
+  scalar('cL', 'The second-supplier cost', v => { next.cL = v }, 'second_source_cost')
   scalar('c', 'The unit cost', v => { next.c = v }, 'unit_cost')
   scalar('v', 'The salvage value', v => { next.v = v }, 'salvage')
   scalar('g', 'The goodwill cost', v => { next.g = v }, 'goodwill')

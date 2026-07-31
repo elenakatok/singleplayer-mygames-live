@@ -57,7 +57,12 @@ export function invNorm(target) {
 /** The order a student who worked out the critical ratio would place (spec §4), from
  *  the parameters printed on their own screen. */
 export function criticalRatioOrder(p) {
-  const CU = p.P - p.c + p.g
+  // ⚠ THE UNDERAGE DEPENDS ON THE MODE. Under dual sourcing it is the PREMIUM
+  // (c_l − c), not the retail margin: demand is met either way, so P and g cancel and
+  // only the sourcing cost of the marginal unit differs. A robot that used the regular
+  // formula on a dual instance would reserve far too much and make the cohort's chart
+  // say something false about what a well-reasoned student does.
+  const CU = p.dual ? (p.cL - p.c) : (p.P - p.c + p.g)
   const CO = p.c - (p.v - p.h)
   // A degenerate market has no interior answer; fall back to the centre rather than
   // dividing by zero. The game refuses to run such a config anyway.

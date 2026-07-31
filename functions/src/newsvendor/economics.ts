@@ -1,12 +1,28 @@
-import type { NewsvendorConfig } from './config'
+import { premiumOf, type NewsvendorConfig } from './config'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Newsvendor — THE MATH (spec §4). Pure, Firestore-free, no I/O, so every formula
 // here is unit-testable without an emulator. Same split as pricing's market.ts.
 //
-// REGULAR (single-source) MODE ONLY. Part 2 adds the dual branch; nothing here has a
-// `dual` parameter, so adding it will be a visible signature change rather than a
-// silent behaviour change. `assertRegular` below is the guard that makes that true.
+// BOTH MODES. Every function here branches on `config.dual`, and the branch is the
+// whole difference between the two games:
+//
+//   REGULAR (§4)  sales = min(Q,D); unmet demand is a LOST SALE plus goodwill g.
+//                 CU = P − c + g          CO = c − (v − h)
+//
+//   DUAL (§5)     the expensive second source covers the shortfall, so ALL demand is
+//                 met and NOTHING is ever short. Unmet-from-reserve units are bought
+//                 in at the full c_l.
+//                 CU = c_l − c            CO = c − (v − h)
+//
+// ⚠ GOODWILL DOES NOT EXIST IN DUAL MODE. `g` appears in the regular branch only, and
+// deliberately nowhere in the dual one: there is no shortage to be penalised for, so
+// carrying g across would charge a student twice for a unit they actually sold. Spec §5
+// calls this out as the thing not to port.
+//
+// ⚠ AND P DROPS OUT OF THE DUAL CRITICAL RATIO. Under vs over-reserving both still sell
+// the unit at P, so the retail price cancels; only the SOURCING cost of the marginal
+// unit differs. That is why CU is the premium and not a margin.
 //
 // ⚠ THE BENCHMARK IS FOR REPORTS ONLY (spec §9.2). `Q_opt` and `profitOpt` are
 // computed every period and STORED, and they must never appear on a student screen —
@@ -15,32 +31,51 @@ import type { NewsvendorConfig } from './config'
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Refuses to compute anything for a dual-sourcing instance.
+ * Refuses to compute anything for a config whose economics do not exist.
  *
- * Part 1 ships the single-source game. A config with `dual` set would otherwise be
- * scored with the REGULAR profit formula — which is not merely approximate, it is a
- * different game (spec §5: no goodwill term, a premium-based critical ratio). Failing
- * loudly is the only honest option until Part 2 lands.
+ * Replaces the Part-1 `assertRegular` guard, which existed only to keep an unbuilt dual
+ * branch from being scored with the regular formula. Now that both branches exist, the
+ * thing worth refusing is a DEGENERATE config — see economicsError for what that means
+ * and why it is a refusal rather than a warning.
  */
-export function assertRegular(config: NewsvendorConfig): void {
-  if (config.dual) {
-    throw new Error('Dual sourcing is not built yet — this instance cannot be played or scored.')
-  }
+export function assertPlayable(config: NewsvendorConfig): void {
+  const err = economicsError(config)
+  if (err) throw new Error(err)
 }
 
 // ── Per-period outcome (spec §4) ───────────────────────────────────────────────
 
 export interface PeriodOutcome {
-  /** Units actually sold: min(Q, D). */
+  /**
+   * Units sold. REGULAR: min(Q, D) — you cannot sell what you do not have. DUAL: D,
+   * every unit of it, because the second source covers whatever the reserve did not.
+   */
   sales: number
-  /** Unsold units: max(Q − D, 0). Salvaged at the NET rate (v − h). */
+  /** Unsold reserved units: max(Q − D, 0). Salvaged at the NET rate (v − h). Both modes. */
   leftover: number
-  /** Unmet demand: max(D − Q, 0). Each unit costs goodwill g. */
+  /**
+   * REGULAR: unmet demand, max(D − Q, 0), each unit costing goodwill g.
+   * DUAL: ALWAYS 0 — nothing is ever short. The same arithmetic lands in `topup`.
+   */
   unitsShort: number
+  /**
+   * DUAL: units bought from the expensive source, max(D − Q, 0), each at the full c_l.
+   * REGULAR: always 0 — there is no second source.
+   *
+   * ⚠ TWO FIELDS FOR ONE SUBTRACTION, DELIBERATELY. They are numerically identical, and
+   * they mean opposite things: `unitsShort` is a sale you LOST, `topup` is a sale you
+   * MADE at a worse price. Reports that summed one field across both modes would be
+   * adding lost revenue to earned revenue.
+   */
+  topup: number
   /** Realized profit for the period. MAY BE NEGATIVE. */
   profit: number
   /**
-   * Demand proportion met = min(Q,D)/D, capped at 1 (spec §6).
+   * The fraction of demand covered FROM THE STUDENT'S OWN ORDER: min(Q,D)/D, capped at
+   * 1 (spec §6). In regular mode that is the demand actually met. In DUAL mode all
+   * demand is met regardless, so this is the fraction met from the CHEAP reserve — the
+   * screen relabels it accordingly rather than claiming a fill rate below 100%.
+   *
    * ⚠ D = 0 ⇒ 1, not a division. Uniform demand with minD = 0 really can draw 0.
    */
   serviceLevel: number
@@ -56,18 +91,36 @@ export interface PeriodOutcome {
  * validates Q; the draw produces D), but the formula is total for any reals.
  */
 export function computePeriod(Q: number, D: number, config: NewsvendorConfig): PeriodOutcome {
-  const { P, c, v, g, h } = config
-  const sales = Math.min(Q, D)
-  const leftover = Math.max(Q - sales, 0)
-  const unitsShort = Math.max(D - sales, 0)
-  const profit = P * sales - c * Q + leftover * (v - h) - unitsShort * g
+  const { P, c, v, g, h, cL } = config
+  const fromReserve = Math.min(Q, D)
+  const leftover = Math.max(Q - fromReserve, 0)
+  const unmetFromReserve = Math.max(D - fromReserve, 0)
+  // The fraction covered from the student's own order — the same number in both modes;
+  // only what it MEANS differs. See serviceLevel's doc above.
+  const serviceLevel = D <= 0 ? 1 : Math.min(1, fromReserve / D)
+
+  if (config.dual) {
+    // Spec §5: profit = P·D − c·Q − c_l·topup + (v − h)·leftover.
+    // Note what is absent: no `g` term. Nothing is short, so nothing is penalised.
+    const topup = unmetFromReserve
+    return {
+      sales: D,                 // every unit of demand is served
+      leftover,
+      unitsShort: 0,            // by construction — the second source covers it
+      topup,
+      profit: P * D - c * Q - cL * topup + leftover * (v - h),
+      serviceLevel,
+    }
+  }
+
+  // Spec §4: profit = P·sales − c·Q + (Q − sales)(v − h) − (D − sales)·g.
   return {
-    sales,
+    sales: fromReserve,
     leftover,
-    unitsShort,
-    profit,
-    // The D = 0 guard (spec §6). Without it this is 0/0.
-    serviceLevel: D <= 0 ? 1 : Math.min(1, sales / D),
+    unitsShort: unmetFromReserve,
+    topup: 0,                   // no second source in regular mode
+    profit: P * fromReserve - c * Q + leftover * (v - h) - unmetFromReserve * g,
+    serviceLevel,
   }
 }
 
@@ -83,15 +136,23 @@ export interface CriticalRatio {
 }
 
 /**
- * The regular-mode critical ratio (spec §4):
+ * The critical ratio for whichever mode this instance runs.
  *
- *   CU = P − c + g          CO = c − (v − h)          CR = CU / (CU + CO)
+ *   REGULAR (§4)  CU = P − c + g      — the margin plus the goodwill lost per unit short
+ *   DUAL    (§5)  CU = c_l − c        — the PREMIUM avoided per reserved unit that gets used
+ *   both          CO = c − (v − h)    — cost sunk minus net salvage per leftover
+ *                 CR = CU / (CU + CO)
+ *
+ * ⚠ THE DUAL UNDERAGE IS THE PREMIUM, NOT THE FULL EXPENSIVE COST. Both a reserved unit
+ * and a top-up unit satisfy the same demand at the same price; only the sourcing cost
+ * differs. Using c_l here is the classic error the dual KC's D2/D5 distractors are built
+ * from, so getting it wrong would make the game disagree with its own teaching.
  *
  * Both costs are strictly positive for any config that passes validation
  * (`economicsError` below), so the denominator cannot be zero here.
  */
 export function criticalRatio(config: NewsvendorConfig): CriticalRatio {
-  const CU = config.P - config.c + config.g
+  const CU = config.dual ? premiumOf(config) : config.P - config.c + config.g
   const CO = config.c - (config.v - config.h)
   return { CU, CO, CR: CU / (CU + CO) }
 }
@@ -239,7 +300,12 @@ export function isValidOrder(Q: unknown, config: NewsvendorConfig): Q is number 
  * The economic sanity of a config, as a message or null.
  *
  * Spec §2 lists: `isNormal=0` requires `maxD > minD`; `periods ≥ 1`; all prices/costs
- * ≥ 0; `P > c`.
+ * ≥ 0; `P > c`. DUAL adds one: `c_l > c`.
+ *
+ * ⚠ NOTE WHAT IS *NOT* REQUIRED IN DUAL: `P > c_l`. A top-up unit sold below its own
+ * cost is a punishing configuration, not an incoherent one — the interior optimum still
+ * exists and the critical ratio is still well defined, so refusing it would be this
+ * file inventing a rule the spec does not have.
  *
  * ⚠ TWO CHECKS BEYOND THE SPEC'S LIST, both required for the critical ratio to EXIST:
  *
@@ -266,6 +332,18 @@ export function economicsError(config: NewsvendorConfig): string | null {
   if (config.P <= config.c) {
     return 'The retail price must be above the unit cost, or no order could ever be profitable.'
   }
+  if (config.dual) {
+    if (!Number.isFinite(config.cL) || config.cL < 0) {
+      return 'The second-supplier cost must be zero or more.'
+    }
+    // ⚠ THE DUAL GAME'S ONE REQUIREMENT. If the expensive source is not actually more
+    // expensive, the premium is zero or negative: CU ≤ 0, the critical ratio is ≤ 0, and
+    // reserving nothing is weakly optimal — there is no trade-off left to teach.
+    if (config.cL <= config.c) {
+      return 'The second-supplier cost must be above the unit cost — otherwise the second '
+        + 'source is no more expensive than reserving, and there is nothing to trade off.'
+    }
+  }
   if (!Number.isInteger(config.periods) || config.periods < 1) {
     return 'The number of periods must be a whole number of at least 1.'
   }
@@ -276,7 +354,9 @@ export function economicsError(config: NewsvendorConfig): string | null {
       + 'units would cost nothing and the optimal order would be unbounded.'
   }
   if (CU <= 0) {
-    return 'The underage cost (price − cost + goodwill) must be positive.'
+    return config.dual
+      ? 'The underage cost (the second-source premium) must be positive.'
+      : 'The underage cost (price − cost + goodwill) must be positive.'
   }
 
   if (config.isNormal) {
@@ -288,10 +368,6 @@ export function economicsError(config: NewsvendorConfig): string | null {
       return 'Maximum demand must be greater than minimum demand.'
     }
   }
-
-  // Dual is Part 2. Refused here as well as in updateConfig, so a config written by
-  // any other route still cannot reach the compute step.
-  if (config.dual) return 'Dual sourcing is not available yet.'
 
   return null
 }

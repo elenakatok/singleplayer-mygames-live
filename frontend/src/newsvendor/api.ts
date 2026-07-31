@@ -67,6 +67,10 @@ export type NewsvendorParams = {
   v: number
   g: number
   h: number
+  /** Dual-sourcing mode — the screens branch their labels on it (spec §7a, §7b). */
+  dual: boolean
+  /** DUAL only: the full per-unit cost of the expensive second source. 0 in regular. */
+  cL: number
   /** true = Normal demand, false = Uniform. */
   isNormal: boolean
   mean: number
@@ -90,7 +94,10 @@ export type NewsvendorHistoryRow = {
   demand: number
   sales: number
   unitsOver: number
+  /** REGULAR: demand you could not meet. 0 in dual — nothing is ever short. */
   unitsShort: number
+  /** DUAL: units bought in from the expensive source. 0 in regular. */
+  unitsFromSecondSource: number
   profit: number
   /** Demand proportion met, 0–1. Rendered only when showServiceLevel. */
   serviceLevel: number
@@ -106,6 +113,7 @@ export type NewsvendorRoundOutcome = {
   sales: number
   unitsOver: number
   unitsShort: number
+  unitsFromSecondSource: number
   profit: number
   serviceLevel: number
 }
@@ -169,6 +177,8 @@ export type NewsvendorFreeTextQuestionClient = {
 export type NewsvendorQuestionsResult = {
   ok: boolean
   kcEnabled: boolean
+  /** Which mode this instance runs. The dual set REPLACES the regular one entirely. */
+  dual: boolean
   /** ⚠ TWO SOURCES, KEPT APART: `authored` is this game's fixed ten (fixed teaching
    *  numbers, deliberately NOT the instance's own); `added` is the instructor's own
    *  list with its own keys. The client renders authored-then-added and the server
@@ -306,6 +316,10 @@ export type NewsvendorAddedKcQuestion = {
 export type NewsvendorEditableConfig = {
   P: number
   c: number
+  /** Dual-sourcing mode. One toggle; everything else follows it. */
+  dual: boolean
+  /** Full per-unit cost of the expensive second source. Only meaningful when dual. */
+  cL: number
   v: number
   g: number
   h: number
@@ -333,6 +347,8 @@ export type NewsvendorConfigResult = {
   seed: string | null
   orderBounds: { min: number; max: number }
   benchmark: NewsvendorBenchmark | null
+  /** DUAL only: the DERIVED premium (c_l − c). Null in regular mode. */
+  premium: number | null
   configError: string | null
   /** Read-only preview of the AUTHORED ten, with the key. Not editable: they use
    *  fixed teaching numbers on purpose, so students must recompute. */

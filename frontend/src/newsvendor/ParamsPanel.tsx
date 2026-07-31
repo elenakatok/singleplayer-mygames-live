@@ -53,20 +53,31 @@ export function ParameterBox({ params }: { params: NewsvendorParams }) {
   // so the suppression can be asserted on the ROW's existence rather than on whether
   // the word appears somewhere in the panel (the explanatory sentence below mentions
   // salvage in prose, which a text search would match even when the line is gone).
-  const optional: [string, number, string][] = [
-    ['Salvage value per leftover unit', params.v, 'nv-param-v'],
-    ['Holding cost per leftover unit', params.h, 'nv-param-h'],
-    ['Shortage (goodwill) cost per unit short', params.g, 'nv-param-g'],
-  ]
+  // ⚠ THE MODE DECIDES WHICH LINES EXIST, not just their values.
+  //   DUAL adds the second-supplier cost and REMOVES goodwill — spec §5: there is no
+  //   shortage under dual sourcing, so a goodwill line would describe a penalty that
+  //   can never be charged. It is dropped whatever its stored value.
+  //   REGULAR has no second source, so that line does not exist either.
+  const optional: [string, number, string][] = params.dual
+    ? [
+        ['Salvage value per leftover unit', params.v, 'nv-param-v'],
+        ['Holding cost per leftover unit', params.h, 'nv-param-h'],
+        ['Cost per unit from the second supplier', params.cL, 'nv-param-cl'],
+      ]
+    : [
+        ['Salvage value per leftover unit', params.v, 'nv-param-v'],
+        ['Holding cost per leftover unit', params.h, 'nv-param-h'],
+        ['Shortage (goodwill) cost per unit short', params.g, 'nv-param-g'],
+      ]
   return (
     <section data-testid="nv-parameters" style={card}>
-      <h2 style={sectionTitle}>Your costs and revenue</h2>
+      <h2 style={sectionTitle}>{params.dual ? 'Your costs and revenue' : 'Your costs and revenue'}</h2>
       <div style={row}>
         <span>Selling price per unit</span>
         <strong style={tnum} data-testid="nv-param-P">{formatMoney(params.P)}</strong>
       </div>
       <div style={row}>
-        <span>Cost per unit ordered</span>
+        <span>{params.dual ? 'Cost per unit reserved' : 'Cost per unit ordered'}</span>
         <strong style={tnum} data-testid="nv-param-c">{formatMoney(params.c)}</strong>
       </div>
       {optional.filter(([, value]) => value !== 0).map(([label, value, testId]) => (
@@ -76,9 +87,21 @@ export function ParameterBox({ params }: { params: NewsvendorParams }) {
         </div>
       ))}
       <p style={{ margin: '0.5rem 0 0', fontSize: '0.78rem', color: colors.textSecondary, lineHeight: 1.5 }}>
-        You order before you know demand. Unsold units are salvaged
-        {params.h !== 0 ? ' (less the holding cost)' : ''}; unmet demand is a lost sale
-        {params.g !== 0 ? ' plus the shortage cost' : ''}.
+        {params.dual ? (
+          <>
+            You reserve units before you know demand, at the cost above. Anything you
+            reserved and did not sell is salvaged
+            {params.h !== 0 ? ' (less the holding cost)' : ''}; any demand beyond what you
+            reserved is still met — bought in from the second supplier at its higher cost.
+            You never lose a sale.
+          </>
+        ) : (
+          <>
+            You order before you know demand. Unsold units are salvaged
+            {params.h !== 0 ? ' (less the holding cost)' : ''}; unmet demand is a lost sale
+            {params.g !== 0 ? ' plus the shortage cost' : ''}.
+          </>
+        )}
       </p>
     </section>
   )

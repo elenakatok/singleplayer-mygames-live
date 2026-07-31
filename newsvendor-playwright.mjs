@@ -24,6 +24,8 @@
 //   • the final-results screen, then the debrief;
 //   • ⚠ NO BENCHMARK ANYWHERE — not in the page text, not in any callable response the
 //     browser actually received, at any point in the flow (spec §9.2);
+//   • a FULL DUAL-SOURCING game — the dual KC, the relabelled screens, both the
+//     top-up and leftover paths, the dual debrief, and its own leak audit;
 //   • the INSTRUCTOR dashboard and all five report tiles against a MIXED population;
 //   • ⚠ the dashboard's manual REFRESH button picking up play that happened after the
 //     page opened — and staying stale until it is clicked, which is the design.
@@ -92,6 +94,17 @@ const CFG_NO_EXTRAS = { ...CFG, v: 0, g: 0, h: 0, periods: 2 }
 const bounds = (c) => c.isNormal
   ? { min: Math.max(0, Math.round(c.mean - 3 * c.sd)), max: Math.round(c.mean + 3 * c.sd) }
   : { min: Math.round(c.minD), max: Math.round(c.maxD) }
+
+/** Spec §5 (DUAL) — written out fresh. No goodwill term anywhere. */
+function modelDualPeriod(Q, D, c) {
+  const topup = Math.max(D - Q, 0)
+  const leftover = Math.max(Q - D, 0)
+  return {
+    sales: D, topup, leftover,
+    profit: c.P * D - c.c * Q - c.cL * topup + leftover * (c.v - c.h),
+    sl: D <= 0 ? 1 : Math.min(1, Math.min(Q, D) / D),
+  }
+}
 
 function modelPeriod(Q, D, c) {
   const sales = Math.min(Q, D)
@@ -166,6 +179,7 @@ async function openInstance(gid, cfg, seed) {
     is_normal: boolVal(cfg.isNormal), mean: intVal(cfg.mean), sd: intVal(cfg.sd),
     min_demand: intVal(cfg.minD), max_demand: intVal(cfg.maxD),
     periods: intVal(cfg.periods),   // ⚠ always explicit
+    ...(cfg.dual ? { dual: boolVal(true), second_source_cost: intVal(cfg.cL) } : {}),
   })
   await putDoc(`newsvendor_game_instances/${gid}/truth/main`, { seed: strVal(seed) })
 }
@@ -615,6 +629,138 @@ async function main() {
     check(/In progress \(3 periods\)/.test(after),
       '⚠ …but ONE CLICK of Refresh brings it up to three periods, with no page reload')
     check(before !== after, 'the rendered roster genuinely changed in place')
+
+    // ── 10. ⚠ A FULL DUAL GAME, CLICKED THROUGH ───────────────────────────────
+    console.log('\n[10] Dual sourcing — a full game in the browser')
+    const DUAL_CFG = {
+      P: 3000, c: 1000, v: 800, g: 150, h: 300, cL: 2000, dual: true,
+      isNormal: true, mean: 1000, sd: 300, minD: 0, maxD: 100, periods: 4,
+    }
+    const GID_D = `nvpw-dual-${stamp}`
+    await openInstance(GID_D, DUAL_CFG, 'pw-dual')
+
+    const ctxD = await browser.newContext()
+    const pageD = await ctxD.newPage()
+    const dualResponses = []
+    captureResponses(pageD, dualResponses)
+    await pageD.goto(studentUrl(GID_D, 'nvpw-dual-stu'))
+
+    // The DUAL knowledge check — a different set entirely.
+    await pageD.waitForSelector('[data-testid="nv-kc-prompt"]')
+    const firstDualPrompt = await testId(pageD, 'nv-kc-prompt')
+    check(/dual sourcing|second source|reserve/i.test(firstDualPrompt),
+      '⚠ the DUAL knowledge check is served, not the regular one')
+    const DUAL_VALUES = ['never_short', 'd_80', 'both_met', 'do_20', 'dcr_080', 'dq_484',
+      'dp_up', 'dpt_54000', 'dpl_52000', 'dvs_compare']
+    let dualAnswered = 0
+    for (let i = 0; i < 10; i++) {
+      await pageD.waitForSelector('[data-testid="nv-kc-prompt"]')
+      const vals = await pageD.locator('[data-testid^="nv-kc-option-"]')
+        .evaluateAll(els => els.map(e => e.getAttribute('data-testid').replace('nv-kc-option-', '')))
+      const correct = vals.find(v => DUAL_VALUES.includes(v))
+      check(correct !== undefined, `dual KC question ${i + 1} offers a known-correct option`)
+      await pageD.click(`[data-testid="nv-kc-option-${correct}"]`)
+      await pageD.click('[data-testid="nv-kc-submit"]')
+      await pageD.waitForSelector('[data-testid="nv-kc-correct"]')
+      dualAnswered++
+      await pageD.click('[data-testid="nv-kc-continue"]')
+    }
+    check(dualAnswered === 10, `all TEN dual questions answered (${dualAnswered})`)
+
+    await doPrep(pageD, 'Dual')
+
+    // ── The place-order screen, in dual dress ─────────────────────────────────
+    await pageD.waitForSelector('[data-testid="nv-period-heading"]')
+    check(await exists(pageD, '[data-testid="nv-param-cl"]'),
+      '⚠ the second-supplier cost line is shown (spec §7a)')
+    check(!(await exists(pageD, '[data-testid="nv-param-g"]')),
+      '⚠ …and the goodwill line is NOT — dual never incurs a shortage cost')
+    const clLine = await testId(pageD, 'nv-param-cl')
+    check(clLine.includes(fmtMoney(DUAL_CFG.cL)), `…and it states ${fmtMoney(DUAL_CFG.cL)}`)
+
+    // ── The loop, with a schedule that hits BOTH paths ────────────────────────
+    const dualSchedule = [400, 1000, 1700, 1129]
+    const dualPlays = []
+    for (let n = 1; n <= DUAL_CFG.periods; n++) {
+      await pageD.waitForSelector('[data-testid="nv-period-heading"]')
+      await pageD.fill('[data-testid="nv-order-input"]', String(dualSchedule[n - 1]))
+      await pageD.click('[data-testid="nv-submit-order"]')
+      await pageD.waitForSelector('[data-testid="nv-results"]')
+
+      const D = Number((await testId(pageD, 'nv-result-demand')).replace(/,/g, ''))
+      const Q = dualSchedule[n - 1]
+      const want = modelDualPeriod(Q, D, DUAL_CFG)
+      dualPlays.push({ Q, D, ...want })
+
+      check(await testId(pageD, 'nv-result-sales') === fmtUnits(D),
+        `dual p${n}: ALL ${D} units of demand were sold`)
+      check(!(await exists(pageD, '[data-testid="nv-result-short"]')),
+        `dual p${n}: there is no "units short" line at all`)
+      check(await testId(pageD, 'nv-result-topup') === fmtUnits(want.topup),
+        `dual p${n}: "Units bought from second source" = ${want.topup}`)
+      check(await testId(pageD, 'nv-result-cl') === fmtMoney(DUAL_CFG.cL),
+        `dual p${n}: …at the second-supplier cost`)
+      check(await testId(pageD, 'nv-result-profit') === fmtMoney(want.profit),
+        `dual p${n}: profit = ${fmtMoney(want.profit)}`)
+
+      await pageD.click('[data-testid="nv-continue"]')
+    }
+    const dualTopups = dualPlays.filter(p => p.topup > 0)
+    const dualLeftovers = dualPlays.filter(p => p.leftover > 0)
+    check(dualTopups.length > 0, `the browser game hit the TOP-UP path (${dualTopups.length})`)
+    check(dualLeftovers.length > 0, `…and the LEFTOVER path (${dualLeftovers.length})`)
+
+    // The history table relabels its column too.
+    const dualHist = await pageD.locator('[data-testid="nv-history"]').innerText()
+    check(/From 2nd source/.test(dualHist), 'the history table relabels the shortage column')
+    check(!/Units short/.test(dualHist), '…and drops "Units short" entirely')
+
+    // ── Final screen, then the DUAL debrief ───────────────────────────────────
+    await pageD.waitForSelector('[data-testid="nv-final-heading"]')
+    await pageD.click('[data-testid="nv-final-continue"]')
+    await pageD.waitForSelector('[data-testid="nv-freetext-prompt-debrief_regular"]')
+    const dualDebrief = await testId(pageD, 'nv-freetext-prompt-debrief_regular')
+    check(/reserve/i.test(dualDebrief) && /second source/i.test(dualDebrief),
+      '⚠ the DUAL debrief question is asked (reserve vs second source)')
+    await pageD.fill('[data-testid="nv-freetext-input"]', 'I reserved near the optimal amount.')
+    await pageD.click('[data-testid="nv-freetext-submit"]')
+    await pageD.waitForSelector('[data-testid="nv-all-done"]')
+
+    // ── ⚠ THE DUAL LEAK AUDIT ────────────────────────────────────────────────
+    check(dualResponses.length > 0, `the dual browser received ${dualResponses.length} responses`)
+    const dualOffenders = []
+    for (const { name, body } of dualResponses) {
+      for (const banned of ['q_opt', 'qOpt', 'profit_opt', 'profitOpt', 'criticalRatio', 'benchmark', '"premium"', '"seed"']) {
+        if (body.includes(banned)) dualOffenders.push(`${name}: ${banned}`)
+      }
+    }
+    check(dualOffenders.length === 0,
+      `⚠ no DUAL student response carried the benchmark or the premium (found: ${dualOffenders.join(', ') || 'none'})`)
+    const dualPageText = (await pageD.locator('body').innerText()).toLowerCase()
+    for (const banned of ['optimal', 'benchmark', 'critical ratio']) {
+      check(!dualPageText.includes(banned), `⚠ the dual final screen never says "${banned}"`)
+    }
+
+    // ── The instructor side, on a dual instance ──────────────────────────────
+    const ctxDI = await browser.newContext()
+    const pageDI = await ctxDI.newPage()
+    await pageDI.goto(instrUrl('/dashboard', GID_D))
+    await pageDI.waitForSelector('[data-testid="nv-roster"]', { timeout: 30000 })
+    check(await testId(pageDI, 'nv-instance-qopt') === '1,129',
+      `⚠ the dashboard states the DUAL Q* = 1,129 (got ${await testId(pageDI, 'nv-instance-qopt')})`)
+    check(await testId(pageDI, 'nv-instance-cr') === '0.667',
+      `⚠ …and the dual critical ratio 0.667 (got ${await testId(pageDI, 'nv-instance-cr')})`)
+
+    await pageDI.goto(instrUrl('/settings', GID_D))
+    await pageDI.waitForSelector('[data-testid="nv-set-dual"]', { timeout: 30000 })
+    check(await pageDI.locator('[data-testid="nv-set-dual"]').isChecked(),
+      'settings shows the dual toggle ON')
+    check(await pageDI.locator('[data-testid="nv-set-cl"]').inputValue() === '2000',
+      '…and the second-supplier cost field')
+    check(!(await exists(pageDI, '[data-testid="nv-set-g"]')),
+      '⚠ …and hides the shortage-cost field, which dual never uses')
+    const premiumNote = await testId(pageDI, 'nv-settings-premium')
+    check(/1,000/.test(premiumNote), `the settings page shows the DERIVED premium (${premiumNote})`)
 
     console.log(`\n${'═'.repeat(70)}`)
     console.log(`Newsvendor browser harness: ${passed} passed, ${failed} failed`)

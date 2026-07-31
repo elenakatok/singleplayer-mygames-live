@@ -121,7 +121,7 @@ export function EndScreen({
 
       <section>
         <h2 style={{ fontSize: '0.95rem', marginBottom: '0.5rem' }}>Every period</h2>
-        <HistoryTable history={history} showServiceLevel={params.showServiceLevel} />
+        <HistoryTable history={history} showServiceLevel={params.showServiceLevel} dual={params.dual} />
       </section>
     </div>
   )

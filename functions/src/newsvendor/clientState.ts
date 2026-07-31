@@ -23,6 +23,14 @@ export interface ClientParams {
   g: number
   /** Holding cost per leftover unit. */
   h: number
+  /** Dual-sourcing mode — the screens branch their labels on it (spec §7a, §7b). */
+  dual: boolean
+  /**
+   * DUAL only: the full per-unit cost of the expensive second source, which spec §7a
+   * requires the place-order screen to show. Meaningless when !dual, and sent as 0
+   * there so a regular screen cannot render a second-supplier line by accident.
+   */
+  cL: number
   /** Demand distribution (spec §7a: the demand box states which, and its parameters). */
   isNormal: boolean
   mean: number
@@ -62,6 +70,8 @@ export function clientParams(config: NewsvendorConfig): ClientParams {
     v: config.v,
     g: config.g,
     h: config.h,
+    dual: config.dual,
+    cL: config.dual ? config.cL : 0,
     isNormal: config.isNormal,
     mean: config.mean,
     sd: config.sd,

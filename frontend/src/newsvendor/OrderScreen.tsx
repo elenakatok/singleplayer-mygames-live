@@ -90,7 +90,7 @@ export function PlaceOrder({
           htmlFor="nv-order"
           style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 600 }}
         >
-          How many units will you order?
+          {params.dual ? 'How many units will you reserve?' : 'How many units will you order?'}
         </label>
         <input
           id="nv-order"
@@ -137,7 +137,7 @@ export function PlaceOrder({
       {history.length > 0 && (
         <section style={{ marginTop: '1.5rem' }}>
           <h2 style={{ fontSize: '0.95rem', marginBottom: '0.5rem' }}>Your periods so far</h2>
-          <HistoryTable history={history} showServiceLevel={params.showServiceLevel} />
+          <HistoryTable history={history} showServiceLevel={params.showServiceLevel} dual={params.dual} />
         </section>
       )}
     </div>
@@ -167,7 +167,7 @@ export function PeriodResults({
 
       <section data-testid="nv-results" style={card}>
         <div style={statRow}>
-          <span>Your order</span>
+          <span>{params.dual ? 'You reserved' : 'Your order'}</span>
           <strong style={tnum} data-testid="nv-result-order">{formatUnits(r.yourOrder)}</strong>
         </div>
         <div style={statRow}>
@@ -176,7 +176,11 @@ export function PeriodResults({
         </div>
         {params.showServiceLevel && (
           <div style={statRow}>
-            <span>Your demand proportion met</span>
+            {/* ⚠ In DUAL every unit of demand is met — by the second source if not from
+                the reserve — so "demand proportion met" would always read 100% and say
+                nothing. The number is the same either way; the LABEL is what changes,
+                to name the fraction covered from the cheap reserve. */}
+            <span>{params.dual ? 'Demand covered from your reserve' : 'Your demand proportion met'}</span>
             <strong style={tnum} data-testid="nv-result-sl">{formatPercent(r.serviceLevel)}</strong>
           </div>
         )}
@@ -188,10 +192,28 @@ export function PeriodResults({
           <span>Units over (left unsold)</span>
           <strong style={tnum} data-testid="nv-result-over">{formatUnits(r.unitsOver)}</strong>
         </div>
-        <div style={statRow}>
-          <span>Units short (demand you could not meet)</span>
-          <strong style={tnum} data-testid="nv-result-short">{formatUnits(r.unitsShort)}</strong>
-        </div>
+        {/* ⚠ SPEC §7b: dual RELABELS this, and it is not cosmetic. Those units were not
+            lost — they were SOLD, at the second supplier's higher cost. Calling them
+            "short" would tell the student they failed when they merely paid more. */}
+        {params.dual ? (
+          <>
+            <div style={statRow}>
+              <span>Units bought from second source</span>
+              <strong style={tnum} data-testid="nv-result-topup">
+                {formatUnits(r.unitsFromSecondSource)}
+              </strong>
+            </div>
+            <div style={statRow}>
+              <span>…at the second-supplier cost of</span>
+              <strong style={tnum} data-testid="nv-result-cl">{formatMoney(params.cL)}</strong>
+            </div>
+          </>
+        ) : (
+          <div style={statRow}>
+            <span>Units short (demand you could not meet)</span>
+            <strong style={tnum} data-testid="nv-result-short">{formatUnits(r.unitsShort)}</strong>
+          </div>
+        )}
         <div style={{ ...statRow, borderTop: `1px solid ${colors.borderMid}`, marginTop: '0.4rem', paddingTop: '0.5rem', fontSize: '1rem' }}>
           <span><strong>This period&rsquo;s profit</strong></span>
           <strong
@@ -213,7 +235,7 @@ export function PeriodResults({
 
       <section style={{ marginTop: '0.5rem' }}>
         <h2 style={{ fontSize: '0.95rem', marginBottom: '0.5rem' }}>Your periods so far</h2>
-        <HistoryTable history={result.history} showServiceLevel={params.showServiceLevel} />
+        <HistoryTable history={result.history} showServiceLevel={params.showServiceLevel} dual={params.dual} />
       </section>
     </div>
   )

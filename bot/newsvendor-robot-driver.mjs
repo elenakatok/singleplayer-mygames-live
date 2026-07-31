@@ -160,6 +160,12 @@ async function readParams(page) {
 
   const P = digits(await grab(page, '[data-testid="nv-param-P"]'))
   const c = digits(await grab(page, '[data-testid="nv-param-c"]'))
+  // ⚠ THE MODE IS READ OFF THE SCREEN, not passed in. A dual instance prints the
+  // second-supplier cost and prints NO goodwill line; a regular one is the reverse.
+  // The robot should not need telling which game it is in — same reasoning as pricing's
+  // driver reading its own PMG flag.
+  const dual = await visible(page, '[data-testid="nv-param-cl"]')
+  const cL = dual ? (digits(await grab(page, '[data-testid="nv-param-cl"]')) ?? 0) : 0
   // Absent ⇒ suppressed ⇒ zero (see the note above).
   const v = (await visible(page, '[data-testid="nv-param-v"]')) ? digits(await grab(page, '[data-testid="nv-param-v"]')) : 0
   const h = (await visible(page, '[data-testid="nv-param-h"]')) ? digits(await grab(page, '[data-testid="nv-param-h"]')) : 0
@@ -178,6 +184,7 @@ async function readParams(page) {
 
   return {
     P: P ?? 0, c: c ?? 0, v: v ?? 0, g: g ?? 0, h: h ?? 0,
+    dual, cL,
     isNormal,
     mean: isNormal ? (nums[0] ?? 0) : 0,
     sd: isNormal ? (nums[1] ?? 1) : 1,
@@ -220,7 +227,9 @@ async function playPeriods(page, style, params, log) {
 
     const demand = digits(await grab(page, '[data-testid="nv-result-demand"]'))
     const unitsOver = digits(await grab(page, '[data-testid="nv-result-over"]'))
-    const unitsShort = digits(await grab(page, '[data-testid="nv-result-short"]'))
+    // In dual the "short" line does not exist; the top-up line carries the figure.
+    const unitsShort = digits(await grab(page,
+      params.dual ? '[data-testid="nv-result-topup"]' : '[data-testid="nv-result-short"]')) ?? 0
     const profit = digits(await grab(page, '[data-testid="nv-result-profit"]'))
     history.push({ order, demand, unitsOver, unitsShort, profit })
 
@@ -315,7 +324,8 @@ async function runRobot(robot) {
 
     if (await visible(page, '[data-testid="nv-period-heading"]')) {
       const params = await readParams(page)
-      log(`market: P ${params.P} / c ${params.c} / v ${params.v} / h ${params.h} / g ${params.g} · `
+      log(`${params.dual ? `DUAL (2nd source ${params.cL})` : 'regular'} · `
+        + `market: P ${params.P} / c ${params.c} / v ${params.v} / h ${params.h} / g ${params.g} · `
         + (params.isNormal ? `Normal(${params.mean}, ${params.sd})` : `Uniform[${params.minD}, ${params.maxD}]`)
         + ` · ${params.periods ?? '?'} periods · order ${params.orderMin}–${params.orderMax} · style ${style.key}`)
       await playPeriods(page, style, params, log)
