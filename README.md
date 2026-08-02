@@ -19,6 +19,41 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | `pd` | Repeated Prisoner's Dilemma | `pd.mygames.live` | `pd-mygames-live` |
 | `pricing` | Pricing Game (Cheyenne Shipping) | `pricing.mygames.live` | `pricing-mygames-live` |
 | `newsvendor` | Newsvendor | `newsvendor.mygames.live` | `newsvendor-mygames-live` |
+| `forecast` | The Forecasting Game | `forecast.mygames.live` | `forecast-mygames` |
+
+> `forecast` is **FEATURE-COMPLETE**: knowledge check → the month loop → final results
+> → debrief → the process reveal, participation scoring + the gradebook push, the
+> instructor dashboard, settings, all three report tiers, and a seven-style robot
+> cohort. **Nothing is deployed yet.**
+>
+> ⚠ **The hosting site is `forecast-mygames`, NOT `forecast-mygames-live`** — plain
+> `forecast` is globally taken, and this follows the `poll-mygames` precedent rather
+> than the `<game>-mygames-live` one. The deploy target is still `--only hosting:forecast`.
+>
+> ⚠ **Forecast's config/truth split is the INVERSE of newsvendor's, and it is the
+> whole point of the data model.** Newsvendor keeps its economics in student-readable
+> `config/main` because the student is shown all of it. Here the model IS the answer —
+> explaining the systematic component is the exercise — so `a`, `b`, `H`, `σ`,
+> `highSeasonMonths`, the seasonality flags AND the seed all live in the rules-denied
+> `truth/main`. `config/main` carries only what a student may read off the SDK.
+>
+> ⚠ **Forecast's three invariants, in code:**
+> 1. **The model reaches no student before the debrief.** Every student callable has its
+>    full response shape pinned recursively in `forecast-playthrough.mjs`, and the
+>    browser harness partitions responses to assert the model appears in EXACTLY the two
+>    gated endpoints (`forecastSubmitDebrief`, `forecastGetReveal`) and nowhere else.
+> 2. **The reveal is gated by ONE function** (`forecast/reveal.ts`), called by both the
+>    submit path and the read path: the game must be over AND the debrief behind them.
+>    The paragraph is stored BEFORE the reveal is built, so nobody can read the process
+>    and then describe a method they did not use.
+> 3. **Neither CSV carries a pre-coded high-season indicator** (spec §4, amended 08-02).
+>    Coding the indicator is the analyst's job — slide 11. Neither builder takes a
+>    `ForecastModel` at all, so the export path cannot leak the model.
+>
+> The five-year history is a **fixed array** (spec §2.1's published table, hardcoded):
+> its fitted coefficients and the whole §2.3 benchmark table are quoted against those
+> exact sixty numbers. Futures are drawn **per student**, server-side, after the forecast
+> is committed.
 
 > `newsvendor` is **PART 1 COMPLETE — the REGULAR (single-source) game**: prep → the
 > period loop → final results → a ten-question graded knowledge check → debrief,
@@ -142,6 +177,9 @@ npm run harness:pricing          # HTTP    — the whole server contract
 npm run harness:pricing:browser  # BROWSER — both modes, clicked through
 npm run harness:newsvendor          # HTTP    — the server contract + the negative controls
 npm run harness:newsvendor:browser  # BROWSER — the whole game, clicked through
+npm run harness:forecast            # HTTP    — shape pins, the reveal gate, both CSVs
+npm run harness:forecast:browser    # BROWSER — KC → loop → debrief → reveal
+npm run robots:forecast:dryrun      # ROBOTS  — 7 styles, and the §2.3 spread they must reproduce
 HEADED=1 npm run harness:pricing:browser   # …and watch it play
 
 # Robot cohorts (spec §11) — N independent students, each playing their own full game.
@@ -151,6 +189,11 @@ node bot/pricing-robot-driver.mjs --instance demo-1 --emulator --headless   # dr
 # Newsvendor's cohort walks the whole flow: prep → every period → KC → debrief.
 node bot/newsvendor-robot-driver.mjs --instance <id> --students 8   # LIVE, via the launcher
 node bot/newsvendor-robot-driver.mjs --instance demo-1 --emulator --headless --exit-when-done  # dry run
+
+# Forecast's seven styles ARE the seven §2.3 benchmark rules, so a cohort reproduces
+# the debrief slide rather than merely filling the roster. 7 students = one per rule.
+node bot/forecast-robot-driver.mjs --instance <id> --students 7     # LIVE, via the launcher
+node bot/forecast-robot-driver.mjs --instance demo-1 --emulator --headless --exit-when-done  # dry run
 ```
 
 The browser harness boots the Vite **dev** server itself (dev mode is what enables the

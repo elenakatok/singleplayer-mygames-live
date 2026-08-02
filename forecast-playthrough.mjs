@@ -31,6 +31,11 @@
 // Run:  npm run harness:forecast
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const PROJECT = 'demo-singleplayer'
 const FUNCTIONS = `http://127.0.0.1:5010/${PROJECT}/us-central1`
 const FIRESTORE = `http://127.0.0.1:8090/v1/projects/${PROJECT}/databases/(default)/documents`
@@ -1030,6 +1035,39 @@ async function main() {
     check(scored[FIN].mse !== scored[FIN].participation_score,
       '⚠ the participation score is not derived from MSE')
     check(rep2.result.scored === true, 'the instance is marked finalized')
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  section('[11b] ⚠ THE FRONTEND NEVER REACHES FOR THE FIRESTORE SDK')
+  // ───────────────────────────────────────────────────────────────────────────
+  // Promised at Checkpoint 2 and asserted here rather than left as a property that
+  // merely happens to hold today.
+  //
+  // Rules deny the client both truth/ and participants/, so the SDK could not read this
+  // game's secrets even if something reached for it. But `firebase.ts` DOES export a
+  // `db` handle (the family shell has always had one), and a future screen that
+  // imported it would be one line away from bypassing every whitelist in this build.
+  // The Settings page is the likeliest candidate, because it is the one page whose job
+  // is editing the very document rules forbid it to touch.
+  {
+    const dir = path.join(ROOT, 'frontend', 'src', 'forecast')
+    const files = fs.readdirSync(dir).filter(f => /\.(ts|tsx)$/.test(f))
+    check(files.length > 0, `scanned ${files.length} forecast frontend modules`)
+
+    const offenders = []
+    for (const f of files) {
+      const src = fs.readFileSync(path.join(dir, f), 'utf8')
+      // Any import of the Firestore SDK, or of the shared `db` handle.
+      if (/from\s+['"]firebase\/firestore['"]/.test(src)) offenders.push(`${f} (firebase/firestore)`)
+      if (/import\s*\{[^}]*\bdb\b[^}]*\}\s*from\s+['"][^'"]*firebase['"]/.test(src)) offenders.push(`${f} (db handle)`)
+    }
+    check(offenders.length === 0,
+      `⚠ no forecast module imports the Firestore SDK or the db handle${offenders.length ? ` (${offenders.join(', ')})` : ''}`)
+
+    // And the settings page in particular goes through the callables.
+    const settings = fs.readFileSync(path.join(dir, 'Settings.tsx'), 'utf8')
+    check(/forecastUpdateConfig/.test(settings) && /forecastGetConfig/.test(settings),
+      'Settings edits the model through the callables, as the rules require')
   }
 
   // ───────────────────────────────────────────────────────────────────────────
