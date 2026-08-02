@@ -19,6 +19,9 @@
         ],
         "newsvendor": [
           "newsvendor-mygames-live"
+        ],
+        "forecast": [
+          "forecast-mygames"
         ]
       }
     }

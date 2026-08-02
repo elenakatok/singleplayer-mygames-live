@@ -209,5 +209,60 @@ service cloud.firestore {
         allow write: if false;
       }
     }
+
+    // ── Forecasting Game (game_id: forecast) ───────────────────────────────────
+
+    match /forecast_game_instances/{instanceId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+
+      // Per-instance instructor config (config/main). STUDENT-READABLE, and every
+      // field in it is safe to be: the history length, the played-month count (the
+      // header says "month k of N" — spec §4), the forecast box bounds, the product
+      // and unit labels, and the KC/debrief switches.
+      //
+      // ⚠ THE DEMAND MODEL IS **NOT** HERE, and that is the inversion that separates
+      // this game from newsvendor (functions forecast/config.ts). Newsvendor keeps its
+      // economics in config because the student is shown all of it; here a, b, H, σ
+      // and the high season ARE the answer — "explain the systematic variability" IS
+      // the exercise (spec §7) — so they live in truth/ below. A student who could
+      // read them off config/main with the plain SDK would be able to forecast the
+      // conditional mean exactly, and the game would be over.
+      match /config/{doc} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+
+      // TRUTH (truth/main → the MODEL PARAMETERS **and** the determinism seed). DENY
+      // ALL CLIENT ACCESS — read AND write, unconditionally, with NO exception for the
+      // instructor (who reads and writes it only through an authenticated callable).
+      // Same eBay vCommon pattern as pennies' true_value and newsvendor's seed.
+      //
+      // ⚠ THIS DOC HOLDS TWO SEPARATE SECRETS, EITHER OF WHICH ENDS THE GAME:
+      //   • a, b, H, σ, highSeasonMonths — the systematic component the student is
+      //     being asked to infer (spec §4, §7, §12);
+      //   • the seed — it derives every FUTURE demand draw, so a student holding it
+      //     could compute month 12's demand before forecasting month 11.
+      // Do not move either into config, and do not relax this rule, ever.
+      match /truth/{doc} {
+        allow read, write: if false;
+      }
+
+      // Participant document — per-INSTANCE subcollection, same structural isolation
+      // as the rest of the family.
+      //
+      // ⚠ READ IS DENIED OUTRIGHT, not scoped to "your own doc". A forecast
+      // participant doc carries every REALIZED demand the student has faced — and once
+      // a month is stored it is revealed anyway, so that part is not the risk. The risk
+      // is that a self-read hands them whatever the compute step stores alongside it
+      // without a single callable being involved. Every student read goes through a
+      // callable whose response is a hand-built whitelist (functions forecast/
+      // rounds.ts, clientState.ts), and unplayed months are never written at all. No
+      // client writes either (callables only).
+      match /participants/{participantId} {
+        allow read: if false;
+        allow write: if false;
+      }
+    }
   }
 }

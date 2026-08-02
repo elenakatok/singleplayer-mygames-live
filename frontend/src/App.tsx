@@ -21,6 +21,10 @@ import NewsvendorPlay from './newsvendor/Play'
 import NewsvendorDashboard from './newsvendor/Dashboard'
 import NewsvendorSettings from './newsvendor/Settings'
 import NewsvendorReports from './newsvendor/Reports'
+import ForecastPlay from './forecast/Play'
+import ForecastDashboard from './forecast/Dashboard'
+import ForecastSettings from './forecast/Settings'
+import ForecastReports from './forecast/Reports'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ONE Vite app serves EVERY single-player game (architecture: one bundle, many
@@ -33,11 +37,11 @@ import NewsvendorReports from './newsvendor/Reports'
 // games' sites serve on their next hosting deploy. Adding a game must therefore
 // never change another game's routing — hence the explicit per-game map below.
 //
-// DEV override: ?game=poll / ?game=pd / ?game=pricing / ?game=newsvendor (nav preserves
+// DEV override: ?game=poll / ?game=pd / ?game=pricing / ?game=newsvendor / ?game=forecast (nav preserves
 // the query string, so it carries across pages). Production keys off the hostname alone.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-type Game = 'pennies' | 'poll' | 'pd' | 'pricing' | 'newsvendor'
+type Game = 'pennies' | 'poll' | 'pd' | 'pricing' | 'newsvendor' | 'forecast'
 
 /** Hostname prefix → game. Checked in order; the first match wins. These are
  *  PREFIXES, not exact labels, because a site's default domain carries a suffix
@@ -48,6 +52,7 @@ const HOST_PREFIXES: ReadonlyArray<readonly [string, Game]> = [
   ['pd', 'pd'],
   ['pricing', 'pricing'],
   ['newsvendor', 'newsvendor'],
+  ['forecast', 'forecast'],
 ]
 
 function resolveGame(): Game {
@@ -61,6 +66,7 @@ function resolveGame(): Game {
     if (q === 'pd') return 'pd'
     if (q === 'pricing') return 'pricing'
     if (q === 'newsvendor') return 'newsvendor'
+    if (q === 'forecast') return 'forecast'
   }
   return 'pennies'
 }
@@ -93,6 +99,10 @@ const GAMES: Record<Game, GameScreens> = {
   newsvendor: {
     title: 'Newsvendor',
     Play: NewsvendorPlay, Dashboard: NewsvendorDashboard, Settings: NewsvendorSettings, Reports: NewsvendorReports,
+  },
+  forecast: {
+    title: 'The Forecasting Game',
+    Play: ForecastPlay, Dashboard: ForecastDashboard, Settings: ForecastSettings, Reports: ForecastReports,
   },
 }
 

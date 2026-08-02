@@ -7,6 +7,7 @@ import { POLL_COLLECTION_PREFIX, POLL_CORS_ORIGINS } from './poll/config'
 import { PD_COLLECTION_PREFIX, PD_CORS_ORIGINS } from './pd/config'
 import { PRICING_COLLECTION_PREFIX, PRICING_CORS_ORIGINS } from './pricing/config'
 import { NEWSVENDOR_COLLECTION_PREFIX, NEWSVENDOR_CORS_ORIGINS } from './newsvendor/config'
+import { FORECAST_COLLECTION_PREFIX, FORECAST_CORS_ORIGINS } from './forecast/config'
 
 admin.initializeApp()
 
@@ -144,6 +145,30 @@ export { newsvendorScoreAndRecord } from './newsvendor/scoreAndRecord'
 export { newsvendorGetReport } from './newsvendor/report'
 export { newsvendorGetConfig, newsvendorUpdateConfig } from './newsvendor/instructorConfig'
 
+// ── Forecasting Game (game_id: forecast) ──────────────────────────────────────
+//
+// The student walks: KC → the month loop (forecast → compute → results) → final
+// results → debrief. Demand for a month is drawn SERVER-SIDE AFTER that month's
+// forecast is committed, in the same transaction (forecast/submitRound.ts).
+//
+// ⚠ THIS GAME'S CONFIG/TRUTH SPLIT IS THE INVERSE OF NEWSVENDOR'S. The demand model
+// (a, b, H, σ, the high season) is the ANSWER, not a setting the student is shown, so
+// it lives in the rules-denied truth/main alongside the seed — never in the
+// student-readable config/main. See forecast/config.ts.
+
+export const forecastBootstrap = makeSinglePlayerBootstrap({
+  collectionPrefix: FORECAST_COLLECTION_PREFIX,
+  corsOrigins: FORECAST_CORS_ORIGINS,
+})
+export const forecastInstructorSession = makeSinglePlayerInstructorSession({
+  corsOrigins: FORECAST_CORS_ORIGINS,
+})
+
+// Student.
+export { forecastGetState } from './forecast/getState'
+export { forecastSubmitRound } from './forecast/submitRound'
+export { forecastGetExport } from './forecast/getExport'
+
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 
 function makeHealth(game: string, origins: string[]) {
@@ -165,3 +190,4 @@ export const pollHealth = makeHealth('poll', POLL_CORS_ORIGINS)
 export const pdHealth = makeHealth('pd', PD_CORS_ORIGINS)
 export const pricingHealth = makeHealth('pricing', PRICING_CORS_ORIGINS)
 export const newsvendorHealth = makeHealth('newsvendor', NEWSVENDOR_CORS_ORIGINS)
+export const forecastHealth = makeHealth('forecast', FORECAST_CORS_ORIGINS)
