@@ -214,3 +214,258 @@ export type ForecastExportResult = {
 
 export const forecastGetExport = (kind: 'history' | 'full') =>
   callFn<ForecastExportResult>('forecastGetExport', { kind })
+
+// ── Student: the knowledge check and the debrief (spec §8, §9) ──────────────────
+
+/** One KC question as the student receives it — NO answer key, NO explanation. Both
+ *  are earned by answering (forecastSubmitKcAnswer returns the explanation).
+ *  `options` arrive already shuffled for THIS student (spec §8). */
+export type ForecastKcQuestionClient = {
+  field: string
+  prompt: string
+  options: { value: string; label: string }[]
+  /** Added questions may be free text; the authored nine are always 'mc'. */
+  type?: 'mc' | 'text'
+}
+
+export type ForecastDebriefQuestionClient = {
+  field: string
+  prompt: string
+  placeholder: string
+}
+
+export type ForecastQuestionsResult = {
+  ok: boolean
+  kcEnabled: boolean
+  /** ⚠ TWO SOURCES, KEPT APART: `authored` is this game's fixed nine (which carry their
+   *  own teaching numbers, deliberately NOT the instance's model — the KC runs before
+   *  play); `added` is the instructor's own list with its own keys. */
+  kc: { authored: ForecastKcQuestionClient[]; added: ForecastKcQuestionClient[] }
+  kcAnswered: string[]
+  debriefEnabled: boolean
+  debrief: ForecastDebriefQuestionClient | null
+  debriefSubmitted: boolean
+}
+
+export const forecastGetQuestions = () => callFn<ForecastQuestionsResult>('forecastGetQuestions')
+
+export type ForecastKcAnswerResult = {
+  ok: boolean
+  correct: boolean
+  graded: boolean
+  /** Earned by answering — this is the ONLY path that returns it. */
+  explanation: string
+}
+
+export const forecastSubmitKcAnswer = (field: string, answer: string) =>
+  callFn<ForecastKcAnswerResult>('forecastSubmitKcAnswer', { field, answer })
+
+// ── Student: THE REVEAL (spec §9) ───────────────────────────────────────────────
+//
+// ⚠⚠ THIS IS THE ONE STUDENT PAYLOAD IN THE WHOLE GAME THAT CARRIES THE MODEL, and it
+// is GATED server-side: the game must be over AND the debrief behind them (functions
+// forecast/reveal.ts). Everything else in this client is built to keep a, b, H and σ
+// out of the browser; here they arrive on purpose, because the exercise is finished and
+// the reveal is the highest-value screen in the game.
+//
+// Note the consequence for review: a `RevealPayload` appearing in any type OTHER than
+// these two results would be a leak. It appears in exactly two.
+
+/** The true process, revealed (spec §9). */
+export type ForecastProcess = {
+  intercept: number
+  trend: number
+  highSeasonLift: number
+  highSeasonMonths: number[]
+  sigma: number
+  /** σ² — the floor no forecast can beat (spec §2.3). */
+  floorMse: number
+  seasonality: 'additive' | 'multiplicative'
+}
+
+export type ForecastBenchmarkRow = {
+  id: string
+  label: string
+  /** Null when the rule could not be formed for this student's months. */
+  mse: number | null
+  /** Present on the published table; absent on realized rows. */
+  note?: string
+}
+
+export type ForecastReveal = {
+  process: ForecastProcess
+  /** This student's own final scorecard, so the comparison is against their number. */
+  yours: ForecastRunning
+  years: ForecastYears
+  benchmarks: ForecastBenchmarkRow[]
+  /** True when the rows are this student's REALIZED figures rather than spec §2.3's
+   *  published expectations (an instance whose model was edited). The screen says so. */
+  benchmarksAreRealized: boolean
+  /** Which row is "where the lecture's own method would have landed" (spec §9). */
+  lectureModelId: string
+}
+
+export type ForecastDebriefResult = {
+  ok: boolean
+  field: string
+  stored: boolean
+  answer: string
+  reveal: ForecastReveal
+}
+
+/** Submit the debrief paragraph. The paragraph is stored BEFORE the reveal is built,
+ *  server-side, so a student cannot read the process and then describe a method they
+ *  did not use (spec §9). */
+export const forecastSubmitDebrief = (answer: string) =>
+  callFn<ForecastDebriefResult>('forecastSubmitDebrief', { answer })
+
+/** Re-read the reveal for a student who has already earned it — the resume path
+ *  (spec §4: closeable and resumable; §9: the highest-value screen). Same gate. */
+export const forecastGetReveal = () =>
+  callFn<{ ok: boolean; reveal: ForecastReveal }>('forecastGetReveal')
+
+// ── Instructor: session, roster, scoring, reports, settings ─────────────────────
+//
+// ⚠ EVERYTHING BELOW IS INSTRUCTOR-ONLY, and it DOES carry the demand model. That is
+// correct and required (spec §10): the Tier-3 dashed reference IS the true systematic
+// component, "auto-derived from config, never hand-entered". These callables are behind
+// an instructor session, and no student screen imports from this section.
+
+export type InstructorSessionArgs =
+  | { token: string }
+  | { _dev: { game_instance_id: string } }
+
+export const forecastInstructorSession = (args: InstructorSessionArgs) =>
+  callFn<{ ok: boolean; customToken: string }>('forecastInstructorSession', args)
+
+export const forecastSyncRoster = () => callFn<{ ok: boolean; synced: number }>('forecastSyncRoster')
+
+export type ForecastPushSummary = { total: number; succeeded: number; failed: unknown[] }
+
+export const forecastScoreAndRecord = () =>
+  callFn<{ ok: boolean; scored: number; finishers: number; push: ForecastPushSummary | null }>(
+    'forecastScoreAndRecord')
+
+/** One month of a student's drill-down table (spec §10, Tier 1). */
+export type ForecastStudentMonth = {
+  period: number
+  forecast: number
+  actual: number
+  error: number
+  absoluteError: number
+  squaredError: number
+  absolutePercentageError: number | null
+}
+
+/** One student, as the dashboard and the Tier-1 roster render them (spec §10). */
+export type ForecastReportParticipant = {
+  participant_id: string
+  name: string | null
+  launched: boolean
+  completed: boolean
+  finalized: boolean
+  months_played: number
+  mae: number | null
+  mse: number | null
+  standard_error: number | null
+  mape: number | null
+  accuracy: number | null
+  bonus: number | null
+  mean_error: number | null
+  first_year_mse: number | null
+  second_year_mse: number | null
+  improved: boolean | null
+  knowledge_check_score: number | null
+  participation_score: number | null
+  debrief: string | null
+  months: ForecastStudentMonth[]
+}
+
+/** One month of the Tier-3 class chart. `n` thins as the class spreads out, and the
+ *  chart says so — composition, not behaviour (spec §10). */
+export type ForecastClassPoint = {
+  period: number
+  label: string
+  actual: number
+  forecast: number
+  /** The TRUE systematic component — spec §10's dashed reference. */
+  systematic: number
+  n: number
+}
+
+export type ForecastReportData = {
+  ok: boolean
+  scored: boolean
+  params: ForecastParams
+  /** ⚠ Instructor-only: the true process, for the Tier-3 reference and the summary. */
+  process: ForecastProcess
+  participants: ForecastReportParticipant[]
+  classChart: ForecastClassPoint[]
+  summary: {
+    students: number
+    meanMae: number | null
+    meanMse: number | null
+    /** √(mean MSE) — comparable with the §2.3 benchmark column (see reportStats.ts). */
+    standardError: number | null
+    meanBias: number | null
+    meanMape: number | null
+  }
+  /** Null when this instance's model was edited away from the published one — the
+   *  §2.3 table would then describe a game nobody played. */
+  benchmarks: (ForecastBenchmarkRow & { standardError: number })[] | null
+  histogram: { bins: { lo: number; hi: number; count: number }[]; min: number; max: number } | null
+  debriefPrompt: string
+  numHistory: number
+  historyLength: number
+}
+
+export const forecastGetReport = () => callFn<ForecastReportData>('forecastGetReport')
+
+/** The editable instance settings (spec §3). Split by destination on the server:
+ *  student-safe fields to config/main, the model and seed to the rules-denied
+ *  truth/main. */
+export type ForecastEditableConfig = {
+  numHistory: number
+  rounds: number
+  forecastMin: number
+  forecastMax: number
+  productName: string
+  unitLabel: string
+  periodLabel: string
+  kcEnabled: boolean
+  addedKcQuestions: unknown[]
+  debriefEnabled: boolean
+  debriefPrompt: string
+}
+
+export type ForecastEditableModel = {
+  a: number
+  b: number
+  H: number
+  highSeasonMonths: number[]
+  sigma: number
+  seasonality: 'additive' | 'multiplicative'
+  seasonStructure: 'twoSeason' | 'perMonth'
+  monthOffsets: number[]
+  demandDraw: 'perStudent' | 'common'
+}
+
+export type ForecastConfigResult = {
+  ok: boolean
+  config: ForecastEditableConfig
+  /** ⚠ Instructor-only — the answer key. */
+  model: ForecastEditableModel
+  seed: string | null
+  usesPublishedHistory: boolean
+  /** Advisory only (spec §3, §3a, §5a): warn, never block. */
+  warnings: string[]
+  authoredKcPreview: { field: string; prompt: string; options: { value: string; label: string }[]; correct_value: string }[]
+  authoredKcCount: number
+  anyRoundsPlayed: boolean
+}
+
+export const forecastGetConfig = () => callFn<ForecastConfigResult>('forecastGetConfig')
+
+export const forecastUpdateConfig = (
+  patch: Partial<ForecastEditableConfig & ForecastEditableModel & { seed: string | null }>,
+) => callFn<ForecastConfigResult>('forecastUpdateConfig', patch)

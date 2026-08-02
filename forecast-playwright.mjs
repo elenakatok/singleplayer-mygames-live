@@ -68,14 +68,14 @@ const arrVal = (xs) => ({ arrayValue: { values: xs } })
 const MODEL = { a: 560, b: 4, H: 230, sigma: 30, high: [11, 12] }
 const ROUNDS = 4
 
-async function openInstance(gid) {
+async function openInstance(gid, opts = {}) {
   await putDoc(`forecast_game_instances/${gid}/config/main`, {
     num_history: intVal(60),
     rounds: intVal(ROUNDS),
     forecast_min: intVal(0),
     forecast_max: intVal(3000),
-    kc_enabled: boolVal(false),
-    debrief_enabled: boolVal(false),
+    kc_enabled: boolVal(opts.kc ?? true),
+    debrief_enabled: boolVal(opts.debrief ?? true),
   })
   await putDoc(`forecast_game_instances/${gid}/truth/main`, {
     intercept: intVal(MODEL.a),
@@ -159,7 +159,43 @@ async function main() {
     page.on('pageerror', e => consoleErrors.push(String(e)))
 
     await page.goto(studentUrl(gid, pid))
-    await page.waitForSelector('[data-testid="fc-round-heading"]', { timeout: 30_000 })
+
+    // ───────────────────────────────────────────────────────────────────────
+    section('[0] The knowledge check comes FIRST (spec §4, §8)')
+    // ───────────────────────────────────────────────────────────────────────
+    await page.waitForSelector('[data-testid="fc-kc-prompt"]', { timeout: 30_000 })
+    check(true, 'the flow opens on the knowledge check, not the month loop')
+
+    // ⚠ THE GAME'S OWN DATA IS NOT ON THE KC SCREEN. The KC runs before play and checks
+    // the LECTURE; showing the demand history beside it would invite answering from the
+    // chart instead of from the method.
+    check(!(await exists(page, '[data-testid="fc-demand-chart"]')),
+      '⚠ the demand chart is NOT on the knowledge-check screen')
+    check(!(await exists(page, '[data-testid="fc-month-grid"]')),
+      '⚠ nor is the month-by-year grid')
+
+    // Answer all nine, taking the first option each time (correctness is irrelevant —
+    // the KC is not a gate).
+    let kcCount = 0
+    for (let i = 0; i < 20; i++) {
+      if (!(await exists(page, '[data-testid="fc-kc-prompt"]'))) break
+      const prompt = await testId(page, 'fc-kc-prompt')
+      check(prompt.length > 10, `question ${i + 1} renders a prompt`)
+      await page.locator('[data-testid^="fc-kc-option-"] input').first().check()
+      await page.click('[data-testid="fc-kc-submit"]')
+      await page.waitForSelector('[data-testid="fc-kc-verdict"]', { timeout: 15_000 })
+      // ⚠ The explanation is EARNED — it arrives with the verdict, not with the question.
+      if (i === 0) {
+        const verdict = await testId(page, 'fc-kc-verdict')
+        check(verdict.length > 20, 'the verdict carries an explanation, returned on submit')
+      }
+      kcCount++
+      await page.click('[data-testid="fc-kc-continue"]')
+      await page.waitForTimeout(120)
+    }
+    check(kcCount === 9, `all NINE knowledge-check questions were served (got ${kcCount})`)
+
+    await page.waitForSelector('[data-testid="fc-round-heading"]', { timeout: 15_000 })
 
     // ───────────────────────────────────────────────────────────────────────
     section('[1] The forecast-entry screen (spec §4)')
@@ -341,20 +377,92 @@ async function main() {
       'the benchmark table does NOT appear before the debrief (spec §9)')
 
     // ───────────────────────────────────────────────────────────────────────
+    section('[7b] ⚠⚠ THE DEBRIEF, AND THE REVEAL BEHIND IT (spec §9)')
+    // ───────────────────────────────────────────────────────────────────────
+    await page.click('[data-testid="fc-final-continue"]')
+    await page.waitForSelector('[data-testid="fc-debrief-text"]', { timeout: 15_000 })
+    check(await exists(page, '[data-testid="fc-debrief-prompt"]'), 'the debrief question is asked')
+
+    // ⚠ THE REVEAL IS NOT ON SCREEN YET, and not in the page at all.
+    const beforeText = await page.locator('body').innerText()
+    check(!/560|230|systematic component|standard deviation of/i.test(beforeText),
+      '⚠ the process is NOT revealed before the paragraph is written')
+    check(!(await exists(page, '[data-testid="fc-reveal"]')), '…and the reveal panel is absent')
+
+    await page.fill('[data-testid="fc-debrief-text"]', 'I fitted a trend plus a November/December dummy in Excel.')
+    await page.click('[data-testid="fc-debrief-submit"]')
+    await page.waitForSelector('[data-testid="fc-reveal"]', { timeout: 15_000 })
+
+    check(await exists(page, '[data-testid="fc-reveal-process"]'), 'the true process is revealed on submit')
+    const revealText = await testId(page, 'fc-reveal-process')
+    check(/560/.test(revealText) && /230/.test(revealText),
+      'the reveal names the intercept and the high-season lift')
+    check(/November and December/.test(revealText), '…and names the high season in words')
+    check(await exists(page, '[data-testid="fc-benchmark-table"]'),
+      'the §2.3 benchmark table is shown beside their own MSE (spec §9)')
+    check(await exists(page, '[data-testid="fc-benchmark-reg_holiday"]'),
+      "…including the lecture's own model")
+    check(await exists(page, '[data-testid="fc-benchmark-yours"]'),
+      "…and the student's own row, placed in the same table")
+    const floorText = await testId(page, 'fc-reveal-floor')
+    check(/900/.test(floorText), 'the floor σ² is stated')
+
+    // ⚠ RESUME: a reload must land back on the reveal, not on a dead end.
+    await page.reload()
+    await page.waitForSelector('[data-testid="fc-reveal"]', { timeout: 30_000 })
+    check(true, '⚠ reloading after the debrief returns to the REVEAL, not a dead end (spec §4, §9)')
+
+    // ───────────────────────────────────────────────────────────────────────
     section('[8] ⚠ THE LEAK AUDIT — on what THIS BROWSER actually received')
     // ───────────────────────────────────────────────────────────────────────
     check(responses.length > 0, `captured ${responses.length} callable responses`)
-    const all = responses.map(r => r.body).join('\n')
-    const bannedKeys = /"(a|b|H|sigma|intercept|trend|highSeasonMonths|high_season_lift|seasonality|seasonStructure|monthOffsets|demandDraw|seed)"\s*:/
-    check(!bannedKeys.test(all),
-      '⚠ no response the browser received carries a model-parameter key')
-    check(!/"systematic"|"trueMean"|"floorMse"/.test(all),
-      '…nor a derived form of the process')
+
+    // ⚠⚠ PARTITIONED BY CALLABLE, NOT LUMPED TOGETHER. The reveal legitimately carries
+    // the model (spec §9) — it is the whole point of the debrief screen — so a blanket
+    // "no model anywhere" assertion would fail on correct behaviour. The MEANINGFUL
+    // claim is sharper and is what is asserted here:
+    //
+    //     the model appears in EXACTLY the two GATED endpoints, and nowhere else.
+    //
+    // That is a stronger statement than the blanket one, because it also fails if the
+    // model stops appearing where it should — i.e. if the reveal silently breaks.
+    const REVEAL_FNS = /forecastSubmitDebrief|forecastGetReveal/
+    const modelKeys = /"(intercept|trend|highSeasonLift|highSeasonMonths|sigma|floorMse|seasonality)"\s*:/
+
+    const gated = responses.filter(r => REVEAL_FNS.test(r.url))
+    const ungated = responses.filter(r => !REVEAL_FNS.test(r.url))
+
+    check(gated.length > 0, `the two gated reveal endpoints were exercised (${gated.length} responses)`)
+    check(gated.some(r => modelKeys.test(r.body)),
+      'the reveal DOES carry the process — the debrief screen works (spec §9)')
+
+    const leaked = ungated.filter(r => modelKeys.test(r.body))
+    check(leaked.length === 0,
+      `⚠⚠ NO UNGATED response carries a model parameter${leaked.length ? ` (${leaked[0].url})` : ''}`)
+
+    const ungatedBodies = ungated.map(r => r.body).join('\n')
+    check(!/"seed"\s*:/.test(responses.map(r => r.body).join('\n')),
+      '⚠ the SEED appears in NO response at all — not even the reveal')
+    // ⚠ KEY POSITION, NOT BARE SUBSTRING. The first draft matched `"systematic"`
+    // anywhere and false-positived on the knowledge check, whose Q1 has an OPTION whose
+    // value is literally "systematic" — a question about systematic variability is
+    // supposed to say the word. A leak is a KEY, so the colon is what makes the match
+    // mean anything.
+    check(!/"(systematic|trueMean|model)"\s*:/.test(ungatedBodies),
+      '…nor a derived form of the process on an ungated payload')
+
+    // And the ungated set is not trivially small — the audit has real coverage.
+    check(ungated.length >= 4,
+      `the ungated audit covers ${ungated.length} responses across the whole flow`)
 
     // The futures: the student played 4 of 4, so period 84 is legitimately present —
     // but a student who has played 4 months of a 24-month game must see no month 65+.
+    // ⚠ NO KC ON THIS INSTANCE, deliberately. This check is about the FUTURES — that a
+    // student one month in sees no month past 61 — so the nine knowledge-check screens
+    // in front of the loop are nine round-trips of noise. Turning the KC off keeps the
+    // assertion pointed at the thing it is testing.
     const partialGid = `fc-br2-${stamp}`
-    await openInstance(partialGid)
+    await openInstance(partialGid, { kc: false, debrief: false })
     const page2 = await ctx.newPage()
     const responses2 = []
     captureResponses(page2, responses2)

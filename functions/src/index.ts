@@ -168,6 +168,18 @@ export const forecastInstructorSession = makeSinglePlayerInstructorSession({
 export { forecastGetState } from './forecast/getState'
 export { forecastSubmitRound } from './forecast/submitRound'
 export { forecastGetExport } from './forecast/getExport'
+export { forecastGetQuestions } from './forecast/getQuestions'
+export { forecastSubmitKcAnswer } from './forecast/submitKcAnswer'
+export { forecastSubmitDebrief } from './forecast/submitDebrief'
+// ⚠ The ONLY student callables that carry the demand model, and both are behind the
+// same gate (forecast/reveal.ts): the game must be over AND the debrief behind them.
+export { forecastGetReveal } from './forecast/getReveal'
+
+// Instructor.
+export { forecastSyncRoster } from './forecast/syncRoster'
+export { forecastScoreAndRecord } from './forecast/scoreAndRecord'
+export { forecastGetReport } from './forecast/report'
+export { forecastGetConfig, forecastUpdateConfig } from './forecast/instructorConfig'
 
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 

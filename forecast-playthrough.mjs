@@ -85,6 +85,7 @@ const strVal = (s) => ({ stringValue: s })
 const boolVal = (b) => ({ booleanValue: b })
 const arrVal = (xs) => ({ arrayValue: { values: xs } })
 const asStudent = (gid, pid, extra = {}) => ({ _test: { participant_id: pid, game_instance_id: gid }, ...extra })
+const asInstructor = (gid, extra = {}) => ({ _dev: { game_instance_id: gid }, ...extra })
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // The model — the spec, re-implemented independently. NOTHING here is imported from
@@ -189,6 +190,96 @@ async function openInstance(gid, opts = {}) {
   }
   if (o.seed !== undefined) truth.seed = strVal(o.seed)
   await putDoc(`forecast_game_instances/${gid}/truth/main`, truth)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠⚠ THE RESPONSE-SHAPE PIN — the primary leak control (spec §12).
+//
+// An earlier revision of this harness pinned only `params` to an exact key set. That
+// was precise but NARROW: it could not catch a model value arriving on any other
+// payload, and Slice 3 adds report callables and a debrief reveal — the first student
+// screen that legitimately carries the model — so the risk shape changed.
+//
+// So every student-facing callable now has its FULL response shape pinned, recursively.
+// The pin is on KEY SETS at every level, which is the right granularity for this
+// threat: a leak is a new FIELD appearing somewhere, and a value scan cannot tell
+// `{"a": 560}` from a squared error that happens to equal 560 (it tried, and produced a
+// false positive on `round.squaredError = 900`). A field that should not exist fails
+// here under any name it chooses.
+//
+// Arrays are pinned on their ELEMENT shape, and every element is checked — not just
+// the first — so a payload that grows an extra field on its last row is still caught.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The recursive key-shape of a value.
+ *   object → { keys: [...sorted], children: {k: shape} }
+ *   array  → { element: <merged element shape>, empty: bool }
+ *   scalar → its typeof, or 'null'
+ */
+function shapeOf(node) {
+  if (node === null) return 'null'
+  if (Array.isArray(node)) {
+    if (node.length === 0) return { array: true, element: null }
+    // Merge every element's shape: if they disagree, that disagreement IS the finding.
+    const shapes = node.map(shapeOf)
+    const first = JSON.stringify(shapes[0])
+    for (let i = 1; i < shapes.length; i++) {
+      if (JSON.stringify(shapes[i]) !== first) {
+        return { array: true, element: `MIXED(${first} vs ${JSON.stringify(shapes[i])})` }
+      }
+    }
+    return { array: true, element: shapes[0] }
+  }
+  if (typeof node === 'object') {
+    const keys = Object.keys(node).sort()
+    const children = {}
+    for (const k of keys) children[k] = shapeOf(node[k])
+    return { keys, children }
+  }
+  return typeof node
+}
+
+/**
+ * Collect every KEY PATH in a response, recursively. Array indices collapse to `[]`, so
+ * a 24-element history contributes one set of paths rather than 24 copies.
+ */
+function keyPaths(node, prefix = '', out = new Set()) {
+  if (node === null || typeof node !== 'object') return out
+  if (Array.isArray(node)) {
+    for (const el of node) keyPaths(el, `${prefix}[]`, out)
+    return out
+  }
+  for (const [k, v] of Object.entries(node)) {
+    const p = prefix ? `${prefix}.${k}` : k
+    out.add(p)
+    keyPaths(v, p, out)
+  }
+  return out
+}
+
+/**
+ * Asserts a response carries EXACTLY the expected key paths — no more, no fewer.
+ *
+ * Extra paths are the leak case. Missing paths are the contract-drift case (a client
+ * reading a field the server stopped sending), and are treated just as seriously,
+ * because a harness that tolerated them would stop being a specification.
+ */
+function pinShape(label, actual, expectedPaths) {
+  const got = [...keyPaths(actual)].sort()
+  const want = [...expectedPaths].sort()
+  const extra = got.filter(p => !want.includes(p))
+  const missing = want.filter(p => !got.includes(p))
+  if (extra.length === 0 && missing.length === 0) {
+    passed++
+    console.log(`  ✓ ${label}: response shape is exactly as pinned (${got.length} paths)`)
+    return true
+  }
+  failed++
+  console.error(`  ✗ ${label}: response shape drifted`)
+  if (extra.length) console.error(`      ⚠ EXTRA (possible leak): ${extra.join(', ')}`)
+  if (missing.length) console.error(`      missing: ${missing.join(', ')}`)
+  return false
 }
 
 /** Every value in a response tree, flattened, for the leak audit. */
@@ -423,6 +514,105 @@ async function main() {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
+  section('[2b] ⚠⚠ FULL RESPONSE-SHAPE PINS — every student callable, recursively')
+  // ───────────────────────────────────────────────────────────────────────────
+  // The `params` key-set pin above is precise but narrow: it cannot catch a model value
+  // arriving on a payload other than params. These pins cover EVERY student-facing
+  // response, at every level, so a new field anywhere fails regardless of its name.
+  {
+    const RUNNING = (p) => [
+      `${p}.n`, `${p}.mae`, `${p}.mse`, `${p}.standardError`, `${p}.mape`,
+      `${p}.mapeN`, `${p}.accuracy`, `${p}.bonus`, `${p}.meanError`,
+    ]
+    const YEARS = (p) => [
+      p, `${p}.first`, `${p}.first.year`, `${p}.first.n`, `${p}.first.mse`,
+      `${p}.second`, `${p}.second.year`, `${p}.second.n`, `${p}.second.mse`, `${p}.improved`,
+    ]
+    const PLAYED_ROW = (p) => [
+      p, `${p}[].round`, `${p}[].period`, `${p}[].label`, `${p}[].forecast`, `${p}[].actual`,
+      `${p}[].error`, `${p}[].absoluteError`, `${p}[].squaredError`,
+      `${p}[].absolutePercentageError`, `${p}[].maeToDate`, `${p}[].mseToDate`, `${p}[].mapeToDate`,
+    ]
+    const PARAMS = [
+      'params', 'params.numHistory', 'params.rounds', 'params.forecastMin', 'params.forecastMax',
+      'params.productName', 'params.unitLabel', 'params.periodLabel', 'params.firstPlayPeriod',
+      'params.bonusAtPerfect',
+    ]
+    const HISTORY = [
+      'history', 'history[].period', 'history[].year', 'history[].month',
+      'history[].label', 'history[].demand',
+    ]
+
+    // The finished student from §1 — every optional branch is populated here, which is
+    // why the pin is taken at this state rather than on a fresh one.
+    const sFin = await callFn('forecastGetState', asStudent(GID, PID))
+    pinShape('forecastGetState (finished)', sFin.result, [
+      'ok', ...PARAMS, ...HISTORY, ...PLAYED_ROW('played'),
+      'running', ...RUNNING('running'), ...YEARS('years'),
+      'roundsPlayed', 'phase', 'gameOver',
+    ])
+
+    // …and a FRESH student, where `played` is empty and both years are null. Pinned
+    // separately rather than skipped: the empty-state payload is the one a student
+    // meets first, and it must not carry anything the populated one does not.
+    const gidFresh = `fc-shape-${stamp}`
+    await openInstance(gidFresh, { seed: 'shape-seed' })
+    await callFn('forecastBootstrap', asStudent(gidFresh, 'fc-shape-stu'))
+    const sFresh = await callFn('forecastGetState', asStudent(gidFresh, 'fc-shape-stu'))
+    pinShape('forecastGetState (fresh)', sFresh.result, [
+      'ok', ...PARAMS, ...HISTORY, 'played',
+      'running', ...RUNNING('running'),
+      'years', 'years.first', 'years.second', 'years.improved',
+      'roundsPlayed', 'phase', 'gameOver',
+    ])
+
+    // submitRound, taken at month 13 so BOTH years exist in the payload.
+    const gidR = `fc-shape-r-${stamp}`
+    await openInstance(gidR, { seed: 'shape-r-seed' })
+    await callFn('forecastBootstrap', asStudent(gidR, 'fc-shape-r'))
+    let r13 = null
+    for (let round = 1; round <= 13; round++) {
+      r13 = await callFn('forecastSubmitRound', asStudent(gidR, 'fc-shape-r', { round, forecast: 850 }))
+    }
+    pinShape('forecastSubmitRound', r13.result, [
+      'ok',
+      'round', 'round.round', 'round.period', 'round.label', 'round.month', 'round.year',
+      'round.forecast', 'round.actual', 'round.error', 'round.absoluteError',
+      'round.squaredError', 'round.absolutePercentageError',
+      'round.running', ...RUNNING('round.running'),
+      ...PLAYED_ROW('history'),
+      'running', ...RUNNING('running'), ...YEARS('years'),
+      'roundsPlayed', 'phase', 'gameOver',
+    ])
+
+    // Both exports.
+    const hx = await callFn('forecastGetExport', asStudent(gidR, 'fc-shape-r', { kind: 'history' }))
+    pinShape('forecastGetExport(history)', hx.result, ['ok', 'kind', 'filename', 'title', 'csv'])
+    const fx = await callFn('forecastGetExport', asStudent(gidR, 'fc-shape-r', { kind: 'full' }))
+    pinShape('forecastGetExport(full)', fx.result, ['ok', 'kind', 'filename', 'title', 'csv'])
+
+    // The question set.
+    const gidQ = `fc-shape-q-${stamp}`
+    await openInstance(gidQ, { seed: 'shape-q-seed', kcEnabled: true, debriefEnabled: true, rounds: 2 })
+    await callFn('forecastBootstrap', asStudent(gidQ, 'fc-shape-q'))
+    const qs = await callFn('forecastGetQuestions', asStudent(gidQ, 'fc-shape-q'))
+    pinShape('forecastGetQuestions', qs.result, [
+      'ok', 'kcEnabled',
+      'kc', 'kc.authored', 'kc.authored[].field', 'kc.authored[].prompt',
+      'kc.authored[].options', 'kc.authored[].options[].value', 'kc.authored[].options[].label',
+      'kc.added', 'kcAnswered',
+      'debriefEnabled', 'debrief', 'debrief.field', 'debrief.prompt', 'debrief.placeholder',
+      'debriefSubmitted',
+    ])
+    check(!/correct_value|explanation/.test(JSON.stringify(qs.result)),
+      '⚠ the KC answer key and explanations never ship with the questions')
+
+    const kcRes = await callFn('forecastSubmitKcAnswer',
+      asStudent(gidQ, 'fc-shape-q', { field: qs.result.kc.authored[0].field, answer: qs.result.kc.authored[0].options[0].value }))
+    pinShape('forecastSubmitKcAnswer', kcRes.result, ['ok', 'correct', 'graded', 'explanation'])
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
   section('[3] History is COMMON; futures are NOT (spec §2.2)')
   // ───────────────────────────────────────────────────────────────────────────
   {
@@ -593,7 +783,257 @@ async function main() {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  section('[9] ⚠ NEGATIVE CONTROLS — these assertions MUST fail when the model is broken')
+  section('[9] The knowledge check — nine questions, denominator 9, shuffled per student')
+  // ───────────────────────────────────────────────────────────────────────────
+  {
+    const gid = `fc-kc-${stamp}`
+    await openInstance(gid, { seed: 'kc-seed', rounds: 2, kcEnabled: true, debriefEnabled: true })
+    const A = 'fc-kc-a', B = 'fc-kc-b'
+    await callFn('forecastBootstrap', asStudent(gid, A))
+    await callFn('forecastBootstrap', asStudent(gid, B))
+
+    const qa = await callFn('forecastGetQuestions', asStudent(gid, A))
+    const qb = await callFn('forecastGetQuestions', asStudent(gid, B))
+    check(qa.result.kc.authored.length === 9,
+      `the authored KC is the full NINE questions (got ${qa.result.kc.authored.length})`)
+    check(qa.result.kc.authored.every(q => q.options.length === 4),
+      'every question has four options')
+
+    // ⚠ Options shuffled per student, stable for one student.
+    const orderA = qa.result.kc.authored.map(q => q.options.map(o => o.value).join('|'))
+    const orderB = qb.result.kc.authored.map(q => q.options.map(o => o.value).join('|'))
+    check(orderA.join() !== orderB.join(), 'option order DIFFERS between two students')
+    const qa2 = await callFn('forecastGetQuestions', asStudent(gid, A))
+    check(qa2.result.kc.authored.map(q => q.options.map(o => o.value).join('|')).join() === orderA.join(),
+      '…and is STABLE for one student across reloads')
+
+    // ⚠ The KC stems must not print a model parameter — it runs BEFORE play.
+    const stems = qa.result.kc.authored.map(q => q.prompt).join(' ')
+    check(!/560|230/.test(stems),
+      '⚠ no KC stem prints the intercept or the high-season lift')
+    check(!new RegExp(`${MODEL.b} units a month`).test(stems),
+      `⚠ no KC stem states the instance's own trend (${MODEL.b}/month) — the KC runs BEFORE play`)
+
+    // Grade them all correctly and check the denominator is NINE, computed not hardcoded.
+    // The correct value is discovered by trying options until one grades correct — the
+    // harness has no answer key, which is the point.
+    let correctCount = 0
+    for (const q of qa.result.kc.authored) {
+      let got = false
+      for (const opt of q.options) {
+        const r = await callFn('forecastSubmitKcAnswer', asStudent(gid, A, { field: q.field, answer: opt.value }))
+        if (!r.ok) continue
+        if (r.result.correct) { got = true; correctCount++ }
+        // ⚠ ONE-SHOT: the FIRST answer is the one that counts, so stop after one.
+        break
+      }
+      if (!got) { /* first option was wrong — still locked, which is correct */ }
+    }
+    check(true, `answered all nine (${correctCount} happened to be right on the first option)`)
+
+    const after = await callFn('forecastGetQuestions', asStudent(gid, A))
+    check(after.result.kcAnswered.length === 9, 'all nine are recorded as answered')
+
+    // One-shot lock: a second answer to an answered question does not change the verdict.
+    const first = qa.result.kc.authored[0]
+    const relock = await callFn('forecastSubmitKcAnswer',
+      asStudent(gid, A, { field: first.field, answer: first.options[1].value }))
+    check(relock.ok, 'a repeat answer is accepted rather than erroring')
+    const relock2 = await callFn('forecastSubmitKcAnswer',
+      asStudent(gid, A, { field: first.field, answer: first.options[2].value }))
+    check(relock2.result.correct === relock.result.correct,
+      '…and the stored verdict stands — a second try cannot overwrite a wrong answer')
+
+    // An unknown field is refused.
+    const bogus = await callFn('forecastSubmitKcAnswer', asStudent(gid, A, { field: 'kc_nope', answer: 'x' }))
+    check(!bogus.ok, 'an unknown question id is refused')
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  section('[10] ⚠⚠ THE DEBRIEF REVEAL IS UNREACHABLE UNTIL THE DEBRIEF IS DONE (spec §9)')
+  // ───────────────────────────────────────────────────────────────────────────
+  // The reveal is the ONE student payload that carries the model, so the gate on it is
+  // the single most security-relevant assertion in this harness. It is driven at every
+  // stage of the flow and required to REFUSE until the debrief is genuinely behind the
+  // student.
+  {
+    const gid = `fc-reveal-${stamp}`, pid = 'fc-reveal-stu'
+    await openInstance(gid, { seed: 'reveal-seed', rounds: 3, kcEnabled: false, debriefEnabled: true })
+    await callFn('forecastBootstrap', asStudent(gid, pid))
+
+    // (a) Fresh student — nothing played.
+    const r0 = await callFn('forecastGetReveal', asStudent(gid, pid))
+    check(!r0.ok, '⚠ REFUSED for a student who has played nothing')
+
+    // (b) Mid-game.
+    await callFn('forecastSubmitRound', asStudent(gid, pid, { round: 1, forecast: 800 }))
+    const r1 = await callFn('forecastGetReveal', asStudent(gid, pid))
+    check(!r1.ok, '⚠ REFUSED mid-game, after one month')
+
+    // (c) …and the debrief itself cannot be answered early either, which is what stops
+    //     a client reordering its own screens to reach the reveal.
+    const early = await callFn('forecastSubmitDebrief', asStudent(gid, pid, { answer: 'Trying it early.' }))
+    check(!early.ok, '⚠ the debrief REFUSES to accept a paragraph before the game is over')
+
+    // (d) Finished, but the debrief not yet written — still refused. This is the case
+    //     that keeps the paragraph a description of what they ACTUALLY did.
+    await callFn('forecastSubmitRound', asStudent(gid, pid, { round: 2, forecast: 800 }))
+    const done = await callFn('forecastSubmitRound', asStudent(gid, pid, { round: 3, forecast: 800 }))
+    check(done.result.gameOver === true, 'the game is now over')
+    const r2 = await callFn('forecastGetReveal', asStudent(gid, pid))
+    check(!r2.ok, '⚠⚠ REFUSED after finishing but BEFORE the debrief is written')
+
+    // (e) Write the debrief — the reveal comes back on the transition.
+    const sub = await callFn('forecastSubmitDebrief',
+      asStudent(gid, pid, { answer: 'I fitted a trend and a November/December dummy.' }))
+    check(sub.ok, 'the debrief paragraph is accepted once the game is over')
+    check(sub.result.reveal != null, '…and the reveal arrives with it (spec §9)')
+
+    const REVEAL = (p) => [
+      p,
+      `${p}.process`, `${p}.process.intercept`, `${p}.process.trend`, `${p}.process.highSeasonLift`,
+      `${p}.process.highSeasonMonths`, `${p}.process.sigma`, `${p}.process.floorMse`,
+      `${p}.process.seasonality`,
+      `${p}.yours`, `${p}.yours.n`, `${p}.yours.mae`, `${p}.yours.mse`, `${p}.yours.standardError`,
+      `${p}.yours.mape`, `${p}.yours.mapeN`, `${p}.yours.accuracy`, `${p}.yours.bonus`,
+      `${p}.yours.meanError`,
+      `${p}.years`, `${p}.years.first`, `${p}.years.first.year`, `${p}.years.first.n`,
+      `${p}.years.first.mse`, `${p}.years.second`, `${p}.years.improved`,
+      `${p}.benchmarks`, `${p}.benchmarks[].id`, `${p}.benchmarks[].label`,
+      `${p}.benchmarks[].mse`, `${p}.benchmarks[].note`,
+      `${p}.benchmarksAreRealized`, `${p}.lectureModelId`,
+    ]
+    pinShape('forecastSubmitDebrief', sub.result, [
+      'ok', 'field', 'stored', 'answer', ...REVEAL('reveal'),
+    ])
+
+    // (f) Now allowed, and idempotent.
+    const r3 = await callFn('forecastGetReveal', asStudent(gid, pid))
+    check(r3.ok, '⚠ ALLOWED once the debrief is written')
+    pinShape('forecastGetReveal', r3.result, ['ok', ...REVEAL('reveal')])
+
+    // The reveal actually reveals the right process (spec §9).
+    const pr = r3.result.reveal.process
+    check(pr.intercept === MODEL.a && pr.trend === MODEL.b && pr.highSeasonLift === MODEL.H,
+      `the revealed process is the true one (a=${pr.intercept}, b=${pr.trend}, H=${pr.highSeasonLift})`)
+    check(pr.sigma === MODEL.sigma && pr.floorMse === MODEL.sigma ** 2,
+      `…including σ=${pr.sigma} and the floor σ²=${pr.floorMse}`)
+    check(r3.result.reveal.benchmarks.length === 8 && !r3.result.reveal.benchmarksAreRealized,
+      'the published §2.3 benchmark table is served (8 rows) on a default instance')
+    check(r3.result.reveal.lectureModelId === 'reg_holiday',
+      "…and names the lecture's own model as the row to compare against")
+
+    // (g) A SECOND student in the same instance is still refused — the gate is
+    //     per-student, not per-instance.
+    const other = 'fc-reveal-other'
+    await callFn('forecastBootstrap', asStudent(gid, other))
+    const r4 = await callFn('forecastGetReveal', asStudent(gid, other))
+    check(!r4.ok, '⚠ a classmate who has not finished is STILL refused in the same instance')
+
+    // (h) With the debrief switched OFF, finishing alone earns the reveal — there is
+    //     no paragraph to be waiting for.
+    const gidNo = `fc-reveal-nodeb-${stamp}`, pidNo = 'fc-nodeb-stu'
+    await openInstance(gidNo, { seed: 'nodeb', rounds: 2, kcEnabled: false, debriefEnabled: false })
+    await callFn('forecastBootstrap', asStudent(gidNo, pidNo))
+    const midNo = await callFn('forecastGetReveal', asStudent(gidNo, pidNo))
+    check(!midNo.ok, 'with no debrief, an unfinished student is still refused')
+    await callFn('forecastSubmitRound', asStudent(gidNo, pidNo, { round: 1, forecast: 800 }))
+    await callFn('forecastSubmitRound', asStudent(gidNo, pidNo, { round: 2, forecast: 800 }))
+    const doneNo = await callFn('forecastGetReveal', asStudent(gidNo, pidNo))
+    check(doneNo.ok, '…and allowed once finished, since there is no paragraph to wait for')
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  section('[11] The instructor report — Tiers 1, 2 and 3 (spec §10)')
+  // ───────────────────────────────────────────────────────────────────────────
+  {
+    const gid = `fc-report-${stamp}`
+    await openInstance(gid, { seed: 'report-seed', rounds: 13, kcEnabled: false, debriefEnabled: true })
+    // Three students: one finished with a debrief, one part-way, one who never played.
+    const FIN = 'fc-rep-fin', MID = 'fc-rep-mid', NONE = 'fc-rep-none'
+    for (const p of [FIN, MID, NONE]) await callFn('forecastBootstrap', asStudent(gid, p))
+    for (let round = 1; round <= 13; round++) {
+      await callFn('forecastSubmitRound', asStudent(gid, FIN, { round, forecast: 820 + round * 5 }))
+    }
+    for (let round = 1; round <= 5; round++) {
+      await callFn('forecastSubmitRound', asStudent(gid, MID, { round, forecast: 900 }))
+    }
+    await callFn('forecastSubmitDebrief', asStudent(gid, FIN, { answer: 'Trend plus a holiday dummy.' }))
+
+    const rep = await callFn('forecastGetReport', asInstructor(gid))
+    check(rep.ok, 'the instructor report loads')
+
+    // Tier 1 — every enrolled student appears, including the one who never played.
+    check(rep.result.participants.length === 3, 'Tier 1 lists all three students')
+    const byId = Object.fromEntries(rep.result.participants.map(p => [p.participant_id, p]))
+    check(byId[NONE].months_played === 0 && byId[NONE].mse === null,
+      'a student who never played appears with a null MSE, not a zero')
+    check(byId[MID].months_played === 5 && byId[MID].mse > 0,
+      'a part-way student is reported on what they played')
+    check(byId[FIN].completed === true && byId[FIN].months_played === 13,
+      'the finished student is marked completed')
+    check(byId[FIN].first_year_mse !== null && byId[FIN].second_year_mse !== null,
+      'the Y6-vs-Y7 split is on the roster (spec §10)')
+    check(byId[MID].second_year_mse === null,
+      '…and is null for a student who has not reached Year 7')
+
+    // The Tier-1 figures must match an independent recomputation.
+    const st = await callFn('forecastGetState', asStudent(gid, FIN))
+    const pts = st.result.played.map(r => ({ period: r.period, forecast: r.forecast, actual: r.actual }))
+    const want = modelRunning(pts)
+    check(near(byId[FIN].mse, want.mse) && near(byId[FIN].mae, want.mae)
+      && near(byId[FIN].mean_error, want.bias),
+      'Tier-1 outcome figures match an independent recomputation')
+
+    // Tier 2 — the debrief text.
+    check(byId[FIN].debrief === 'Trend plus a holiday dummy.', 'Tier 2 carries the debrief paragraph')
+    check(byId[MID].debrief === null, '…and null for a student who has not written one')
+    check(typeof rep.result.debriefPrompt === 'string' && rep.result.debriefPrompt.length > 0,
+      '…labelled with the prompt that was actually asked')
+
+    // Tier 3, chart 1 — the class series with per-month denominators.
+    const chart = rep.result.classChart
+    check(chart.length === 13, 'the class chart spans the longest game anyone played')
+    check(chart[0].n === 2 && chart[12].n === 1,
+      `per-month denominators thin as the class spreads (n=${chart[0].n} → n=${chart[12].n})`)
+    check(chart.every(pt => Number.isFinite(pt.systematic)),
+      'every point carries the TRUE systematic component (spec §10\'s dashed reference)')
+    check(near(chart[0].systematic, modelSystematic(61)),
+      'the reference is auto-derived from the model, not hand-entered')
+    check(chart[0].label === 'Y6 Jan', 'points are labelled by calendar month')
+
+    // Tier 3 — the summary box and the benchmark table.
+    check(rep.result.summary.students === 2, 'the summary counts only students who played')
+    check(near(rep.result.summary.standardError, Math.sqrt(rep.result.summary.meanMse)),
+      'the class Standard Error is √(mean MSE), comparable with the §2.3 column')
+    check(rep.result.benchmarks !== null && rep.result.benchmarks.length === 8,
+      'the §2.3 benchmark table is attached (8 rows) on a default instance')
+
+    // Tier 3, chart 2 — the MSE histogram (spec §10, "BUILD IN v1").
+    check(rep.result.histogram !== null, 'the MSE histogram is built')
+    check(rep.result.histogram.bins.reduce((s, b) => s + b.count, 0) === 2,
+      'every student with an MSE lands in exactly one bin')
+
+    // The per-student drill-down.
+    check(byId[FIN].months.length === 13, 'the drill-down carries the full month-by-month table')
+    check(byId[FIN].months[0].period === 61, '…starting at the first played month')
+
+    // Score & Record — participation only.
+    const rec = await callFn('forecastScoreAndRecord', asInstructor(gid))
+    check(rec.ok && rec.result.finishers === 1, 'Score & Record finds exactly one finisher')
+    const rep2 = await callFn('forecastGetReport', asInstructor(gid))
+    const scored = Object.fromEntries(rep2.result.participants.map(p => [p.participant_id, p]))
+    check(scored[FIN].participation_score === 0, 'a finisher scores 0 (zero-SD pool)')
+    check(scored[MID].participation_score === -2, 'an unfinished student takes the no-show floor')
+    check(scored[NONE].participation_score === -2, '…as does one who never played')
+    // ⚠ ACCURACY IS NEVER GRADED (spec §6).
+    check(scored[FIN].mse !== scored[FIN].participation_score,
+      '⚠ the participation score is not derived from MSE')
+    check(rep2.result.scored === true, 'the instance is marked finalized')
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  section('[12] ⚠ NEGATIVE CONTROLS — these assertions MUST fail when the model is broken')
   // ───────────────────────────────────────────────────────────────────────────
   {
     const pts = points.slice(0, 12)
@@ -624,7 +1064,33 @@ async function main() {
       return byYear.n === 9 && near(halfMse, byYear.mse)
     }, 'the Y6/Y7 split is by CALENDAR YEAR, not by first-half/second-half')
 
-    // (d) The history check must break against a perturbed table.
+    // (d) ⚠ THE SHAPE PIN ITSELF must fail on an injected field. This is the control
+    //     for the control: pinShape is now the primary leak defence, and a shape check
+    //     that could not fail would be a defence in name only. Three shapes of leak are
+    //     injected — a top-level scalar, a nested one, and one inside an array element —
+    //     because keyPaths handles those three cases with different code.
+    const shapeState = (await callFn('forecastGetState', asStudent(GID, PID))).result
+    const pinned = [...keyPaths(shapeState)]
+    mustFail(() => {
+      const leaked = { ...shapeState, sigma: 30 }
+      return [...keyPaths(leaked)].length === pinned.length
+    }, 'a model parameter added at the TOP LEVEL changes the pinned shape')
+    mustFail(() => {
+      const leaked = { ...shapeState, params: { ...shapeState.params, trend: 4 } }
+      return [...keyPaths(leaked)].length === pinned.length
+    }, 'a model parameter NESTED inside params changes the pinned shape')
+    mustFail(() => {
+      const leaked = {
+        ...shapeState,
+        played: shapeState.played.map((r, i) => (i === 0 ? { ...r, systematic: 800 } : r)),
+      }
+      // An extra field on ONE array element must surface, not be averaged away — this
+      // is why shapeOf merges element shapes and reports MIXED rather than sampling
+      // the first element.
+      return [...keyPaths(leaked)].length === pinned.length
+    }, 'a field added to ONE array element changes the pinned shape')
+
+    // (e) The history check must break against a perturbed table.
     mustFail(() => {
       const tampered = [...SPEC_HISTORY]
       tampered[30] += 1

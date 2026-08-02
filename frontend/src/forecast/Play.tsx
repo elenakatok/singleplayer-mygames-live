@@ -1,14 +1,18 @@
 import { useEffect, useState } from 'react'
 import { auth } from '../firebase'
 import {
-  forecastBootstrap, forecastGetState, STUDENT_CLASSROOM_URL,
+  forecastBootstrap, forecastGetState, forecastGetQuestions, forecastGetReveal,
+  STUDENT_CLASSROOM_URL,
   type ForecastHistoryPoint, type ForecastParams, type ForecastPlayedRow,
   type ForecastRoundResult, type ForecastRunning, type ForecastYears,
+  type ForecastKcQuestionClient, type ForecastDebriefQuestionClient, type ForecastReveal,
 } from './api'
 import { PageShell } from '../shared/PageShell'
 import { SequenceRunner, loopScreen, type SequenceScreen } from '../shared/sequence'
 import { EnterForecast, MonthResults } from './ForecastScreen'
 import { EndScreen } from './EndScreen'
+import { KcScreen } from './KcScreen'
+import { DebriefScreen, RevealPanel } from './DebriefScreen'
 import { forecastResumeIndex, forecastScreenCount, forecastStartIteration } from './resume'
 import { useStudentSession, typography } from '@mygames/game-ui'
 import type { BootstrapArgs } from '@mygames/game-ui'
@@ -21,10 +25,17 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 //   no gate)  compute →                          reveals the
 //             results, ×N)                       process — §9)
 //
-// ⚠ SLICE 2 BUILDS THE LOOP AND THE FINAL SCREEN. The KC and the debrief are Slice 3;
-// their screens slot into the positions the sequence below already reserves for them,
-// and `resume.ts` already counts them — so adding them is a change to this file's
-// screen list, not to the resume arithmetic.
+// ⚠ THE KC COMES FIRST, and that is spec §4's flow line (instructions → KC → loop).
+// Students arrive having had the forecasting lecture, so the KC checks the LECTURE
+// rather than the play: Q4 and Q5 are read straight off slide 14 and are the skill they
+// need to fit the game's own model. Putting it after play would test what they had
+// already been forced to work out for themselves.
+//
+// ⚠ THE REVEAL IS NOT FETCHED SPECULATIVELY. `forecastGetReveal` is called ONLY when
+// the server has already told us the debrief is submitted — never on mount, never
+// "just in case". It would be refused anyway (the gate is server-side, functions
+// forecast/reveal.ts), but not asking for the answer key until it has been earned keeps
+// the client's behaviour honest about what it is entitled to.
 //
 // ⚠ THE HORIZON IS SHOWN, unlike PD and pricing (spec §4, §15). `params.rounds` is
 // public config here; there is no hidden round count to keep out of the bundle, so the
@@ -41,6 +52,12 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 type Loaded = {
   params: ForecastParams
   history: ForecastHistoryPoint[]
+  kc: ForecastKcQuestionClient[]
+  debrief: ForecastDebriefQuestionClient | null
+  debriefEnabled: boolean
+  /** Non-null only for a returning student who has ALREADY written their debrief —
+   *  fetched through the gated callable, never speculatively. */
+  reveal: ForecastReveal | null
 }
 
 type Screen =
@@ -84,24 +101,42 @@ export default function Play() {
   useEffect(() => {
     if (session.kind !== 'ready') return
     let cancelled = false
-    forecastGetState()
-      .then(state => {
+    Promise.all([forecastGetState(), forecastGetQuestions()])
+      .then(async ([state, questions]) => {
         if (cancelled) return
-        setLoaded({ params: state.params, history: state.history })
+        // Rendered order: the authored nine, THEN the instructor's additions. The
+        // server keeps the two sources apart and grades each on its own path (api.ts);
+        // this flattening is for rendering ORDER only.
+        const kc = [...questions.kc.authored, ...questions.kc.added]
+
+        // ⚠ ONLY when the server says the debrief is already answered. See the header:
+        // the reveal is never requested speculatively.
+        let reveal: ForecastReveal | null = null
+        if (questions.debriefSubmitted) {
+          try { reveal = (await forecastGetReveal()).reveal } catch { reveal = null }
+        }
+        if (cancelled) return
+
+        setLoaded({
+          params: state.params,
+          history: state.history,
+          kc,
+          debrief: questions.debrief,
+          debriefEnabled: questions.debriefEnabled,
+          reveal,
+        })
         setPlayed(state.played)
         setRunning(state.running)
         setYears(state.years)
 
-        // Slice 2: no KC and no debrief screens yet, so both counts are zero/false.
-        // Slice 3 passes the real numbers; the arithmetic does not change.
-        const kcCount = 0
-        const debriefEnabled = false
+        const kcCount = kc.length
+        const debriefEnabled = questions.debriefEnabled
         const start = forecastResumeIndex({
           gameOver: state.gameOver,
           kcCount,
-          kcAnswered: 0,
+          kcAnswered: questions.kcAnswered.length,
           debriefEnabled,
-          debriefSubmitted: false,
+          debriefSubmitted: questions.debriefSubmitted,
         })
         if (start >= forecastScreenCount(kcCount, debriefEnabled)) {
           setScreen({ name: 'done' })
@@ -145,23 +180,42 @@ export default function Play() {
   if (screen.name === 'error') return <PageShell><p style={{ color: '#c00' }}>{screen.message}</p></PageShell>
 
   if (screen.name === 'done' && loaded !== null) {
+    // ⚠ A FINISHED STUDENT LANDS ON THE REVEAL, not on the results screen they have
+    // already read. Spec §9 calls it the highest-value screen in the game, so a student
+    // who closes the tab after submitting and comes back must find it again rather than
+    // a dead end. `loaded.reveal` is populated only when the server confirmed the
+    // debrief was answered.
     return (
       <PageShell>
-        <EndScreen
-          params={loaded.params}
-          history={loaded.history}
-          played={played}
-          running={running}
-          years={years}
-        />
+        {loaded.reveal !== null
+          ? <RevealPanel reveal={loaded.reveal} />
+          : (
+            <EndScreen
+              params={loaded.params}
+              history={loaded.history}
+              played={played}
+              running={running}
+              years={years}
+            />
+          )}
       </PageShell>
     )
   }
 
   if (screen.name === 'flow' && loaded !== null) {
-    const { params, history } = loaded
+    const { params, history, kc, debrief } = loaded
 
     const screens: SequenceScreen[] = [
+      // ── The knowledge check FIRST: one graded screen per question, no gate ───
+      // Graded, and NOT a gate — a wrong answer is recorded, scored, and the student
+      // continues regardless (spec §8).
+      ...kc.map((q, i) => ({
+        id: q.field,
+        render: ({ onDone }: { onDone: () => void }) => (
+          <KcScreen question={q} index={i} total={kc.length} onDone={onDone} />
+        ),
+      })),
+
       // ── The month loop: forecast → results, repeated to the configured N ─────
       loopScreen<ForecastRoundResult>({
         id: 'forecast-months',
@@ -190,7 +244,7 @@ export default function Play() {
         ),
       }),
 
-      // ── Final results (spec §5) — the last content screen in Slice 2. ────────
+      // ── Final results (spec §5), then the debrief. ───────────────────────────
       {
         id: 'forecast-final',
         render: ({ onDone }: { onDone: () => void }) => (
@@ -204,6 +258,14 @@ export default function Play() {
           />
         ),
       },
+
+      // ── The debrief paragraph, then the REVEAL (spec §9). ────────────────────
+      ...(debrief ? [{
+        id: debrief.field,
+        render: ({ onDone }: { onDone: () => void }) => (
+          <DebriefScreen question={debrief} onDone={onDone} initialReveal={loaded.reveal} />
+        ),
+      }] : []),
     ]
 
     return (
