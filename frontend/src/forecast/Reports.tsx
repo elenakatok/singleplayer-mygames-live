@@ -1,326 +1,452 @@
-import { Fragment, useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { colors, typography } from '@mygames/game-ui'
+import {
+  ReportBoard, SortableTable, colors, type ReportTileConfig, type SortableColumn,
+} from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
-  forecastGetReport, forecastInstructorSession,
-  instructorErrorMessage,
+  forecastGetReport, forecastInstructorSession, instructorErrorMessage,
   type ForecastReportData, type ForecastReportParticipant,
 } from './api'
 import { ClassChartSVG, MseHistogramSVG } from './ClassChartSVG'
 import { formatBig, formatMetric, formatMoney, formatPercent, formatSigned } from './format'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Forecasting — the reports page (Reports Contract v1, spec §10).
+// Forecasting reports, through the shared ReportBoard + a modal per tile — the same
+// shape poll, PD, pricing and newsvendor use. FIVE tiles:
 //
-//   TIER 1  outcomes roster: every enrolled student, with MAE / MSE / Standard Error /
-//           MAPE / Accuracy / bonus / bias / Y6-vs-Y7 / participation. Each row drills
-//           through to that student's own month-by-month table.
-//   TIER 2  the debrief paragraphs, every one, exportable — Elena reads these to write
-//           the debrief slides, so scattered answers findable only student-by-student
-//           would be unusable.
-//   TIER 3  (a) the class chart: average actual vs average forecast vs the TRUE
-//               systematic component, with per-month denominators;
-//           (b) the MSE histogram with the §2.3 benchmarks as reference lines.
+//   Tier 1  Outcomes — all students        every student, finished or not
+//   Tier 2  Debrief paragraphs             how they actually forecast, in their words
+//   Tier 3a Forecast vs actual vs the true process, by month
+//   Tier 3b Class result against the benchmark rules   ← THIS IS THE DEBRIEF SLIDE
+//   Tier 3c Spread of student MSE          the histogram, with the benchmarks marked
 //
-// ⚠ THE TIER-3 SUMMARY BOX *IS* THE DEBRIEF SLIDE (spec §10). It puts the class's own
-// mean MAE / MSE / Standard Error / bias beside the benchmark MSEs, which is slide 10's
-// comparison table rebuilt from the class's own play. That is why the benchmark column
-// sits inside the same box rather than in a panel of its own.
+// ⚠ ONE TIER-2 TILE, NOT TWO. Newsvendor has a prep paragraph AND a debrief; spec §9
+// gives this game exactly ONE free-text question, asked after the final screen. The
+// contract is "one report per free-text question", so one is correct here.
 //
-// ⚠ ACCURACY IS NEVER GRADED (spec §6). Every outcome column here is an OUTCOME;
-// `participation_score` is the only graded number, and it comes from finishing.
+// ⚠ THE THREE TIER-3 TILES ARE SEPARATE, and they used to be one long scrolling page.
+// Split because they answer different questions and get projected separately: the chart
+// shows whether the class tracked the season, the comparison box is the slide that names
+// what good looked like, and the histogram locates the tail. Stacked, you scrolled past
+// the finding to reach the point.
+//
+// ⚠ THIS IS WHERE THE MODEL LIVES (spec §10). The true systematic component is the
+// chart's dashed reference and the banner's headline, auto-derived from the instance
+// rather than hand-entered. It is instructor-only: this whole page is behind an
+// instructor session, and the one STUDENT path that carries the model is gated behind a
+// finished debrief (functions forecast/reveal.ts).
+//
+// ⚠ MID-WEEK IS THE NORMAL CASE. Elena opens this while the class is still playing, so
+// every tile reads correctly on partial data: the roster shows in-progress students, the
+// chart's denominators thin toward the tail and say so, and the summary stats are
+// null-safe rather than dividing by an empty class.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const card = {
-  background: colors.white,
-  border: `1px solid ${colors.borderMid}`,
-  borderRadius: 8,
-  padding: '1rem 1.1rem',
-  marginBottom: '1.5rem',
-} as const
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '1rem' }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 10, padding: '1.25rem 1.5rem', maxWidth: 1100, width: '100%', maxHeight: '90vh', overflow: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', marginBottom: '1rem' }}>
+          <h2 style={{ margin: 0, fontSize: '1.2rem', lineHeight: 1.35 }}>{title}</h2>
+          <button onClick={onClose} style={{ border: '1px solid #ccc', background: 'none', borderRadius: 4, padding: '0.3rem 0.7rem', cursor: 'pointer', flexShrink: 0 }}>Close</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
 
 const tnum = { fontVariantNumeric: 'tabular-nums' as const }
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-const th = {
-  padding: '0.35rem 0.5rem', fontSize: '0.72rem', fontWeight: 600,
-  color: colors.textSecondary, borderBottom: `1px solid ${colors.borderMid}`,
-  textAlign: 'right' as const, whiteSpace: 'nowrap' as const,
+const big = (v: number | null) => (v == null ? '—' : formatBig(v))
+const met = (v: number | null) => (v == null ? '—' : formatMetric(v))
+const num = (v: number | null) => v ?? 0
+
+/** The instance's true process — the instructor's reference banner (spec §10). */
+function ProcessHeader({ data }: { data: ForecastReportData }) {
+  const p = data.process
+  const season = p.highSeasonMonths.map(m => MONTHS[m - 1]).join(' and ')
+  return (
+    <div
+      data-testid="fc-process-banner"
+      style={{
+        background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8,
+        padding: '0.8rem 1rem', marginBottom: '1.25rem',
+      }}
+    >
+      <div style={{ fontWeight: 700, fontSize: '0.95rem', marginBottom: '0.2rem', ...tnum }}>
+        demand = {p.intercept} + {p.trend} × month + {p.highSeasonLift} in {season} + noise (sd {p.sigma})
+      </div>
+      <div style={{ fontSize: '0.8rem', color: colors.textSecondary }}>
+        {data.numHistory} months of history · {data.params.rounds} months played ·
+        {' '}floor σ² = <span style={tnum}>{formatBig(p.floorMse)}</span> — no forecast can beat it.
+        {' '}<strong>Instructor reference; students see none of this until the debrief.</strong>
+      </div>
+    </div>
+  )
 }
-const td = {
-  padding: '0.32rem 0.5rem', fontSize: '0.8rem', textAlign: 'right' as const,
-  ...tnum, borderBottom: `1px solid ${colors.borderLight ?? '#eee'}`, whiteSpace: 'nowrap' as const,
-}
 
-const dash = (v: number | null, f: (n: number) => string) => (v === null ? '—' : f(v))
+// ── Tier 1: the outcomes roster ────────────────────────────────────────────────
 
-const statusText = (r: ForecastReportParticipant) =>
-  r.finalized ? 'Finalized'
-    : r.completed ? 'Finished'
-      : r.launched ? `In progress (${r.months_played})`
-        : 'Not started'
+type RosterKey =
+  | 'name' | 'status' | 'months' | 'y6' | 'y7' | 'mse' | 'se' | 'mae' | 'bias'
+  | 'mape' | 'accuracy' | 'bonus'
 
-/** Tier 1 — the outcomes roster, with a drill-down row per student (spec §10). */
-function Tier1({ participants }: { participants: ForecastReportParticipant[] }) {
-  const [open, setOpen] = useState<string | null>(null)
+/**
+ * The roster (spec §10).
+ *
+ * ⚠ COLUMN ORDER IS Y6 · Y7 · MSE, deliberately (Elena, 08-02). For a FINISHED student
+ * the overall MSE is EXACTLY the mean of the two year MSEs — both years hold twelve
+ * months, so (1/24)Σall = ½[(1/12)ΣY6 + (1/12)ΣY7] — and putting the parts before the
+ * whole lets that be read straight off the row. (For a student partway through Year 7
+ * it is a WEIGHTED mean rather than a simple one, which is the other reason the parts
+ * are worth showing beside the total rather than instead of it.)
+ *
+ * ⚠ NO KC OR PARTICIPATION COLUMN (Elena, 08-02). Both are GRADED fields and this is an
+ * OUTCOMES report; sitting them beside MSE invites reading the outcome columns as a
+ * grade, which spec §6 is explicit they are not. The KC score still travels to the
+ * gradebook on its own field and participation is still written by Score & Record —
+ * they are simply not shown next to a forecast accuracy they have nothing to do with.
+ */
+function OutcomesTable({
+  rows,
+  onOpenStudent,
+}: {
+  rows: ForecastReportParticipant[]
+  onOpenStudent: (id: string) => void
+}) {
+  const columns: readonly SortableColumn<ForecastReportParticipant, RosterKey>[] = [
+    {
+      key: 'name', label: 'Name',
+      render: r => r.name ?? '—',
+      compare: (a, b) => (a.name ?? '').localeCompare(b.name ?? ''),
+      sticky: 'left',
+    },
+    {
+      key: 'status', label: 'Status',
+      render: r => (r.completed ? 'Finished' : r.launched ? `In progress (${r.months_played})` : 'Not started'),
+      compare: (a, b) => (a.completed ? 2 : a.launched ? 1 : 0) - (b.completed ? 2 : b.launched ? 1 : 0),
+    },
+    { key: 'months', label: 'Months', render: r => <span style={tnum}>{r.months_played}</span>, compare: (a, b) => a.months_played - b.months_played },
+
+    // ── the parts, then the whole ────────────────────────────────────────────
+    { key: 'y6', label: 'Y6 MSE', render: r => <span style={tnum}>{big(r.first_year_mse)}</span>, nullsLast: true, isNull: r => r.first_year_mse == null, compare: (a, b) => num(a.first_year_mse) - num(b.first_year_mse) },
+    { key: 'y7', label: 'Y7 MSE', render: r => <span style={tnum}>{big(r.second_year_mse)}</span>, nullsLast: true, isNull: r => r.second_year_mse == null, compare: (a, b) => num(a.second_year_mse) - num(b.second_year_mse) },
+    {
+      key: 'mse', label: 'MSE',
+      render: r => <strong data-testid={`fc-mse-${r.participant_id}`} style={tnum}>{big(r.mse)}</strong>,
+      nullsLast: true, isNull: r => r.mse == null,
+      compare: (a, b) => num(a.mse) - num(b.mse),
+    },
+    { key: 'se', label: 'Std Error', render: r => <span style={tnum}>{met(r.standard_error)}</span>, nullsLast: true, isNull: r => r.standard_error == null, compare: (a, b) => num(a.standard_error) - num(b.standard_error) },
+    { key: 'mae', label: 'MAE', render: r => <span style={tnum}>{met(r.mae)}</span>, nullsLast: true, isNull: r => r.mae == null, compare: (a, b) => num(a.mae) - num(b.mae) },
+    {
+      key: 'bias', label: 'Bias',
+      // Signed, on purpose: an over-forecast is not a worse error than an under-forecast
+      // of the same size, it is the OTHER kind, and a run of one sign is what bias is.
+      render: r => <span style={tnum}>{r.mean_error == null ? '—' : formatSigned(r.mean_error, 1)}</span>,
+      nullsLast: true, isNull: r => r.mean_error == null,
+      compare: (a, b) => num(a.mean_error) - num(b.mean_error),
+    },
+    { key: 'mape', label: 'MAPE', render: r => <span style={tnum}>{formatPercent(r.mape)}</span>, nullsLast: true, isNull: r => r.mape == null, compare: (a, b) => num(a.mape) - num(b.mape) },
+    { key: 'accuracy', label: 'Accuracy', render: r => <span style={tnum}>{formatPercent(r.accuracy)}</span>, nullsLast: true, isNull: r => r.accuracy == null, compare: (a, b) => num(a.accuracy) - num(b.accuracy) },
+    { key: 'bonus', label: 'Bonus', render: r => <span style={tnum}>{formatMoney(r.bonus)}</span>, nullsLast: true, isNull: r => r.bonus == null, compare: (a, b) => num(a.bonus) - num(b.bonus) },
+  ]
 
   return (
-    <section style={card}>
-      <h2 style={{ fontSize: '1rem', marginTop: 0 }}>Tier 1 — outcomes roster</h2>
+    <>
       <p style={{ margin: '0 0 0.75rem', fontSize: '0.8rem', color: colors.textSecondary }}>
-        Every enrolled student. Click a row for their month-by-month table.
-        {' '}<strong>Forecast accuracy is never graded</strong> — participation is scored on finishing.
+        Every enrolled student. <strong>Forecast accuracy is never graded</strong> —
+        participation is scored on finishing. Click a student for their month-by-month
+        table. For a finished student, MSE is the average of the two year MSEs beside it.
+      </p>
+      <SortableTable
+        rows={rows}
+        columns={columns}
+        getRowKey={r => r.participant_id}
+        initialSortKey="mse"
+        initialSortDir="asc"
+        tableTestId="fc-tier1"
+        emptyMessage="Nobody on the roster yet."
+        getRowProps={r => (r.months_played > 0
+          ? { onClick: () => onOpenStudent(r.participant_id), style: { cursor: 'pointer' } }
+          : {})}
+      />
+    </>
+  )
+}
+
+/** One student's month-by-month table — the Tier-1 drill-through (spec §10). */
+function StudentDetail({ p }: { p: ForecastReportParticipant }) {
+  const th = { padding: '0.35rem 0.5rem', fontSize: '0.72rem', fontWeight: 600, color: colors.textSecondary, borderBottom: `1px solid ${colors.borderMid}`, textAlign: 'right' as const }
+  const td = { padding: '0.3rem 0.5rem', fontSize: '0.8rem', textAlign: 'right' as const, ...tnum, borderBottom: `1px solid ${colors.borderLight ?? '#eee'}` }
+  return (
+    <>
+      <p style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', color: colors.textSecondary }}>
+        MSE <strong style={tnum}>{big(p.mse)}</strong> · Std Error <span style={tnum}>{met(p.standard_error)}</span>
+        {' '}· Y6 <span style={tnum}>{big(p.first_year_mse)}</span> · Y7 <span style={tnum}>{big(p.second_year_mse)}</span>
+        {p.improved !== null && (p.improved ? ' · improved in Year 7' : ' · did not improve in Year 7')}
       </p>
       <div style={{ overflowX: 'auto' }}>
-        <table data-testid="fc-tier1" style={{ borderCollapse: 'collapse', width: '100%', minWidth: '900px', fontFamily: typography.fontFamily }}>
+        <table data-testid={`fc-drill-${p.participant_id}`} style={{ borderCollapse: 'collapse', width: '100%' }}>
           <thead>
             <tr>
-              <th style={{ ...th, textAlign: 'left' }}>Name</th>
-              <th style={{ ...th, textAlign: 'left' }}>Status</th>
-              <th style={th}>Months</th>
-              <th style={th}>MSE</th>
-              <th style={th}>Std Error</th>
-              <th style={th}>MAE</th>
-              <th style={th}>Bias</th>
-              <th style={th}>MAPE</th>
-              <th style={th}>Accuracy</th>
-              <th style={th}>Bonus</th>
-              <th style={th}>Y6 MSE</th>
-              <th style={th}>Y7 MSE</th>
-              <th style={th}>KC</th>
-              <th style={th}>Participation</th>
+              {['Period', 'Forecast', 'Actual', 'Error', 'Abs error', 'Squared error', 'Abs % error']
+                .map(h => <th key={h} style={th}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
-            {participants.map(p => (
-              <Fragment key={p.participant_id}>
-                <tr
-                  data-testid={`fc-tier1-row-${p.participant_id}`}
-                  onClick={() => setOpen(open === p.participant_id ? null : p.participant_id)}
-                  style={{ cursor: p.months_played > 0 ? 'pointer' : 'default' }}
-                >
-                  <td style={{ ...td, textAlign: 'left' }}>{p.name ?? p.participant_id}</td>
-                  <td style={{ ...td, textAlign: 'left', color: p.completed ? colors.text : colors.textSecondary }}>
-                    {statusText(p)}
-                  </td>
-                  <td style={td}>{p.months_played}</td>
-                  <td style={{ ...td, fontWeight: 600 }} data-testid={`fc-tier1-mse-${p.participant_id}`}>
-                    {dash(p.mse, formatBig)}
-                  </td>
-                  <td style={td}>{dash(p.standard_error, v => formatMetric(v))}</td>
-                  <td style={td}>{dash(p.mae, v => formatMetric(v))}</td>
-                  <td style={td}>{dash(p.mean_error, v => formatSigned(v, 1))}</td>
-                  <td style={td}>{formatPercent(p.mape)}</td>
-                  <td style={td}>{formatPercent(p.accuracy)}</td>
-                  <td style={td}>{formatMoney(p.bonus)}</td>
-                  <td style={td}>{dash(p.first_year_mse, formatBig)}</td>
-                  <td style={td}>{dash(p.second_year_mse, formatBig)}</td>
-                  <td style={td}>{p.knowledge_check_score === null ? '—' : formatPercent(p.knowledge_check_score, 0)}</td>
-                  <td style={td}>{p.participation_score === null ? '—' : p.participation_score}</td>
-                </tr>
-                {open === p.participant_id && p.months.length > 0 && (
-                  <tr>
-                    <td colSpan={14} style={{ padding: '0.5rem 1rem 1rem', background: '#f8fafc' }}>
-                      <table data-testid={`fc-drill-${p.participant_id}`} style={{ borderCollapse: 'collapse', fontFamily: typography.fontFamily }}>
-                        <thead>
-                          <tr>
-                            <th style={th}>Period</th>
-                            <th style={th}>Forecast</th>
-                            <th style={th}>Actual</th>
-                            <th style={th}>Error</th>
-                            <th style={th}>Abs error</th>
-                            <th style={th}>Squared error</th>
-                            <th style={th}>Abs % error</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {p.months.map(m => (
-                            <tr key={m.period}>
-                              <td style={td}>{m.period}</td>
-                              <td style={td}>{m.forecast.toLocaleString()}</td>
-                              <td style={td}>{m.actual.toLocaleString()}</td>
-                              <td style={td}>{formatSigned(m.error)}</td>
-                              <td style={td}>{m.absoluteError.toLocaleString()}</td>
-                              <td style={td}>{formatBig(m.squaredError)}</td>
-                              <td style={td}>{formatPercent(m.absolutePercentageError)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
+            {p.months.map(m => (
+              <tr key={m.period}>
+                <td style={td}>{m.period}</td>
+                <td style={td}>{m.forecast.toLocaleString()}</td>
+                <td style={td}>{m.actual.toLocaleString()}</td>
+                <td style={td}>{formatSigned(m.error)}</td>
+                <td style={td}>{m.absoluteError.toLocaleString()}</td>
+                <td style={td}>{formatBig(m.squaredError)}</td>
+                <td style={td}>{formatPercent(m.absolutePercentageError)}</td>
+              </tr>
             ))}
           </tbody>
         </table>
       </div>
-    </section>
+    </>
   )
 }
 
-/** Tier 2 — every debrief paragraph, exportable (Reports Contract v1). */
-function Tier2({ participants, prompt }: { participants: ForecastReportParticipant[]; prompt: string }) {
-  const written = participants.filter(p => p.debrief !== null)
-
+/** Tier 2 — every debrief paragraph (Reports Contract v1). */
+function DebriefAnswers({ rows, prompt }: { rows: ForecastReportParticipant[]; prompt: string }) {
+  const written = rows.filter(p => p.debrief !== null)
   const copyAll = async () => {
-    const text = written.map(p => `${p.name ?? p.participant_id}\n${p.debrief}\n`).join('\n---\n\n')
+    const text = written.map(p => `${p.name ?? p.participant_id} — MSE ${big(p.mse)}\n${p.debrief}\n`).join('\n---\n\n')
     try { await navigator.clipboard.writeText(text) } catch { /* clipboard unavailable */ }
   }
-
   return (
-    <section style={card}>
-      <h2 style={{ fontSize: '1rem', marginTop: 0 }}>Tier 2 — how they made their forecasts</h2>
-      <p style={{ margin: '0 0 0.5rem', fontSize: '0.8rem', color: colors.textSecondary, fontStyle: 'italic' }}>
+    <>
+      <p style={{ margin: '0 0 0.6rem', fontSize: '0.82rem', color: colors.textSecondary, fontStyle: 'italic' }}>
         &ldquo;{prompt}&rdquo;
       </p>
       <button
         data-testid="fc-tier2-copy"
         onClick={() => void copyAll()}
-        style={{
-          padding: '0.4rem 0.8rem', fontSize: '0.8rem', marginBottom: '0.75rem',
-          background: colors.white, border: `1px solid ${colors.borderMid}`, borderRadius: 6, cursor: 'pointer',
-        }}
+        style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', marginBottom: '1rem', background: colors.white, border: `1px solid ${colors.borderMid}`, borderRadius: 6, cursor: 'pointer' }}
       >
         Copy all {written.length} answers
       </button>
-      {written.length === 0 ? (
-        <p style={{ fontSize: '0.85rem', color: colors.textSecondary }}>No answers yet.</p>
-      ) : (
-        <div data-testid="fc-tier2">
-          {written.map(p => (
-            <div key={p.participant_id} style={{ marginBottom: '0.9rem', paddingBottom: '0.9rem', borderBottom: `1px solid ${colors.borderLight ?? '#eee'}` }}>
-              <div style={{ fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.2rem' }}>
-                {p.name ?? p.participant_id}
-                <span style={{ fontWeight: 400, color: colors.textSecondary }}>
-                  {' '}— MSE {dash(p.mse, formatBig)}
-                </span>
-              </div>
-              <div style={{ fontSize: '0.85rem', lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{p.debrief}</div>
+      <div data-testid="fc-tier2">
+        {written.map(p => (
+          <div key={p.participant_id} style={{ marginBottom: '1rem', paddingBottom: '1rem', borderBottom: `1px solid ${colors.borderLight ?? '#eee'}` }}>
+            <div style={{ fontSize: '0.82rem', fontWeight: 600, marginBottom: '0.25rem' }}>
+              {p.name ?? p.participant_id}
+              <span style={{ fontWeight: 400, color: colors.textSecondary }}> — MSE {big(p.mse)}</span>
             </div>
-          ))}
-        </div>
-      )}
-    </section>
+            <div style={{ fontSize: '0.88rem', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{p.debrief}</div>
+          </div>
+        ))}
+      </div>
+    </>
   )
 }
+
+/** Tier 3b — the class's own numbers beside the benchmark rules. THE DEBRIEF SLIDE. */
+function BenchmarkComparison({ data }: { data: ForecastReportData }) {
+  const s = data.summary
+  const th = { padding: '0.35rem 0.5rem', fontSize: '0.72rem', fontWeight: 600, color: colors.textSecondary, borderBottom: `1px solid ${colors.borderMid}`, textAlign: 'right' as const }
+  const td = { padding: '0.32rem 0.5rem', fontSize: '0.85rem', textAlign: 'right' as const, ...tnum, borderBottom: `1px solid ${colors.borderLight ?? '#eee'}` }
+  return (
+    <div style={{ display: 'flex', gap: '2.5rem', flexWrap: 'wrap' }}>
+      <div style={{ minWidth: '15rem' }}>
+        <h3 style={{ fontSize: '0.9rem', margin: '0 0 0.5rem' }}>
+          This class ({s.students} {s.students === 1 ? 'student' : 'students'})
+        </h3>
+        <table data-testid="fc-summary" style={{ borderCollapse: 'collapse' }}>
+          <tbody>
+            <tr><td style={{ ...td, textAlign: 'left' }}>Mean MSE</td><td style={{ ...td, fontWeight: 700 }} data-testid="fc-summary-mse">{big(s.meanMse)}</td></tr>
+            <tr><td style={{ ...td, textAlign: 'left' }}>Standard Error</td><td style={td}>{met(s.standardError)}</td></tr>
+            <tr><td style={{ ...td, textAlign: 'left' }}>Mean MAE</td><td style={td}>{met(s.meanMae)}</td></tr>
+            <tr><td style={{ ...td, textAlign: 'left' }}>Mean bias</td><td style={td}>{s.meanBias == null ? '—' : formatSigned(s.meanBias, 1)}</td></tr>
+            <tr><td style={{ ...td, textAlign: 'left' }}>Mean MAPE</td><td style={td}>{formatPercent(s.meanMape)}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{ flex: 1, minWidth: '22rem' }}>
+        <h3 style={{ fontSize: '0.9rem', margin: '0 0 0.5rem' }}>The benchmark rules</h3>
+        {data.benchmarks === null ? (
+          <p style={{ fontSize: '0.82rem', color: colors.textSecondary }}>
+            This instance&rsquo;s demand model has been edited away from the published one, so
+            the design&rsquo;s benchmark table does not describe it. Students see benchmarks
+            recomputed against their own months instead.
+          </p>
+        ) : (
+          <table data-testid="fc-benchmarks" style={{ borderCollapse: 'collapse', width: '100%' }}>
+            <thead>
+              <tr>
+                <th style={{ ...th, textAlign: 'left' }}>Rule</th>
+                <th style={th}>MSE</th>
+                <th style={th}>Std Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.benchmarks.map(b => (
+                <tr key={b.id} data-testid={`fc-bench-${b.id}`}>
+                  <td style={{ ...td, textAlign: 'left', fontWeight: b.id === 'reg_holiday' ? 700 : 400 }}>{b.label}</td>
+                  <td style={{ ...td, fontWeight: b.id === 'reg_holiday' ? 700 : 400 }}>{b.mse === null ? '—' : formatBig(b.mse)}</td>
+                  <td style={td}>{b.standardError}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── The page ───────────────────────────────────────────────────────────────────
+
+type TileId = 'outcomes' | 'debrief' | 'chart' | 'comparison' | 'histogram'
 
 export default function Reports() {
   const session = useInstructorSession(forecastInstructorSession)
   const navigate = useNavigate()
   const [data, setData] = useState<ForecastReportData | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [active, setActive] = useState<TileId | null>(null)
+  const [student, setStudent] = useState<string | null>(null)
 
-  const load = useCallback(async () => {
-    try { setData(await forecastGetReport()) } catch (err) {
-      setError(instructorErrorMessage(err))
-    }
-  }, [])
+  useEffect(() => {
+    if (session.kind !== 'ready') return
+    forecastGetReport().then(setData).catch(e => setErr(instructorErrorMessage(e)))
+  }, [session])
 
-  useEffect(() => { if (session.kind === 'ready') void load() }, [session, load])
-
-  if (session.kind !== 'ready' || (!data && !error)) {
-    return <InstructorChrome title="Forecasting Game — reports"><p>Loading…</p></InstructorChrome>
-  }
-  if (error || !data) {
-    return (
-      <InstructorChrome title="Forecasting Game — reports">
-        <p style={{ color: '#c00' }}>{error}</p>
-      </InstructorChrome>
-    )
-  }
-
-  const s = data.summary
-
-  // ⚠ THE QUERY STRING IS CARRIED FORWARD — `?token=`/`?_gid=` is how the instructor
-  // session identifies the instance across pages.
   const navLinks = [
-    { label: 'Dashboard →', href: `/dashboard${window.location.search}` },
+    { label: '← Dashboard', href: `/dashboard${window.location.search}` },
     { label: 'Settings →', href: `/settings${window.location.search}` },
   ]
-
-  return (
+  const chrome = (body: ReactNode) => (
     <InstructorChrome title="Forecasting Game — reports" navLinks={navLinks} onNavigate={navigate}>
-      <Tier1 participants={data.participants} />
-      <Tier2 participants={data.participants} prompt={data.debriefPrompt} />
-
-      {/* ── Tier 3 (a): the class chart ─────────────────────────────────────── */}
-      <section style={card}>
-        <h2 style={{ fontSize: '1rem', marginTop: 0 }}>Tier 3 — the class chart</h2>
-        <p style={{ margin: '0 0 0.75rem', fontSize: '0.8rem', color: colors.textSecondary }}>
-          Class average actual demand and class average forecast, against the true
-          systematic component. Later months average fewer students — that is composition,
-          not behaviour, which is why every month carries its own n.
-        </p>
-        <ClassChartSVG points={data.classChart} />
-      </section>
-
-      {/* ── The summary box: "this box IS the debrief slide" (spec §10) ─────── */}
-      <section style={card}>
-        <h2 style={{ fontSize: '1rem', marginTop: 0 }}>The comparison — this is the debrief slide</h2>
-        <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
-          <div style={{ minWidth: '15rem' }}>
-            <h3 style={{ fontSize: '0.85rem', margin: '0 0 0.4rem' }}>
-              This class ({s.students} {s.students === 1 ? 'student' : 'students'})
-            </h3>
-            <table data-testid="fc-summary" style={{ borderCollapse: 'collapse', fontFamily: typography.fontFamily }}>
-              <tbody>
-                <tr><td style={{ ...td, textAlign: 'left' }}>Mean MSE</td><td style={{ ...td, fontWeight: 700 }} data-testid="fc-summary-mse">{dash(s.meanMse, formatBig)}</td></tr>
-                <tr><td style={{ ...td, textAlign: 'left' }}>Standard Error</td><td style={td}>{dash(s.standardError, v => formatMetric(v))}</td></tr>
-                <tr><td style={{ ...td, textAlign: 'left' }}>Mean MAE</td><td style={td}>{dash(s.meanMae, v => formatMetric(v))}</td></tr>
-                <tr><td style={{ ...td, textAlign: 'left' }}>Mean bias</td><td style={td}>{dash(s.meanBias, v => formatSigned(v, 1))}</td></tr>
-                <tr><td style={{ ...td, textAlign: 'left' }}>Mean MAPE</td><td style={td}>{formatPercent(s.meanMape)}</td></tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div style={{ flex: 1, minWidth: '20rem' }}>
-            <h3 style={{ fontSize: '0.85rem', margin: '0 0 0.4rem' }}>The benchmark rules</h3>
-            {data.benchmarks === null ? (
-              <p style={{ fontSize: '0.82rem', color: colors.textSecondary }}>
-                This instance&rsquo;s demand model has been edited away from the published one,
-                so the design&rsquo;s benchmark table does not describe it. Students see
-                benchmarks recomputed against their own months instead.
-              </p>
-            ) : (
-              <table data-testid="fc-benchmarks" style={{ borderCollapse: 'collapse', width: '100%', fontFamily: typography.fontFamily }}>
-                <thead>
-                  <tr>
-                    <th style={{ ...th, textAlign: 'left' }}>Rule</th>
-                    <th style={th}>MSE</th>
-                    <th style={th}>Std Error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.benchmarks.map(b => (
-                    <tr key={b.id} data-testid={`fc-bench-${b.id}`}>
-                      <td style={{ ...td, textAlign: 'left', fontWeight: b.id === 'reg_holiday' ? 700 : 400 }}>{b.label}</td>
-                      <td style={{ ...td, fontWeight: b.id === 'reg_holiday' ? 700 : 400 }}>{b.mse === null ? '—' : formatBig(b.mse)}</td>
-                      <td style={td}>{b.standardError}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
-      </section>
-
-      {/* ── Tier 3 (b): the MSE histogram (spec §10, "BUILD IN v1") ─────────── */}
-      <section style={card}>
-        <h2 style={{ fontSize: '1rem', marginTop: 0 }}>Tier 3 — the spread of student MSE</h2>
-        <p style={{ margin: '0 0 0.75rem', fontSize: '0.8rem', color: colors.textSecondary }}>
-          Where the class landed, with the benchmark rules marked. The tail on the right
-          is the chased-the-noise group. The axis is logarithmic — MSE spans a 40× range,
-          and on a linear axis everything competent would pile up at the left edge.
-        </p>
-        {data.histogram === null ? (
-          <p style={{ fontSize: '0.85rem', color: colors.textSecondary }}>Nobody has played yet.</p>
-        ) : (
-          <MseHistogramSVG histogram={data.histogram} benchmarks={data.benchmarks ?? []} />
-        )}
-      </section>
+      {body}
     </InstructorChrome>
+  )
+
+  if (session.kind === 'loading') return chrome(<p>Loading…</p>)
+  if (session.kind === 'no-token') return chrome(<p>Open the reports from the classroom.</p>)
+  if (session.kind === 'error') return chrome(<p style={{ color: '#c00' }}>{session.message}</p>)
+  if (err) return chrome(<p style={{ color: '#c00' }}>{err}</p>)
+  if (!data) return chrome(<p>Loading reports…</p>)
+
+  const played = data.participants.filter(p => p.months_played > 0)
+  const finished = data.participants.filter(p => p.completed)
+  const debriefs = data.participants.filter(p => p.debrief)
+  const months = data.classChart.length
+  const detail = student ? data.participants.find(p => p.participant_id === student) ?? null : null
+
+  const grey = { color: '#94a3b8' }
+
+  const tiles: ReportTileConfig[] = [
+    {
+      id: 'outcomes',
+      title: 'Outcomes — all students',
+      preview: <span>{finished.length} finished / {data.participants.length} on roster</span>,
+      onOpen: () => setActive('outcomes'),
+    },
+    {
+      id: 'debrief',
+      title: 'Debrief paragraphs — after play',
+      disabled: debriefs.length === 0,
+      preview: debriefs.length === 0
+        ? <span style={grey}>No paragraphs yet.</span>
+        : <span>{debriefs.length} paragraph(s) — how they actually forecast</span>,
+      onOpen: () => setActive('debrief'),
+    },
+    {
+      // ⚠ NAMED FOR WHAT IT SHOWS, not for its tier (Elena, 08-02). "The class chart"
+      // said nothing about WHICH class chart, and the three series are the whole point.
+      id: 'chart',
+      title: 'Forecast vs actual vs the true process, by month',
+      disabled: played.length === 0,
+      preview: played.length === 0
+        ? <span style={grey}>No months played yet.</span>
+        : <span>{months} months — did the class track the season?</span>,
+      onOpen: () => setActive('chart'),
+    },
+    {
+      id: 'comparison',
+      title: 'Class result against the benchmark rules',
+      disabled: played.length === 0,
+      preview: played.length === 0
+        ? <span style={grey}>No months played yet.</span>
+        : <span>Class mean MSE {big(data.summary.meanMse)} — against all eight rules</span>,
+      onOpen: () => setActive('comparison'),
+    },
+    {
+      id: 'histogram',
+      title: 'Spread of student MSE',
+      disabled: data.histogram === null,
+      preview: data.histogram === null
+        ? <span style={grey}>No months played yet.</span>
+        : <span>{played.length} student(s) — and where the tail sits</span>,
+      onOpen: () => setActive('histogram'),
+    },
+  ]
+
+  return chrome(
+    <>
+      <ProcessHeader data={data} />
+      <ReportBoard tiles={tiles} />
+
+      {active === 'outcomes' && (
+        <Modal
+          title={detail ? `${detail.name ?? detail.participant_id} — month by month` : 'Outcomes — all students'}
+          onClose={() => (detail ? setStudent(null) : setActive(null))}
+        >
+          {detail
+            ? <StudentDetail p={detail} />
+            : <OutcomesTable rows={data.participants} onOpenStudent={setStudent} />}
+        </Modal>
+      )}
+
+      {active === 'debrief' && (
+        <Modal title="Debrief paragraphs — after play" onClose={() => setActive(null)}>
+          <DebriefAnswers rows={data.participants} prompt={data.debriefPrompt} />
+        </Modal>
+      )}
+
+      {active === 'chart' && (
+        <Modal title="Forecast vs actual vs the true process, by month" onClose={() => setActive(null)}>
+          <p style={{ margin: '0 0 0.9rem', fontSize: '0.82rem', color: colors.textSecondary }}>
+            Class average actual demand and class average forecast, against the true
+            systematic component. Later months average fewer students — that is
+            composition, not behaviour, which is why every month carries its own n.
+          </p>
+          <ClassChartSVG points={data.classChart} />
+        </Modal>
+      )}
+
+      {active === 'comparison' && (
+        <Modal title="Class result against the benchmark rules" onClose={() => setActive(null)}>
+          <p style={{ margin: '0 0 0.9rem', fontSize: '0.82rem', color: colors.textSecondary }}>
+            The class&rsquo;s own numbers beside what each forecasting rule would have
+            scored. This is the debrief slide.
+          </p>
+          <BenchmarkComparison data={data} />
+        </Modal>
+      )}
+
+      {active === 'histogram' && data.histogram !== null && (
+        <Modal title="Spread of student MSE" onClose={() => setActive(null)}>
+          <p style={{ margin: '0 0 0.9rem', fontSize: '0.82rem', color: colors.textSecondary }}>
+            Where the class landed, with the benchmark rules marked. The tail on the right
+            is the chased-the-noise group. The axis is logarithmic — MSE spans a 40× range,
+            and on a linear axis everything competent would pile up at the left edge.
+          </p>
+          <MseHistogramSVG histogram={data.histogram} benchmarks={data.benchmarks ?? []} />
+        </Modal>
+      )}
+    </>,
   )
 }

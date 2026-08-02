@@ -24,6 +24,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -35,6 +36,7 @@ const VITE_PORT = 5199
 const APP = `http://localhost:${VITE_PORT}`
 const GID = `fc-robot-${Date.now()}`
 const STUDENTS = 7                      // one per style, so every rule is exercised
+const require_ = createRequire(import.meta.url)
 
 let passed = 0, failed = 0
 const check = (cond, label) => {
@@ -156,6 +158,79 @@ try {
   // Score & Record over a robot cohort — the real rehearsal.
   const rec = await callFn('forecastScoreAndRecord', { _dev: { game_instance_id: GID } })
   check(rec.finishers === STUDENTS, `Score & Record finds all ${STUDENTS} finishers`)
+
+  // ── The REPORTS PAGE, in a real browser, on this populated instance ────────
+  //
+  // ⚠ THE ONLY PLACE THIS CAN BE CHECKED. The student browser harness has no
+  // instructor data, and the HTTP harness sees the payload but not the page. A cohort
+  // instance is the one context where the five report tiles have something to render,
+  // so the rendering assertions live here rather than in a harness that would have to
+  // fabricate a class to run them.
+  console.log('\nOpening the reports page…')
+  {
+    const { chromium } = require_('playwright')
+    const browser = await chromium.launch({ headless: true })
+    try {
+      const page = await (await browser.newContext()).newPage()
+      await page.goto(`${APP}/reports?game=forecast&_gid=${GID}`, { waitUntil: 'domcontentloaded' })
+      await page.waitForSelector('[data-testid="fc-process-banner"]', { timeout: 30000 })
+
+      const banner = (await page.locator('[data-testid="fc-process-banner"]').innerText()).trim()
+      check(/560/.test(banner) && /230/.test(banner) && /sd 30/.test(banner),
+        'the instructor banner states the true process')
+
+      // ⚠ FIVE SEPARATE TILES (Elena, 08-02) — the grid format, not one long page.
+      const titles = await page.locator('h3, h2').allInnerTexts()
+      const body = await page.locator('body').innerText()
+      for (const t of [
+        'Outcomes — all students',
+        'Debrief paragraphs — after play',
+        'Forecast vs actual vs the true process, by month',
+        'Class result against the benchmark rules',
+        'Spread of student MSE',
+      ]) check(body.includes(t), `tile present: "${t}"`)
+      void titles
+
+      check(!/Tier 3 — the class chart/.test(body),
+        'the old un-informative "Tier 3 — the class chart" heading is gone')
+
+      // Open the outcomes tile and check the column order + the removed columns.
+      await page.locator('text=Outcomes — all students').first().click()
+      await page.waitForSelector('[data-testid="fc-tier1"]', { timeout: 15000 })
+      const headers = await page.locator('[data-testid="fc-tier1"] thead th').allInnerTexts()
+      // ⚠ STRIP THE SORT INDICATOR. SortableTable appends an arrow to the active
+      // column's header ("MSE ↑"), so an exact-match lookup finds -1 and the order
+      // assertion fails on a page that is perfectly correct — which is exactly what the
+      // first version of this check did. Keep letters, digits, spaces and %; drop the rest.
+      const clean = headers.map(h => h.replace(/[^A-Za-z0-9 %]/g, '').trim())
+      console.log('  roster columns:', clean.join(' | '))
+
+      // ⚠ KC AND PARTICIPATION ARE GONE (Elena, 08-02) — graded fields do not belong
+      // on an OUTCOMES report.
+      check(!clean.includes('KC'), '⚠ the KC column is gone')
+      check(!clean.some(h => /participation/i.test(h)), '⚠ the Participation column is gone')
+
+      // ⚠ Y6 · Y7 · MSE — the parts before the whole.
+      const iY6 = clean.indexOf('Y6 MSE'), iY7 = clean.indexOf('Y7 MSE'), iMse = clean.indexOf('MSE')
+      check(iY6 >= 0 && iY7 >= 0 && iMse >= 0, 'Y6 MSE, Y7 MSE and MSE are all present')
+      check(iY6 < iY7 && iY7 < iMse,
+        `⚠ column order is Y6 (${iY6}) → Y7 (${iY7}) → MSE (${iMse})`)
+
+      // …and the arithmetic that ordering asserts: for a FINISHED student, MSE is the
+      // mean of the two year MSEs. Checked against the report payload, independently.
+      let mseOk = true
+      for (const p of rep.participants.filter(x => x.completed)) {
+        if (Math.abs((p.first_year_mse + p.second_year_mse) / 2 - p.mse) > 0.5) mseOk = false
+      }
+      check(mseOk, 'for every finished student, MSE === (Y6 MSE + Y7 MSE) / 2')
+
+      await browser.close()
+    } catch (e) {
+      failed++
+      console.error(`  ✗ reports page: ${e.message}`)
+      await browser.close().catch(() => {})
+    }
+  }
 
   console.log(`\nINSTANCE: ${GID}`)
   console.log(`${'─'.repeat(70)}\n  ${passed} passed, ${failed} failed\n${'─'.repeat(70)}`)
