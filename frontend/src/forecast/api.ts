@@ -40,8 +40,36 @@ export const CLASSROOM_URL = import.meta.env.DEV
 export const STUDENT_CLASSROOM_URL = `${CLASSROOM_URL}/student`
 
 export function isAuthError(err: unknown): boolean {
-  if (!(err instanceof FirebaseError)) return false
-  return err.code === 'functions/permission-denied' || err.code === 'functions/unauthenticated'
+  if (err instanceof FirebaseError
+    && (err.code === 'functions/permission-denied' || err.code === 'functions/unauthenticated')) {
+    return true
+  }
+  // ⚠ "Missing token" ALSO belongs here, and it is the one that actually bites.
+  // game-server's extractInstructorGameId throws it as INVALID_ARGUMENT (not
+  // unauthenticated) when a callable arrives with no Bearer token AND no `data.token`
+  // — which is what happens the moment an instructor page is opened without the
+  // `?token=`/`?_gid=` query string and no Firebase session is live. Observed in
+  // production on 2026-08-02, where it read as a mysterious server fault.
+  const msg = err instanceof Error ? err.message : String(err ?? '')
+  return /missing token|jwt expired|invalid token/i.test(msg)
+}
+
+/**
+ * What to SHOW an instructor when a callable fails.
+ *
+ * ⚠ THE RAW SERVER STRING IS USELESS HERE. "Missing token" describes the request, not
+ * the situation, and gives no hint of the fix — which is always the same: reopen the
+ * page from wherever it was launched, so the query string (and with it the session)
+ * comes back. Anything that is NOT an auth failure is passed through unchanged, because
+ * those messages are written for the instructor already.
+ */
+export function instructorErrorMessage(err: unknown): string {
+  if (isAuthError(err)) {
+    return 'Your instructor session has expired or this page was opened without its '
+      + 'session link. Reopen the dashboard from the classroom (or the test launcher) '
+      + 'and use the Settings / Reports buttons at the top to move between pages.'
+  }
+  return err instanceof Error ? err.message : 'Something went wrong.'
 }
 
 // ── Student: launch ─────────────────────────────────────────────────────────────

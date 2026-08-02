@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { colors, typography } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   forecastGetReport, forecastScoreAndRecord, forecastSyncRoster, forecastInstructorSession,
+  instructorErrorMessage,
   type ForecastReportData, type ForecastReportParticipant,
 } from './api'
 import { formatBig, formatMetric } from './format'
@@ -49,6 +51,7 @@ const statusText = (r: ForecastReportParticipant, total: number) =>
 
 export default function Dashboard() {
   const session = useInstructorSession(forecastInstructorSession)
+  const navigate = useNavigate()
   const [data, setData] = useState<ForecastReportData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -56,7 +59,7 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     try { setData(await forecastGetReport()); setError(null) } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load the dashboard.')
+      setError(instructorErrorMessage(err))
     }
   }, [])
 
@@ -69,7 +72,7 @@ export default function Dashboard() {
       setNote(`Roster synced — ${r.synced} students.`)
       await load()
     } catch (err) {
-      setNote(err instanceof Error ? err.message : 'Roster sync failed.')
+      setNote(instructorErrorMessage(err))
     } finally { setBusy(null) }
   }
 
@@ -83,7 +86,7 @@ export default function Dashboard() {
       )
       await load()
     } catch (err) {
-      setNote(err instanceof Error ? err.message : 'Score & Record failed.')
+      setNote(instructorErrorMessage(err))
     } finally { setBusy(null) }
   }
 
@@ -103,6 +106,14 @@ export default function Dashboard() {
   const finished = rows.filter(r => r.completed).length
   const started = rows.filter(r => r.launched).length
 
+  // ⚠ THE QUERY STRING IS CARRIED FORWARD. `?token=`/`?_gid=` is how the instructor
+  // session identifies the instance across pages; a nav link that dropped it would land
+  // on a page with no session and no way to recover one.
+  const navLinks = [
+    { label: 'Settings →', href: `/settings${window.location.search}` },
+    { label: 'Reports →', href: `/reports${window.location.search}` },
+  ]
+
   const button = (label: string, key: string, onClick: () => void) => (
     <button
       data-testid={`fc-dash-${key}`}
@@ -119,17 +130,27 @@ export default function Dashboard() {
     </button>
   )
 
-  return (
-    <InstructorChrome title="Forecasting Game — dashboard">
-      <div style={{ marginBottom: '1rem', fontFamily: typography.fontFamily }}>
-        {button('Sync roster', 'sync', () => void onSync())}
-        {button('Score & Record', 'score', () => void onScore())}
-        <span data-testid="fc-dash-counts" style={{ marginLeft: '0.5rem', fontSize: '0.85rem', color: colors.textSecondary }}>
-          {finished} finished · {started} started · {rows.length} enrolled
-          {data.scored && ' · finalized'}
-        </span>
-      </div>
+  // The action bar's contents. ⚠ PASSED AS `actions` so they land in the STICKY bar
+  // with the nav, rather than scrolling away in the page body.
+  const actions = (
+    <>
+      {button('Refresh', 'refresh', () => void load())}
+      {button('Sync roster', 'sync', () => void onSync())}
+      {button('Score & Record', 'score', () => void onScore())}
+      <span data-testid="fc-dash-counts" style={{ marginLeft: '0.5rem', fontSize: '0.85rem', color: colors.textSecondary }}>
+        {finished} finished · {started} started · {rows.length} enrolled
+        {data.scored && ' · finalized'}
+      </span>
+    </>
+  )
 
+  return (
+    <InstructorChrome
+      title="Forecasting Game — dashboard"
+      actions={actions}
+      navLinks={navLinks}
+      onNavigate={navigate}
+    >
       {note && (
         <p data-testid="fc-dash-note" style={{ fontSize: '0.85rem', color: colors.textSecondary, marginBottom: '1rem' }}>
           {note}

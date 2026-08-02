@@ -1,9 +1,11 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { colors, typography } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   forecastGetReport, forecastInstructorSession,
+  instructorErrorMessage,
   type ForecastReportData, type ForecastReportParticipant,
 } from './api'
 import { ClassChartSVG, MseHistogramSVG } from './ClassChartSVG'
@@ -206,12 +208,13 @@ function Tier2({ participants, prompt }: { participants: ForecastReportParticipa
 
 export default function Reports() {
   const session = useInstructorSession(forecastInstructorSession)
+  const navigate = useNavigate()
   const [data, setData] = useState<ForecastReportData | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try { setData(await forecastGetReport()) } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load the reports.')
+      setError(instructorErrorMessage(err))
     }
   }, [])
 
@@ -230,8 +233,15 @@ export default function Reports() {
 
   const s = data.summary
 
+  // ⚠ THE QUERY STRING IS CARRIED FORWARD — `?token=`/`?_gid=` is how the instructor
+  // session identifies the instance across pages.
+  const navLinks = [
+    { label: 'Dashboard →', href: `/dashboard${window.location.search}` },
+    { label: 'Settings →', href: `/settings${window.location.search}` },
+  ]
+
   return (
-    <InstructorChrome title="Forecasting Game — reports">
+    <InstructorChrome title="Forecasting Game — reports" navLinks={navLinks} onNavigate={navigate}>
       <Tier1 participants={data.participants} />
       <Tier2 participants={data.participants} prompt={data.debriefPrompt} />
 

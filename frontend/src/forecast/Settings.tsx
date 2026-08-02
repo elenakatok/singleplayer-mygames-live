@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { colors } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   forecastGetConfig, forecastUpdateConfig, forecastInstructorSession,
+  instructorErrorMessage,
   type ForecastConfigResult,
 } from './api'
 
@@ -50,6 +52,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 
 export default function Settings() {
   const session = useInstructorSession(forecastInstructorSession)
+  const navigate = useNavigate()
   const [data, setData] = useState<ForecastConfigResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -79,7 +82,7 @@ export default function Settings() {
       })
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load the settings.')
+      setError(instructorErrorMessage(err))
     }
   }, [])
 
@@ -92,7 +95,7 @@ export default function Settings() {
       setData(r)
       setNote('Saved.')
     } catch (err) {
-      setNote(err instanceof Error ? err.message : 'Save failed.')
+      setNote(instructorErrorMessage(err))
     } finally { setSaving(false) }
   }
 
@@ -125,8 +128,15 @@ export default function Settings() {
     </div>
   )
 
+  // ⚠ THE QUERY STRING IS CARRIED FORWARD — `?token=`/`?_gid=` is how the instructor
+  // session identifies the instance across pages.
+  const navLinks = [
+    { label: 'Dashboard →', href: `/dashboard${window.location.search}` },
+    { label: 'Reports →', href: `/reports${window.location.search}` },
+  ]
+
   return (
-    <InstructorChrome title="Forecasting Game — settings">
+    <InstructorChrome title="Forecasting Game — settings" navLinks={navLinks} onNavigate={navigate}>
       {/* ── The warnings (spec §3, §3a, §5a) — advice, never a block ────────── */}
       {data.warnings.length > 0 && (
         <section
