@@ -29,6 +29,10 @@ import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+// The SHIPPED auto-drive sequence — the same module the launcher's "Start at game" runs
+// before it opens a student tab. Imported rather than reimplemented so the tab this
+// harness opens is the tab Elena gets.
+import { driveForecastStudentPastKc } from './bot/forecast-autodrive.mjs'
 
 const PROJECT = 'demo-singleplayer'
 const FIRESTORE = `http://127.0.0.1:8090/v1/projects/${PROJECT}/databases/(default)/documents`
@@ -57,6 +61,27 @@ async function putDoc(docPath, fields) {
     body: JSON.stringify({ fields }),
   })
   if (!res.ok) throw new Error(`firestore PATCH ${docPath} → ${res.status} ${await res.text()}`)
+}
+
+const FUNCTIONS = `http://127.0.0.1:5010/${PROJECT}/us-central1`
+
+/** Callable transport, for the parts of a launch that happen BEFORE a tab exists. */
+async function callFn(name, data) {
+  const res = await fetch(`${FUNCTIONS}/${name}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data }),
+  })
+  let body = null
+  try { body = await res.json() } catch { /* ignore */ }
+  if (res.ok && body && 'result' in body) return body.result
+  throw new Error(`${name}: ${body?.error?.message ?? `http ${res.status}`}`)
+}
+
+async function getDoc(docPath) {
+  const res = await fetch(`${FIRESTORE}/${docPath}`, { headers: { Authorization: 'Bearer owner' } })
+  if (!res.ok) return null
+  return (await res.json()).fields ?? null
 }
 
 const intVal = (n) => ({ integerValue: String(n) })
@@ -487,6 +512,83 @@ async function main() {
     check(periods.length > 0 && Math.max(...periods) <= 61,
       `⚠ after one month, no response mentions a month past 61 (max ${Math.max(...periods)})`)
     await page2.close()
+
+    // ───────────────────────────────────────────────────────────────────────────
+    section('[LAUNCHER] ⚠ "Start at game" — the auto-drive the launcher runs')
+    // ───────────────────────────────────────────────────────────────────────────
+    // ⚠ THIS OPTION SHIPPED DOING NOTHING (Elena, 08-03). The launcher offered the
+    // second start position for forecast, and choosing it left the student on the
+    // knowledge check — there was no driver behind the radio at all. What makes that
+    // bug possible is a sequence that nobody executes in test, so the sequence is
+    // executed here, from the SHIPPED module, and the tab is then opened to see where
+    // a student actually lands.
+    {
+      const GID_D = `pw-drive-${stamp}`
+      const DPID = 'pw-drive-stu'
+      await openInstance(GID_D)
+
+      const drove = await driveForecastStudentPastKc(
+        callFn,
+        { _test: { participant_id: DPID, game_instance_id: GID_D } },
+      )
+      check(drove.kcEnabled === true, 'the drive reports the KC it found')
+      check(drove.questionsAnswered === 9 && drove.kcTotal === 9,
+        `it answered every knowledge-check question (${drove.questionsAnswered}/${drove.kcTotal})`)
+
+      // Recorded SERVER-SIDE, so the student is past it for good rather than appearing
+      // to be — the launcher's whole claim rests on this being durable.
+      const droveDoc = await getDoc(`forecast_game_instances/${GID_D}/participants/${DPID}`)
+      check(droveDoc?.kc_static_answers != null, 'the answers are RECORDED on the participant')
+      check(droveDoc?.knowledge_check_score != null, '…with a score stamped')
+
+      // Now open the tab, exactly as the launcher does after driving.
+      const ctxD = await browser.newContext()
+      const pageD = await ctxD.newPage()
+      await pageD.goto(studentUrl(GID_D, DPID))
+      await pageD.waitForSelector('[data-testid="fc-round-heading"], [data-testid="fc-kc-prompt"]',
+        { timeout: 30_000 })
+
+      check(await exists(pageD, '[data-testid="fc-round-heading"]'),
+        '⚠ the opened tab lands on the FORECAST-ENTRY screen')
+      check(!(await exists(pageD, '[data-testid="fc-kc-prompt"]')),
+        '…not on the knowledge check')
+      check((await testId(pageD, 'fc-round-heading')).includes('Year 6'),
+        'on the first playable month, with nothing yet forecast')
+      check(await exists(pageD, '[data-testid="fc-demand-chart"]'),
+        '…and the five-year history is already on screen')
+
+      // ⚠ THE TAB STAYS OPEN. An opened student tab is something Elena inspects.
+      await new Promise(r => setTimeout(r, 1500))
+      check(!pageD.isClosed(), '⚠ the tab is STILL OPEN after the drive (not auto-closed)')
+
+      // A re-drive is the normal case — Elena reopens a tab — and must not disturb
+      // anything. ⚠ IT IS NOT A COUNT OF ZERO: forecastSubmitKcAnswer accepts the second
+      // submission, DISCARDS it and returns the stored result, so the drive sees nine
+      // successes. The property that matters is that the STORED answers and the score
+      // are untouched — a re-drive must not be able to overwrite a wrong answer with a
+      // right one, which is exactly what that server-side discard exists to prevent.
+      const before = JSON.stringify(droveDoc?.kc_static_answers)
+      const beforeScore = JSON.stringify(droveDoc?.knowledge_check_score)
+      const again = await driveForecastStudentPastKc(
+        callFn, { _test: { participant_id: DPID, game_instance_id: GID_D } })
+      check(again.questionsAnswered === 9, 're-driving the same student does not throw')
+      const afterDoc = await getDoc(`forecast_game_instances/${GID_D}/participants/${DPID}`)
+      check(JSON.stringify(afterDoc?.kc_static_answers) === before,
+        '⚠ …and the stored answers are BYTE-IDENTICAL — a re-drive cannot re-answer')
+      check(JSON.stringify(afterDoc?.knowledge_check_score) === beforeScore,
+        '…nor move the score')
+
+      // KC switched off: nothing to skip, and the drive must not invent work or fail.
+      const GID_NK = `pw-drive-nokc-${stamp}`
+      await openInstance(GID_NK, { kc: false })
+      const droveNoKc = await driveForecastStudentPastKc(
+        callFn, { _test: { participant_id: 'pw-drive-nokc-stu', game_instance_id: GID_NK } })
+      check(droveNoKc.kcEnabled === false && droveNoKc.questionsAnswered === 0,
+        'with the KC disabled the drive is a clean no-op')
+
+      await pageD.close()
+      await ctxD.close()
+    }
 
     check(consoleErrors.length === 0,
       `no console errors during the playthrough${consoleErrors.length ? `: ${consoleErrors[0]}` : ''}`)
