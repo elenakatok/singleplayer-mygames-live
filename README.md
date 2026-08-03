@@ -22,11 +22,16 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | `forecast` | The Forecasting Game | `forecast.mygames.live` | `forecast-mygames` |
 | `procurement` | Procurement Auction | `procurement.mygames.live` | `procurement-mygames` |
 
-> `procurement` is **SPAWNED, NOT BUILT** (2026-08-03). The instructor surfaces, the
-> knowledge-check machinery, the roster, participation scoring and the gradebook push are
-> real; **the bidding round is not**. `procurementSubmitBid` and `procurementResolveRound`
-> are declared, deployable stubs that throw `unimplemented`, so the full function set can
-> take its IAM invoker bindings in one pass rather than two.
+> `procurement` is **BUILT AND PLAYABLE in the SEALED format** (CP1–CP3, 2026-08-03).
+> The whole student flow runs — knowledge check → prep paragraph → the round loop →
+> final results with the §9 scatter → debrief — plus Tier 1/2/3 reports, participation
+> scoring and the gradebook push.
+>
+> ⚠ **`procurementResolveRound` IS STILL A STUB** and throws `unimplemented`. It belongs
+> to the OPEN-bid format (CP4), which is not built. `procurementSubmitBid` refuses an
+> open-format instance rather than resolving it under the sealed mechanism, and the
+> student screen says so — so an open instance is inert, not silently wrong. Deploy the
+> stub anyway: it takes its IAM invoker binding in the same pass as everything else.
 >
 > ⚠ **The hosting site is `procurement-mygames`, NOT `procurement`** — plain `procurement`
 > is globally taken (confirmed 08-03), so this follows the `poll-mygames` / `forecast-mygames`
