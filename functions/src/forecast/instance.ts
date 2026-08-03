@@ -3,7 +3,7 @@ import {
   INSTANCES_COLLECTION, CONFIG_DOC, TRUTH_DOC,
   loadForecastConfig, loadForecastModel, loadForecastSeed, type ForecastConfig,
 } from './config'
-import { resolveHistory, type ForecastModel } from './demand'
+import { resolveHistory, resolveDrawSeed, type ForecastModel } from './demand'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Forecasting — reading one instance's settings.
@@ -44,6 +44,32 @@ export interface ForecastInstance {
    */
   seed: string | null
   /**
+   * ⚠⚠ THE SEED THE DRAWS ACTUALLY USE — and it is NOT always `seed`.
+   *
+   * THE BUG THIS EXISTS TO FIX (found in production 08-02, instance iPSKmr1a…):
+   * `unit()` returns `Math.random()` when the seed is null, IGNORING its key. So with a
+   * blank seed, `demandDraw: 'common'` silently did nothing — every student drew
+   * independently even though the setting said they should share a series. Instances
+   * created from the classroom have no truth doc at all, so a blank seed is the NORMAL
+   * case, which made `common` a no-op for every real instance. The reports looked
+   * healthy: σ was right, the chart was smooth, nothing errored.
+   *
+   * THE RULE: a "common" future that differs between two students is not common. So
+   * under `common`, a null seed falls back to a deterministic one. This is exactly the
+   * precedent `resolveHistory` already set — "blank = random futures" is a statement
+   * about the FUTURES, and a history that changed between students would not be a
+   * history. The same sentence applies here with "common series" in place of "history".
+   *
+   * WHY THE INSTANCE ID rather than DEFAULT_SEED: every seedless instance sharing one
+   * fallback would give this semester's class the same 24 months as last semester's —
+   * a leak across course runs, which is the very thing the flag exists to catch. The
+   * instance id is unique, already in hand, and stable for the life of the instance.
+   *
+   * Under `perStudent` a null seed still means real randomness: students differ anyway,
+   * so there is nothing for determinism to protect.
+   */
+  drawSeed: string | null
+  /**
    * The common history, p = 1…config.numHistory (spec §2.2).
    *
    * NOT secret — the opening screen shows all of it, the chart plots it and the
@@ -69,9 +95,13 @@ export async function loadInstance(
   const config = loadForecastConfig(configSnap.data())
   const model = loadForecastModel(truthSnap.data())
   const seed = loadForecastSeed(truthSnap.data())
+  // See `drawSeed` above: `common` requires determinism, so a blank seed falls back to
+  // the instance id rather than to Math.random().
+  const drawSeed = resolveDrawSeed(seed, model.demandDraw, instanceId)
 
   return {
     config,
+    drawSeed,
     model,
     seed,
     history: resolveHistory(model, seed, config.numHistory),

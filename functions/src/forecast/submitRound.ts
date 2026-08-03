@@ -57,7 +57,9 @@ export const forecastSubmitRound = onCall({ cors: FORECAST_CORS_ORIGINS }, async
   }
 
   const db = admin.firestore()
-  const { config, model, seed } = await loadInstance(db, gameInstanceId)
+  // ⚠ `drawSeed`, NOT `seed` — see instance.ts. With `demandDraw: 'common'` and a
+  // blank seed, using `seed` here made every student draw independently.
+  const { config, model, drawSeed } = await loadInstance(db, gameInstanceId)
 
   // Forecast validation needs the instance's bounds, so it happens after the config
   // load — but still before the transaction, so a bad forecast costs no write and,
@@ -98,7 +100,7 @@ export const forecastSubmitRound = onCall({ cors: FORECAST_CORS_ORIGINS }, async
     // The PERIOD is derived from the history length, not from the round index, so an
     // instance with a non-default numHistory still lands on the right calendar month.
     const period = config.numHistory + roundNumber
-    const D = drawDemand(model, seed, participantId, period)
+    const D = drawDemand(model, drawSeed, participantId, period)
 
     const record: StoredRound = {
       round: roundNumber,

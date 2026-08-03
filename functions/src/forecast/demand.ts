@@ -247,6 +247,39 @@ export function drawDemand(
 }
 
 /**
+ * THE SEED THE DRAWS MUST ACTUALLY USE, given the instance's own settings.
+ *
+ * ⚠⚠ THIS EXISTS BECAUSE `common` SHIPPED BROKEN (production, 08-02). `unit()` returns
+ * Math.random() when the seed is null and IGNORES its key, so a blank seed turned
+ * `demandDraw: 'common'` into a no-op: every student drew independently while the
+ * setting said they shared a series. Classroom-created instances have no truth doc and
+ * therefore no seed, so that was the NORMAL case, not an edge one — and nothing looked
+ * wrong from outside. σ was correct, the chart was smooth, no error was raised. It was
+ * caught by measuring production: 15 distinct actuals in a month where there should
+ * have been one.
+ *
+ * THE RULE: a "common" future that differs between two students is not common, so under
+ * `common` a null seed falls back to a deterministic one. This is the same sentence
+ * `resolveHistory` already lives by — "blank = random futures" is a statement about the
+ * FUTURES, and a history that changed between students would not be a history.
+ *
+ * THE FALLBACK IS THE INSTANCE ID, not DEFAULT_SEED: one shared fallback would give
+ * every seedless instance the same 24 months, so this semester's class would inherit
+ * last semester's answers — the very leak the below-floor flag exists to catch.
+ *
+ * Under `perStudent`, null still means real randomness. Students differ regardless, so
+ * there is nothing for determinism to protect.
+ */
+export function resolveDrawSeed(
+  seed: string | null,
+  demandDraw: ForecastModel['demandDraw'],
+  instanceId: string,
+): string | null {
+  if (seed !== null) return seed
+  return demandDraw === 'common' ? instanceId : null
+}
+
+/**
  * Whether this instance may serve the PUBLISHED history (spec §2.1) rather than a
  * generated one.
  *

@@ -5,7 +5,7 @@ import {
 } from '../src/forecast/history'
 import {
   DEFAULT_MODEL, DEFAULT_SEED, systematic, isHighSeason, drawDemand,
-  resolveHistory, usesPublishedHistory, hash32, type ForecastModel,
+  resolveHistory, resolveDrawSeed, usesPublishedHistory, hash32, type ForecastModel,
 } from '../src/forecast/demand'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -337,5 +337,46 @@ describe('hash32', () => {
     const seen = new Set(Array.from({ length: 5000 }, (_, i) => hash32(`participant-${i}`)))
     // Collisions in 5,000 draws from 2^32 should be a handful at most (birthday ≈ 0.003).
     expect(seen.size).toBeGreaterThan(4990)
+  })
+})
+
+describe('⚠ resolveDrawSeed — the null-seed bug that shipped (production, 08-02)', () => {
+  it('an explicit seed is always used, whatever the draw mode', () => {
+    expect(resolveDrawSeed('abc', 'common', 'inst-1')).toBe('abc')
+    expect(resolveDrawSeed('abc', 'perStudent', 'inst-1')).toBe('abc')
+  })
+
+  it('⚠ COMMON with a null seed falls back to the INSTANCE ID, never null', () => {
+    // Returning null here is the bug: unit() then answers Math.random() and ignores its
+    // key, so every student draws independently while the setting says otherwise.
+    expect(resolveDrawSeed(null, 'common', 'inst-1')).toBe('inst-1')
+    expect(resolveDrawSeed(null, 'common', 'inst-1')).not.toBeNull()
+  })
+
+  it('⚠ two seedless instances get DIFFERENT fallbacks', () => {
+    // One shared fallback would hand this semester's class last semester's months.
+    expect(resolveDrawSeed(null, 'common', 'inst-1'))
+      .not.toBe(resolveDrawSeed(null, 'common', 'inst-2'))
+  })
+
+  it('perStudent with a null seed stays null — real randomness, as documented', () => {
+    expect(resolveDrawSeed(null, 'perStudent', 'inst-1')).toBeNull()
+  })
+
+  it('the fallback actually makes drawDemand deterministic across students', () => {
+    // The end-to-end property, at the unit level: the same instance, two students, the
+    // same months.
+    const m: ForecastModel = { ...DEFAULT_MODEL, demandDraw: 'common' }
+    const s = resolveDrawSeed(null, m.demandDraw, 'inst-xyz')
+    const played = Array.from({ length: 12 }, (_, i) => 61 + i)
+    const a = played.map(p => drawDemand(m, s, 'stu-a', p))
+    const b = played.map(p => drawDemand(m, s, 'stu-b', p))
+    expect(a).toEqual(b)
+    // …and the demonstration that a NULL seed would not have: Math.random() ignores
+    // the key, so the same call twice disagrees.
+    const r1 = drawDemand(m, null, 'stu-a', 61)
+    const r2 = drawDemand(m, null, 'stu-a', 61)
+    const r3 = drawDemand(m, null, 'stu-a', 61)
+    expect(new Set([r1, r2, r3]).size).toBeGreaterThan(1)
   })
 })

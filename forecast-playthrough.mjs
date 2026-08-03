@@ -196,7 +196,10 @@ async function openInstance(gid, opts = {}) {
     season_structure: strVal('twoSeason'),
     demand_draw: strVal(o.demandDraw ?? 'perStudent'),
   }
-  if (o.seed !== undefined) truth.seed = strVal(o.seed)
+  // ⚠ `seed: null` OMITS the field entirely — the state a classroom-created instance
+  // is actually in. That is the case the null-seed bug lived in, so the harness has to
+  // be able to reproduce it.
+  if (o.seed !== undefined && o.seed !== null) truth.seed = strVal(o.seed)
   await putDoc(`forecast_game_instances/${gid}/truth/main`, truth)
 }
 
@@ -687,6 +690,53 @@ async function main() {
     }
     check(JSON.stringify(dA) === JSON.stringify(dB),
       `⚠ the DEFAULT draw is COMMON — both students got ${dA.join('/')}`)
+
+    // ⚠⚠ AND WITH NO SEED AT ALL — the case that shipped broken (production 08-02).
+    //
+    // `unit()` returns Math.random() when the seed is null, ignoring its key, so
+    // `common` silently became a no-op. Every classroom-created instance has no truth
+    // doc and therefore no seed, which made that the NORMAL case rather than an edge
+    // one — and nothing looked wrong: σ was right, the chart was smooth, no error.
+    // The old harness never caught it because openInstance always set a seed.
+    const gidNoSeed = `fc-noseed-${stamp}`
+    await openInstance(gidNoSeed, { seed: null, rounds: 4, demandDraw: 'common' })
+    const nA = [], nB = []
+    for (const who of ['ns-a', 'ns-b']) {
+      await callFn('forecastBootstrap', asStudent(gidNoSeed, who))
+      for (let round = 1; round <= 4; round++) {
+        const r = await callFn('forecastSubmitRound', asStudent(gidNoSeed, who, { round, forecast: 800 }))
+        ;(who === 'ns-a' ? nA : nB).push(r.result.round.actual)
+      }
+    }
+    check(JSON.stringify(nA) === JSON.stringify(nB),
+      `⚠⚠ COMMON works with NO SEED SET — both students got ${nA.join('/')}`)
+
+    // …and two DIFFERENT seedless instances must NOT share a series, or this
+    // semester's class would inherit last semester's answers.
+    const gidNoSeed2 = `fc-noseed2-${stamp}`
+    await openInstance(gidNoSeed2, { seed: null, rounds: 4, demandDraw: 'common' })
+    await callFn('forecastBootstrap', asStudent(gidNoSeed2, 'ns-c'))
+    const nC = []
+    for (let round = 1; round <= 4; round++) {
+      const r = await callFn('forecastSubmitRound', asStudent(gidNoSeed2, 'ns-c', { round, forecast: 800 }))
+      nC.push(r.result.round.actual)
+    }
+    check(JSON.stringify(nC) !== JSON.stringify(nA),
+      `⚠ a DIFFERENT seedless instance gets its OWN series (${nC.join('/')})`)
+
+    // perStudent with no seed is still real randomness — unchanged, and still right.
+    const gidPer = `fc-noseed-per-${stamp}`
+    await openInstance(gidPer, { seed: null, rounds: 4, demandDraw: 'perStudent' })
+    const pA = [], pB = []
+    for (const who of ['np-a', 'np-b']) {
+      await callFn('forecastBootstrap', asStudent(gidPer, who))
+      for (let round = 1; round <= 4; round++) {
+        const r = await callFn('forecastSubmitRound', asStudent(gidPer, who, { round, forecast: 800 }))
+        ;(who === 'np-a' ? pA : pB).push(r.result.round.actual)
+      }
+    }
+    check(JSON.stringify(pA) !== JSON.stringify(pB),
+      'perStudent with no seed still gives students different futures')
   }
 
   // ───────────────────────────────────────────────────────────────────────────
