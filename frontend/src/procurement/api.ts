@@ -322,6 +322,14 @@ export type ProcurementReport = {
   format: ProcurementFormat
   rounds: number
   reserve: number
+  /** ⚠ THE TIER-3 LINE IS DERIVED FROM THESE, per instance. β needs θmax and n, not just
+   *  the reserve — two instances with different rival ranges must not share one line. */
+  rivalCostMin: number
+  rivalCostMax: number
+  playerCostMin: number
+  playerCostMax: number
+  rivalCount: number
+  totalBidders: number
   currencyLabel: string
   gradedTotal: number
   finalized: boolean

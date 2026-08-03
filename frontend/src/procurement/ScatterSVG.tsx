@@ -36,7 +36,15 @@ import type { ProcurementParams, ProcurementPlayedRow, ProcurementRivalPoint } f
  *  collapses to the simple form. It is kept because the reserve is instructor-adjustable:
  *  drop it and the "Optimal" line quietly stops being optimal at every other setting,
  *  which is the one thing this chart exists to assert. See equilibrium.ts. */
-export function optimalBid(c: number, params: ProcurementParams): number | null {
+export interface OptimalLineSettings {
+  /** θmax — the top of the RIVAL cost range, always. Never the player's own max. */
+  rivalCostMax: number
+  reserve: number
+  /** n = rivalCount + 1. Off-by-one here moves every reference line in the game. */
+  totalBidders: number
+}
+
+export function optimalBid(c: number, params: OptimalLineSettings): number | null {
   const tMax = params.rivalCostMax
   const r = params.reserve
   const n = params.totalBidders

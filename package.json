@@ -11,12 +11,14 @@
     "harness:pricing": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pricing-playthrough.mjs\"",
     "harness:newsvendor": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node newsvendor-playthrough.mjs\"",
     "harness:procurement": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node procurement-playthrough.mjs\"",
+    "harness:procurement:browser": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node procurement-playwright.mjs\"",
     "harness:forecast": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node forecast-playthrough.mjs\"",
     "harness:forecast:browser": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node forecast-playwright.mjs\"",
     "harness:newsvendor:browser": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node newsvendor-playwright.mjs\"",
     "harness:pd:browser": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pd-playwright.mjs\"",
     "harness:pricing:browser": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pricing-playwright.mjs\"",
     "repro:pd:student-session": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pd-student-session-repro.mjs\"",
+    "robots:procurement:dryrun": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node procurement-robot-dryrun.mjs\"",
     "robots:forecast:dryrun": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node forecast-robot-dryrun.mjs\""
   },
   "devDependencies": {

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { colors, typography } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
+import { ClassScatterSVG } from './ClassScatterSVG'
 import {
   procurementGetReport, procurementInstructorSession, instructorErrorMessage,
   FORMAT_LABEL, type ProcurementReport,
@@ -20,11 +21,21 @@ import {
 //               rule Elena has restated on every spawn, and the thing Slice 0 found
 //               missing across the fleet.
 //
-// ⚠ TODO(build): TIER 3 IS CHECKPOINT 2. The scatter of every student's bid against the
-// equilibrium markup line `c + (reserve − c)/n` (Part 1 §12) needs the bot rule
-// conditioned on the reserve (Part 1 §5.1). Drawing that line before the game computes
-// it would put a confident, wrong reference on the instructor's screen — the same class
-// of mistake forecast's benchmark table made twice.
+// ⚠ TIER 3 (§12) — the class scatter, added at CP3b. Every student's bid against their
+// own cost, with the 45° line and the optimal line.
+//
+// ⚠⚠ THE LINE THIS NOTE ORIGINALLY NAMED WAS WRONG, and it is worth recording rather
+// than quietly correcting. It said the line was `c + (reserve − c)/n`. That is β only at
+// the DEFAULT reserve, where reserve = rivalCostMax; the general form takes θmax from the
+// RIVAL COST RANGE and conditions on the reserve separately (§5.1). At the shipped
+// numbers the two agree exactly, so the error would have survived every default-reserve
+// check and drawn a confident, wrong reference in front of a lecture room the first time
+// anyone lowered the reserve. `ClassScatterSVG` imports the student chart's own
+// `optimalBid` — ONE derivation, so the two charts cannot disagree.
+//
+// ⚠ TIER 3 CARRIES NO RIVAL COST. §12 is students' bids against students' costs; the
+// bots are the LINE, not points. The report rows have no rival figure on them at all
+// (report.ts), so this is structural, not filtered.
 //
 // ⚠ THE FORMAT IS NAMED IN THE HEADER. Two instances run side by side under one
 // game_id and their results are not comparable; a report that did not say which
@@ -149,6 +160,11 @@ export default function Reports() {
                     <th style={th}>Round</th>
                     <th style={th}>Cost</th>
                     <th style={th}>Bid</th>
+                    {/* ⚠ The SERVER's β at this student's own cost, carried on the row —
+                        never re-derived here. The Tier-1b detail is what Elena reads when
+                        a student disputes a round, so it must show the same number the
+                        student was shown on their own results screen. */}
+                    <th style={th}>Optimal</th>
                     <th style={{ ...th, textAlign: 'left' }}>Won</th>
                     <th style={th}>Price</th>
                     <th style={th}>Profit</th>
@@ -160,6 +176,7 @@ export default function Reports() {
                       <td style={td}>{x.round}</td>
                       <td style={td}>{x.yourCost}</td>
                       <td style={td}>{x.yourBid ?? '—'}</td>
+                      <td style={td}>{x.yourEquilibriumBid ?? '—'}</td>
                       <td style={{ ...td, textAlign: 'left' }}>{x.won ? 'Yes' : 'No'}</td>
                       <td style={td}>{x.price ?? '—'}</td>
                       <td style={td}>{x.profit}</td>
@@ -171,6 +188,19 @@ export default function Reports() {
           </div>
         )
       })()}
+
+      {/* ── Tier 3: the class scatter (§12) — the lecture chart ───────────────── */}
+      {data && (
+        <section style={{ marginBottom: '2.5rem' }}>
+          <h2 style={{ fontSize: '0.95rem' }}>Every bid in the class, against the bidder’s own cost</h2>
+          <p style={{ fontSize: '0.8rem', color: colors.textSecondary, maxWidth: '42rem' }}>
+            One dot per bid. The green line is the optimal bid at each cost, computed from
+            THIS instance’s reserve, rival cost range and bidder count — not a constant.
+            The dashed line is bidding your cost exactly, which earns nothing.
+          </p>
+          <ClassScatterSVG report={data} />
+        </section>
+      )}
 
       {/* ── Tier 2: one report PER FREE-TEXT QUESTION — the spawn gate ───────── */}
       {/* ⚠ FOUR ACROSS THE TWO FORMATS (S8/S9 sealed, O9/O10 open). Rendered from the

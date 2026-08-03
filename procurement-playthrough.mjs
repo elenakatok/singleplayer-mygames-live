@@ -705,6 +705,93 @@ async function main() {
   check(debRe.answer !== 'REWRITTEN' && debRe.stored === true,
     '⚠ a free-text answer is LOCKED on first submit — the prep half of the pair is worthless if it can be revised after the fact')
 
+  // ── §12 the instructor report: Tiers 1, 2 and 3 ────────────────────────────
+  section('§12  The report — Tier 1, Tier 2, and the Tier-3 class scatter')
+
+  const asInstructor = (gid, extra = {}) => ({ _dev: { game_instance_id: gid }, ...extra })
+
+  const rep = (await callFn('procurementGetReport', asInstructor(gidK))).result
+  check(sameKeys(rep, [
+    'ok', 'format', 'rounds', 'reserve', 'rivalCostMin', 'rivalCostMax',
+    'playerCostMin', 'playerCostMax', 'rivalCount', 'totalBidders',
+    'currencyLabel', 'gradedTotal', 'finalized', 'textQuestions', 'rows',
+  ].sort()), 'the report key set is exactly the contract')
+
+  // ── Tier 3's line parameters ───────────────────────────────────────────────
+  // ⚠ β NEEDS θmax AND n, NOT JUST THE RESERVE. Without these the class chart would have
+  // to assume the shipped numbers, and two instances with different rival ranges would
+  // share one line — in the chart Elena presents in lecture.
+  check(rep.rivalCostMax === 110 && rep.totalBidders === 5 && rep.rivalCount === 4,
+    '§12 the report carries THIS instance\'s θmax and n, so the optimal line is per-instance')
+  check(rep.totalBidders === rep.rivalCount + 1, '§12 and n is rivals + 1, derived server-side')
+  check(rep.playerCostMin === 10 && rep.playerCostMax === 60,
+    '§12 and the player range, which is the chart\'s x-axis')
+
+  // ⚠⚠ TIER 3 CARRIES NO RIVAL COST — and the point is that it does not NEED one. §12 is
+  // students' bids against students' costs; the bots are the LINE, not points. So the
+  // "does the reveal gate apply per student here" question does not arise: there is no
+  // rival figure on any report row to gate. Asserted as a KEY-SET pin on the row and its
+  // rounds, which is a contract, rather than by scanning for a number.
+  const ROW_KEYS = [
+    'participantId', 'name', 'externalId', 'finished', 'roundsPlayed', 'roundsWon',
+    'profitTotal', 'knowledgeCheckScore', 'rawScore', 'normalizedScore', 'rounds', 'freeText',
+  ].sort()
+  check(rep.rows.every(r => sameKeys(r, ROW_KEYS)), '§12 every report row key set is exactly the contract')
+  check(rep.rows.every(r => r.rounds.every(x => sameKeys(x, PLAYED_KEYS))),
+    '⚠ §12 report rounds use the SAME whitelist as the student path — no rival cost exists to gate')
+  check(!JSON.stringify(rep.rows).includes('rival'),
+    '⚠ §12 and no key anywhere under rows mentions a rival')
+
+  // ⚠ Elena's Tier-1b check: the SERVER's β travels with the row.
+  check(rep.rows.every(r => r.rounds.every(x => 'yourEquilibriumBid' in x)),
+    '§12 Tier 1b carries yourEquilibriumBid — the same number the student was shown')
+  const anyRow = rep.rows.find(r => r.rounds.length > 0)
+  check(anyRow !== undefined &&
+    anyRow.rounds.every(x => x.yourEquilibriumBid === betaInt(x.yourCost, {
+      rivalCostMax: rep.rivalCostMax, reserve: rep.reserve, totalBidders: rep.totalBidders,
+    })),
+    '§12 and it is β at that student\'s own cost, checked against the harness\'s own formula')
+
+  // ── A student still playing ────────────────────────────────────────────────
+  // The report is instructor-only and may carry anything; what matters is that a
+  // half-finished student contributes RESOLVED rounds and nothing else, so the class
+  // scatter can never plot a bid that has not happened.
+  const gidM = await makeInstance({ rounds: 4, reserve: RESERVE, seed: 'midgame-seed' })
+  await callFn('procurementBootstrap', asStudent(gidM, 'mid'))
+  const sM = (await callFn('procurementGetState', asStudent(gidM, 'mid'))).result
+  await callFn('procurementSubmitBid', asStudent(gidM, 'mid', { round: 1, bid: Math.min(RESERVE, sM.currentCost + 6) }))
+
+  const repM = (await callFn('procurementGetReport', asInstructor(gidM))).result
+  const midRow = repM.rows.find(r => r.participantId === 'mid')
+  check(midRow.finished === false, 'a mid-game student is reported as unfinished')
+  check(midRow.rounds.length === 1,
+    '§12 and contributes exactly their ONE resolved round to the class scatter — no partial row exists')
+  check(midRow.rounds.every(x => sameKeys(x, PLAYED_KEYS)),
+    '§12 their row carries no rival cost either')
+
+  // ⚠ AND THE STUDENT-FACING GATE IS UNAFFECTED by the instructor having opened the
+  // report. This is the leak-back question: nothing derived from Tier 3 reaches a live
+  // student, and the reveal is still null for them.
+  const sMafter = (await callFn('procurementGetState', asStudent(gidM, 'mid'))).result
+  check(sMafter.revealRivalPoints === null,
+    '⚠ §9 opening the report mid-session does NOT open the student\'s rival-cost reveal')
+
+  // ── Tier 2 ─────────────────────────────────────────────────────────────────
+  check(rep.textQuestions.length === 2 &&
+    rep.textQuestions.map(q => q.stage).sort().join(',') === 'debrief,prep',
+    '§12 Tier 2 has one tile per free-text question, prep and debrief')
+  check(rep.textQuestions.every(q => sameKeys(q, ['field', 'stage', 'prompt'].sort())),
+    '§12 and each tile is captioned with the question it answers')
+  const ftRow = rep.rows.find(r => r.participantId === pidK)
+  check(Object.keys(ftRow.freeText).length === 2,
+    '§12 both answers reach the report — the prep/debrief PAIR is the point')
+
+  // ── Tier 1a ────────────────────────────────────────────────────────────────
+  check(ftRow.roundsPlayed === 1 && typeof ftRow.profitTotal === 'number',
+    '§12 Tier 1a carries the roster figures')
+  check(rep.gradedTotal === 2,
+    '⚠ §12 the report header\'s denominator is the SAME gradedFor() the grader uses')
+
   // ═══════════════════════════════════════════════════════════════════════════
   console.log(`\n${'═'.repeat(70)}`)
   console.log(`  ${passed} passed, ${failed} failed`)

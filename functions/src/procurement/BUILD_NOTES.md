@@ -206,6 +206,60 @@ arriving through a different door.
 
 ---
 
+## 6d. Checkpoint 3b, Steps 4–6 (2026-08-03)
+
+**Tier 3 needed config it was not being sent.** `procurementGetReport` now carries
+`rivalCostMin/Max`, `playerCostMin/Max`, `rivalCount` and `totalBidders`. β needs θmax and
+n, not just the reserve, so without them the class chart would have had to assume the
+shipped numbers and two instances with different rival ranges would have shared one line —
+in the chart Elena presents in lecture. `ClassScatterSVG` imports the student chart's own
+`optimalBid`: one derivation, so the two charts cannot disagree in front of a room.
+
+⚠ **Reports.tsx's own header note had the formula wrong** and it is worth recording rather
+than quietly fixing. It said the Tier-3 line was `c + (reserve − c)/n`. That is β only at
+the DEFAULT reserve, where reserve = rivalCostMax. At the shipped numbers the two agree
+exactly, so the error would have survived every default-reserve check and drawn a
+confident, wrong reference the first time anyone lowered the reserve. Third instance of
+BUILD_NOTES §7's trap.
+
+**Tier 3 carries no rival cost, and the question of gating it per-student does not
+arise.** §12's class scatter is every student's bid against their OWN cost; the bots are
+the LINE, not points. `rows[].rounds` uses the same `toClientHistory` whitelist the student
+path uses, so there is no rival figure on a report row to gate. A mid-game student
+contributes their resolved rounds and nothing else, and the harness asserts that opening
+the report does NOT open that student's own `revealRivalPoints`.
+
+### Two more worthless-control specimens, and one new trap
+
+3. **A roster assertion that matched on the participant id.** The roster renders
+   `name ?? id`, so a bootstrap that supplied a name would have failed a correct page.
+   Replaced with the FIGURES — rounds, wins, profit — checked against what the round
+   screens actually showed.
+4. **A test that called `resolveRound` twice and compared.** It claimed to prove the
+   counterfactual runs on its own tie stream; `resolveRound` is deterministic, so it would
+   have passed whichever stream the counterfactual used. Deleted. The separate keying is
+   real but is not observable from one call site, and no honest unit test here can assert
+   it — said so in the file rather than leaving a green check implying otherwise.
+
+⚠ **`startVite` accepted a server it did not start.** The obvious loop — spawn, then poll
+until `fetch(APP)` succeeds — accepts ANY server on that port. After a killed run left a
+stale Vite behind, the freshly spawned child died of EADDRINUSE, the poll succeeded against
+the OLD server, and `vite.kill()` at the end killed nothing. Cost a 25-minute apparent
+hang. Both browser harnesses now REFUSE to run when the port is already serving. Same shape
+as the `updateMask` trap: the harness believed it controlled something it did not, and every
+result after that point was about a different system than the one it named.
+
+### The launcher entry
+
+`bot/procurement-autodrive.mjs` + one `SINGLE_PLAYER_DRIVES.procurement` entry in the
+launcher's `server.mjs`, which owns the wording AND the driver — the arrangement that
+exists because forecast's second start position lived in two places and silently did
+nothing. The drive answers the KC **and submits the prep paragraph**; without the prep the
+tab lands one screen short while looking identical in the log. `[LAUNCHER]` in the
+Playwright harness imports that exact module rather than reproducing its steps.
+
+---
+
 ## 6. `allowDropOut` does not exist
 
 It appears in an early prompt's config list but in **neither** FINAL spec. Drop Out is
