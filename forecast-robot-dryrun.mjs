@@ -205,6 +205,14 @@ try {
       check(!/Tier 3 — the class chart/.test(body),
         'the old un-informative "Tier 3 — the class chart" heading is gone')
 
+      // ⚠ THE BELOW-FLOOR CHECK IS VISIBLE EVEN WHEN IT FINDS NOTHING (Elena, 08-02).
+      // A badge that only renders when triggered made "no cheats" and "not built" look
+      // identical to an instructor going looking for it.
+      check(/Below-floor check/.test(body),
+        'the tile states the below-floor check ran, even with nobody flagged')
+      check(/none of 7 flagged/.test(body),
+        '…and says how many were tested (none of 7 flagged)')
+
       // ⚠ THE NEW HISTORY TILE (Elena, 08-02). Every other chart starts at the first
       // PLAYED month, so until this tile existed the reports could show what the class
       // did but not the data they were looking at when they did it.

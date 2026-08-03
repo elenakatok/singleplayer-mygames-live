@@ -157,6 +157,7 @@ function OutcomesTable({
   rows: ForecastReportParticipant[]
   onOpenStudent: (id: string) => void
 }) {
+  const flagged = rows.filter(r => r.below_floor?.flagged).length
   const columns: readonly SortableColumn<ForecastReportParticipant, RosterKey>[] = [
     {
       key: 'name', label: 'Name',
@@ -206,6 +207,16 @@ function OutcomesTable({
         Every enrolled student. <strong>Forecast accuracy is never graded</strong> —
         participation is scored on finishing. Click a student for their month-by-month
         table. For a finished student, MSE is the average of the two year MSEs beside it.
+      </p>
+      <p data-testid="fc-roster-flag-summary" style={{ margin: '0 0 0.75rem', fontSize: '0.8rem', color: colors.textSecondary }}>
+        <strong>Below-floor check:</strong>{' '}
+        {flagged === 0
+          ? `no student's error is smaller than the noise alone allows. `
+          : `${flagged} student${flagged === 1 ? '' : 's'} carry a badge in the Status column — `
+            + `their error is smaller than the noise alone allows. `}
+        Every student who has played at least six months is tested against their own
+        month count and this instance&rsquo;s noise level. It is informational: no score
+        is affected, and nothing is shown to the student.
       </p>
       <SortableTable
         rows={rows}
@@ -386,6 +397,7 @@ export default function Reports() {
   const finished = data.participants.filter(p => p.completed)
   const debriefs = data.participants.filter(p => p.debrief)
   const months = data.classChart.length
+  const flaggedCount = data.participants.filter(p => p.below_floor?.flagged).length
   const detail = student ? data.participants.find(p => p.participant_id === student) ?? null : null
 
   const grey = { color: '#94a3b8' }
@@ -394,7 +406,29 @@ export default function Reports() {
     {
       id: 'outcomes',
       title: 'Outcomes — all students',
-      preview: <span>{finished.length} finished / {data.participants.length} on roster</span>,
+      // ⚠ THE FLAG COUNT IS SHOWN EVEN WHEN IT IS ZERO (Elena, 08-02). A badge that
+      // only appears when triggered is invisible until it matters — which meant going
+      // looking for it and finding nothing was indistinguishable from it not existing.
+      // Saying "none flagged" is how an instructor knows the check ran at all.
+      preview: (
+        <>
+          <span>{finished.length} finished / {data.participants.length} on roster</span>
+          <span
+            data-testid="fc-tile-flag-count"
+            style={{
+              display: 'block', marginTop: '0.3rem', fontSize: '0.8rem',
+              color: flaggedCount > 0 ? '#92400e' : colors.textSecondary,
+              fontWeight: flaggedCount > 0 ? 600 : 400,
+            }}
+          >
+            {flaggedCount > 0
+              ? `⚠ ${flaggedCount} flagged below the error floor`
+              : played.length === 0
+                ? 'Below-floor check: nobody has played yet'
+                : `Below-floor check: none of ${played.length} flagged`}
+          </span>
+        </>
+      ),
       onOpen: () => setActive('outcomes'),
     },
     {
