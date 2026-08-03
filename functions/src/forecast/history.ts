@@ -6,21 +6,30 @@
 // screen) and the harness re-derives it. Nothing here is a draw; the numbers below are
 // a CONSTANT.
 //
-// ⚠⚠ THE HISTORY IS A FIXED ARRAY, NOT A GENERATED ONE (spec §2.2: "the 60 months of
-// history are a fixed array, identical for everyone"). These sixty integers are the
-// table printed in spec §2.1 and they are the authority, for three reasons that all
-// point the same way:
+// ⚠⚠ REGENERATED AT σ = 60 (Elena, 08-02). Spec §2.1's printed table was drawn at
+// σ = 30 and no longer matched the game: the history carried σ = 30 noise while play
+// carried σ = 60, so a student estimating σ off the history would have under-estimated
+// their own error by half. These sixty integers replace it.
 //
-//   1. Spec §2.1 states the parsimonious fit on this history is intercept 564.7,
-//      trend 3.95, holiday +227.5. It is — exactly, to the printed digit. Regenerating
-//      the history from a different RNG would silently break that claim.
-//   2. The §2.3 benchmark table (which the debrief screen and the Tier-3 summary box
-//      both DISPLAY) is computed against this specific history. Different numbers ⇒ a
-//      benchmark table that lies.
-//   3. Seed 1 was chosen so Nov and Dec beat every other month of their own year in
-//      all five years (spec §2.1). That is a property of THESE numbers; no other draw
-//      is guaranteed to have it, and the high season reading as a rule rather than a
-//      run of luck is load-bearing for the exercise.
+// ⚠⚠ STILL A FIXED ARRAY, NOT GENERATED PER REQUEST (spec §2.2: "the 60 months of
+// history are a fixed array, identical for everyone"). Hardcoded so its properties can
+// be ASSERTED rather than hoped for — the tests check every one:
+//
+//   1. THE SEASON READS AS A RULE. Nov and Dec beat every other month of their own year
+//      in all five years, worst-year margin 133 units. THAT MARGIN WAS THE SELECTION
+//      CRITERION, not the fit: at σ = 60 only ~16% of seeds clear the structural bar at
+//      all, and the first good-fitting candidate had a Y5 margin of just 17 units —
+//      technically passing, visually arguable. The exercise depends on the high season
+//      being obvious, so the widest margin won.
+//   2. THE PARSIMONIOUS FIT RECOVERS THE PROCESS: trend + one holiday dummy gives
+//      intercept 559.0, trend 4.01, holiday +237.6 against true 560 / 4.00 / 230. A
+//      student doing exactly what slide 12 demonstrates still lands on it.
+//   3. THE §2.3 BENCHMARK TABLE IS COMPUTED AGAINST IT (benchmarks.ts) and was
+//      re-simulated when these numbers changed. Different history ⇒ different
+//      benchmarks ⇒ a comparison that lies.
+//
+// Produced by the SHIPPED generator at seed 1427, σ = 60 — so this table is exactly
+// what `resolveHistory` emits for that seed, not a separate artifact that can drift.
 //
 // A generated fallback exists in demand.ts for the case where an instructor edits the
 // model away from the shipped defaults — see `usesPublishedHistory`. At the defaults,
@@ -34,27 +43,32 @@
 /**
  * The published five-year history, p = 1…60, in period order (Y1 Jan … Y5 Dec).
  *
- * ⚠ DO NOT EDIT THESE NUMBERS. They are spec §2.1's table, transcribed row by row.
- * `forecastHistoryFit` in the harness re-fits them every run and asserts the
- * coefficients still come out at 564.7 / 3.95 / 227.5, so an accidental digit change
- * fails the harness rather than quietly shipping a different game.
+ * ⚠ DO NOT EDIT THESE NUMBERS. The tests re-fit them on every run and assert the
+ * coefficients still come out at 559.0 / 4.01 / 237.6, and that the seasonal margin
+ * holds — so an accidental digit change fails the suite rather than quietly shipping a
+ * different game.
  */
 export const PUBLISHED_HISTORY: readonly number[] = [
   // Y1
-  603, 611, 574, 553, 547, 585, 557, 549, 602, 604, 850, 811,
+  665, 560, 519, 559, 668, 668, 557, 693, 517, 566, 862, 849,
   // Y2
-  612, 614, 575, 640, 638, 704, 642, 636, 681, 654, 909, 875,
+  574, 582, 582, 667, 571, 570, 619, 515, 653, 652, 931, 841,
   // Y3
-  667, 695, 689, 676, 644, 693, 686, 710, 698, 729, 928, 940,
+  565, 710, 687, 659, 694, 724, 750, 714, 759, 695, 893, 939,
   // Y4
-  728, 679, 704, 705, 783, 725, 752, 755, 732, 697, 1007, 970,
+  740, 728, 722, 694, 585, 800, 798, 697, 744, 675, 933, 1053,
   // Y5
-  778, 721, 751, 806, 815, 737, 740, 783, 810, 797, 1035, 1000,
+  677, 748, 765, 779, 831, 792, 822, 701, 832, 814, 1039, 1048,
 ]
 
 /** How many months the published table covers. An instance whose `numHistory` differs
  *  cannot use it — see `usesPublishedHistory` in demand.ts. */
 export const PUBLISHED_HISTORY_LENGTH = PUBLISHED_HISTORY.length
+
+/** The seed the published table was generated at, σ = 60. Kept so the table can be
+ *  reproduced, and so `resolveHistory`'s generated branch falls back to the same series
+ *  rather than to an unrelated one. */
+export const PUBLISHED_HISTORY_SEED = '1427'
 
 // ── The calendar ───────────────────────────────────────────────────────────────
 

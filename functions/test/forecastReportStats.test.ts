@@ -243,7 +243,7 @@ describe('buildReveal (spec §9)', () => {
     const r = buildReveal(DEFAULT_MODEL, CONFIG, PUBLISHED_HISTORY, rounds)
     expect(r.benchmarksAreRealized).toBe(false)
     expect(r.benchmarks).toHaveLength(8)
-    expect(r.benchmarks.find(b => b.id === 'reg_holiday')!.mse).toBe(3601)
+    expect(r.benchmarks.find(b => b.id === 'reg_holiday')!.mse).toBe(3607)
     expect(r.lectureModelId).toBe('reg_holiday')
   })
 

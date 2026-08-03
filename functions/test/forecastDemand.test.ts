@@ -64,20 +64,50 @@ describe('the published history (spec §2.1)', () => {
     expect(PUBLISHED_HISTORY).toHaveLength(60)
   })
 
-  it('recovers the coefficients spec §2.1 states: 564.7 / 3.95 / +227.5', () => {
+  it('recovers the coefficients of the REGENERATED σ = 60 table: 559.0 / 4.01 / +237.6', () => {
+    // ⚠ NOT spec §2.1's 564.7 / 3.95 / 227.5 — those describe the σ = 30 table this
+    // replaced (history.ts, Elena 08-02).
     const fit = fitTrendHoliday(PUBLISHED_HISTORY, DEFAULT_HIGH_SEASON_MONTHS)
-    expect(fit.intercept).toBeCloseTo(564.7, 1)
-    expect(fit.trend).toBeCloseTo(3.95, 2)
-    expect(fit.holiday).toBeCloseTo(227.5, 1)
+    expect(fit.intercept).toBeCloseTo(559.0, 0)
+    expect(fit.trend).toBeCloseTo(4.01, 1)
+    expect(fit.holiday).toBeCloseTo(237.6, 0)
+  })
+
+  it('⚠ the season reads as a RULE — the worst year still clears by 133 units', () => {
+    // THE selection criterion for this table (history.ts). At σ = 60 a technically
+    // passing history can have a 17-unit margin, which is not visible on a projector.
+    let worst = Infinity
+    for (let y = 0; y < 5; y++) {
+      const block = PUBLISHED_HISTORY.slice(y * 12, (y + 1) * 12)
+      const bestOther = Math.max(...block.slice(0, 10))
+      worst = Math.min(worst, Math.min(block[10], block[11]) - bestOther)
+    }
+    expect(worst).toBe(133)
+  })
+
+  it('carries the noise level it is played at — residual sd ≈ σ = 60', () => {
+    // The whole point of regenerating: history and play now share a noise level, so a
+    // student who estimates σ off the history is not out by a factor of two.
+    const fit = fitTrendHoliday(PUBLISHED_HISTORY, DEFAULT_HIGH_SEASON_MONTHS)
+    let ss = 0
+    PUBLISHED_HISTORY.forEach((v, i) => {
+      const p = i + 1
+      const pred = fit.intercept + fit.trend * p
+        + (DEFAULT_HIGH_SEASON_MONTHS.includes(((p - 1) % 12) + 1) ? fit.holiday : 0)
+      ss += (v - pred) ** 2
+    })
+    const sd = Math.sqrt(ss / (PUBLISHED_HISTORY.length - 3))
+    expect(Math.abs(sd - 60)).toBeLessThan(12)
   })
 
   it('recovers coefficients close to the TRUE parameters (spec §2.1: "almost perfectly")', () => {
     const fit = fitTrendHoliday(PUBLISHED_HISTORY, DEFAULT_HIGH_SEASON_MONTHS)
     // True values 560 / 4.00 / 230 — a student doing exactly what slide 12 demonstrates
-    // lands here, and the game's pedagogy depends on that being true.
-    expect(Math.abs(fit.intercept - 560)).toBeLessThan(10)
-    expect(Math.abs(fit.trend - 4)).toBeLessThan(0.2)
-    expect(Math.abs(fit.holiday - 230)).toBeLessThan(10)
+    // lands here, and the game's pedagogy depends on that being true. The bands are a
+    // little wider than at σ = 30: twice the noise, twice the estimation error.
+    expect(Math.abs(fit.intercept - 560)).toBeLessThan(15)
+    expect(Math.abs(fit.trend - 4)).toBeLessThan(0.25)
+    expect(Math.abs(fit.holiday - 230)).toBeLessThan(15)
   })
 
   it('has Nov AND Dec above every other month of their own year, all five years', () => {

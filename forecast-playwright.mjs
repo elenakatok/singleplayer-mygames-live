@@ -65,7 +65,7 @@ const boolVal = (b) => ({ booleanValue: b })
 const arrVal = (xs) => ({ arrayValue: { values: xs } })
 
 /** The shipped model (spec §2). ⚠ rounds and num_history ALWAYS explicit. */
-const MODEL = { a: 560, b: 4, H: 230, sigma: 30, high: [11, 12] }
+const MODEL = { a: 560, b: 4, H: 230, sigma: 60, high: [11, 12] }
 const ROUNDS = 4
 
 async function openInstance(gid, opts = {}) {
@@ -91,8 +91,8 @@ async function openInstance(gid, opts = {}) {
 }
 
 /** Spec §2.1's published history — the first and last values, for a spot check. */
-const SPEC_HISTORY_FIRST = 603
-const SPEC_HISTORY_LAST = 1000
+const SPEC_HISTORY_FIRST = 665
+const SPEC_HISTORY_LAST = 1048
 
 // ── The Vite dev server ────────────────────────────────────────────────────────
 
@@ -265,7 +265,7 @@ async function main() {
       'five rows — one per year of history')
     check((await testId(page, 'fc-grid-cell-1')) === String(SPEC_HISTORY_FIRST),
       `Y1 Jan is the published ${SPEC_HISTORY_FIRST} (spec §2.1)`)
-    check((await testId(page, 'fc-grid-cell-60')) === '1,000',
+    check((await testId(page, 'fc-grid-cell-60')) === '1,048',
       `Y5 Dec is the published ${SPEC_HISTORY_LAST}`)
     // The seasonality has to be VISIBLE in the grid — that is its whole job.
     const y1nov = Number((await testId(page, 'fc-grid-cell-11')).replace(/,/g, ''))
@@ -414,7 +414,9 @@ async function main() {
     check(await exists(page, '[data-testid="fc-benchmark-yours"]'),
       "…and the student's own row, placed in the same table")
     const floorText = await testId(page, 'fc-reveal-floor')
-    check(/900/.test(floorText), 'the floor σ² is stated')
+    // ⚠ σ² = 3,600 at the shipped σ = 60. This asserted 900 while the harness seeded
+    // σ = 30 of its own; both are now aligned to the real game.
+    check(/3,600/.test(floorText), 'the floor σ² = 3,600 is stated')
 
     // ⚠ RESUME: a reload must land back on the reveal, not on a dead end.
     await page.reload()

@@ -152,13 +152,14 @@ function modelYears(points) {
   }))
 }
 
-/** Spec §2.1 — the published history, transcribed from the spec's own table. */
+/** The published history, transcribed independently — REGENERATED at σ = 60 (08-02).
+ *  Spec §2.1's printed table was drawn at σ = 30 and no longer describes the game. */
 const SPEC_HISTORY = [
-  603, 611, 574, 553, 547, 585, 557, 549, 602, 604, 850, 811,
-  612, 614, 575, 640, 638, 704, 642, 636, 681, 654, 909, 875,
-  667, 695, 689, 676, 644, 693, 686, 710, 698, 729, 928, 940,
-  728, 679, 704, 705, 783, 725, 752, 755, 732, 697, 1007, 970,
-  778, 721, 751, 806, 815, 737, 740, 783, 810, 797, 1035, 1000,
+  665, 560, 519, 559, 668, 668, 557, 693, 517, 566, 862, 849,
+  574, 582, 582, 667, 571, 570, 619, 515, 653, 652, 931, 841,
+  565, 710, 687, 659, 694, 724, 750, 714, 759, 695, 893, 939,
+  740, 728, 722, 694, 585, 800, 798, 697, 744, 675, 933, 1053,
+  677, 748, 765, 779, 831, 792, 822, 701, 832, 814, 1039, 1048,
 ]
 
 /** The shipped model (spec §2 defaults). Used to predict distributions, never draws. */

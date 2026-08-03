@@ -1,5 +1,6 @@
 import {
-  PUBLISHED_HISTORY, PUBLISHED_HISTORY_LENGTH, DEFAULT_HIGH_SEASON_MONTHS, monthOf,
+  PUBLISHED_HISTORY, PUBLISHED_HISTORY_LENGTH, PUBLISHED_HISTORY_SEED,
+  DEFAULT_HIGH_SEASON_MONTHS, monthOf,
 } from './history'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -97,10 +98,10 @@ export const DEFAULT_H = 230
  */
 export const DEFAULT_SIGMA = 60
 
-/** The σ the PUBLISHED history was drawn at. Not the game's σ any more — kept because
- *  it is a fact about that fixed table, and because a future change that regenerates
- *  the history needs to know it. */
-export const PUBLISHED_HISTORY_SIGMA = 30
+/** The σ the PUBLISHED history was drawn at — now the SAME as the game's σ, since the
+ *  table was regenerated at 60. Kept as a named fact so a future σ change has an
+ *  obvious place to notice that the history must move with it. */
+export const PUBLISHED_HISTORY_SIGMA = 60
 /** Seed 1 is what produced the published history (spec §2.1). */
 export const DEFAULT_SEED = '1'
 
@@ -295,21 +296,14 @@ export function resolveDrawSeed(
  * check: none of them changes what the first sixty months are.
  */
 export function usesPublishedHistory(model: ForecastModel, numHistory: number): boolean {
-  // ⚠ σ IS DELIBERATELY NOT CHECKED HERE, and that changed when the default σ moved to
-  // 60 (Elena, 08-02). The published history is a CONSTANT — sixty transcribed integers
-  // — so σ cannot alter it, and gating the table on σ would mean a default instance
-  // silently stopped using the very history the spec publishes.
-  //
-  // The history therefore carries σ = 30 noise while play carries σ = 60. That is a
-  // real inconsistency and it is accepted: the history's job is to be LEARNABLE (spec
-  // §2.1 chose its seed so the high season reads as a rule, not a run of luck), and
-  // raising its noise would blur the pattern the whole exercise asks students to find.
-  // A student who estimates σ off the history will under-estimate their own error;
-  // nothing is graded on that, and MSE — which is graded on nothing — is unaffected.
-  //
-  // ⚠ THE BENCHMARKS ARE A DIFFERENT MATTER. They DO depend on σ, so
-  // `publishedBenchmarksValid` checks it separately (benchmarks.ts).
+  // ⚠ σ IS CHECKED AGAIN (Elena, 08-02, second pass). It was briefly excluded, while
+  // the published table was a σ = 30 artifact that σ could not alter. The table has now
+  // been REGENERATED at σ = 60 (history.ts), so it is σ-specific once more: serving it
+  // to an instance at a different noise level would show sixty months whose scatter
+  // contradicts the process actually generating play. The earlier asymmetry between
+  // this check and `publishedBenchmarksValid` is gone — both depend on σ now.
   return numHistory === PUBLISHED_HISTORY_LENGTH
+    && model.sigma === DEFAULT_SIGMA
     && model.a === DEFAULT_A
     && model.b === DEFAULT_B
     && model.H === DEFAULT_H
@@ -339,7 +333,10 @@ export function resolveHistory(
 ): number[] {
   if (usesPublishedHistory(model, numHistory)) return [...PUBLISHED_HISTORY]
 
-  const historySeed = seed ?? DEFAULT_SEED
+  // ⚠ PUBLISHED_HISTORY_SEED, not DEFAULT_SEED: the published table IS this generator's
+  // output at that seed, so an edited instance falling back here produces a series in
+  // the same family rather than an unrelated one.
+  const historySeed = seed ?? PUBLISHED_HISTORY_SEED
   const out: number[] = []
   for (let p = 1; p <= numHistory; p++) {
     out.push(realize(systematic(model, p), gaussian(historySeed, `history:${p}`) * model.sigma))

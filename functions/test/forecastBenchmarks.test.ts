@@ -72,12 +72,12 @@ describe('the published table (spec §2.3)', () => {
 
   it('carries the σ = 60 figures (re-simulated 08-02, replacing spec §2.3\'s σ = 30 table)', () => {
     const byId = Object.fromEntries(PUBLISHED_BENCHMARKS.map(b => [b.id, b.mse]))
-    expect(byId.flat_mean).toBe(40534)
-    expect(byId.naive).toBe(15373)
-    expect(byId.ma12).toBe(11913)
-    expect(byId.seasonal_naive).toBe(8212)
-    expect(byId.reg_month_dummies).toBe(3699)
-    expect(byId.reg_holiday).toBe(3601)
+    expect(byId.flat_mean).toBe(41338)
+    expect(byId.naive).toBe(16253)
+    expect(byId.ma12).toBe(11881)
+    expect(byId.seasonal_naive).toBe(8399)
+    expect(byId.reg_month_dummies).toBe(3853)
+    expect(byId.reg_holiday).toBe(3607)
     expect(byId.true_process).toBe(3599)
     // ⚠ The floor is σ² EXACTLY, and it is the one row that is arithmetic rather than
     // simulation. If σ moves again and this row does not, they have drifted apart.
@@ -90,8 +90,8 @@ describe('the published table (spec §2.3)', () => {
       expect(row.standardError, row.id).toBe(Math.round(Math.sqrt(row.mse)))
     }
     const byId = Object.fromEntries(PUBLISHED_BENCHMARKS.map(b => [b.id, b.standardError]))
-    expect(byId.flat_mean).toBe(201)
-    expect(byId.seasonal_naive).toBe(91)
+    expect(byId.flat_mean).toBe(203)
+    expect(byId.seasonal_naive).toBe(92)
     expect(byId.floor).toBe(60)
   })
 
@@ -112,7 +112,7 @@ describe('the published table (spec §2.3)', () => {
     //    still the right ordering — a finer distinction to teach.
     const penalty = m.reg_month_dummies / m.reg_holiday
     expect(penalty).toBeGreaterThan(1.01)
-    expect(penalty).toBeLessThan(1.06)
+    expect(penalty).toBeLessThan(1.09)
   })
 
   it('names the lecture model as a row that actually exists', () => {
@@ -125,8 +125,10 @@ describe('the published table (spec §2.3)', () => {
     expect(publishedBenchmarksValid(DEFAULT_MODEL, 36)).toBe(false)
     // ⚠ σ invalidates the BENCHMARKS even though the history survives it — the
     // asymmetry that publishedBenchmarksValid exists to express.
+    // ⚠ σ now invalidates BOTH — the table was regenerated at σ = 60, so it is a
+    // σ-specific artifact again and the earlier asymmetry is gone (demand.ts).
     expect(publishedBenchmarksValid({ ...DEFAULT_MODEL, sigma: 30 }, 60)).toBe(false)
-    expect(usesPublishedHistory({ ...DEFAULT_MODEL, sigma: 30 }, 60)).toBe(true)
+    expect(usesPublishedHistory({ ...DEFAULT_MODEL, sigma: 30 }, 60)).toBe(false)
   })
 })
 

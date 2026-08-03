@@ -56,12 +56,17 @@ const bench = (id: string, label: string, mse: number, note: string): Benchmark 
  * at σ = 30; raising the noise moves every row, so leaving those figures here would
  * have printed a confident, wrong comparison on the debrief screen and the Tier-3 box.
  *
- * Method, identical to the one that produced the spec's own table: 40,000 simulated
- * 24-month futures at σ = 60 against the FIXED published history, each rule scored the
- * way a student following it would be. Run under two independent seeds, agreeing to
- * within 0.1% on every row. The σ = 30 column of the same script reproduced spec §2.3
- * exactly (37,821 / 10,071 / 9,048 / 4,166 / 999 / 899 / 897), which is what validates
- * the σ = 60 column.
+ * ⚠ RE-SIMULATED A SECOND TIME when the HISTORY was regenerated at σ = 60. Several
+ * rules are fitted on or lagged into the history — the flat mean, both regressions, and
+ * the first year of the seasonal-naive and moving-average rules — so changing those
+ * sixty numbers moves them. Leaving the previous figures would have been the same
+ * mistake in a new place.
+ *
+ * Method, identical throughout: 40,000 simulated 24-month futures at σ = 60 against the
+ * fixed published history, each rule scored the way a student following it would be.
+ * Run under two independent seeds, agreeing to within 0.2% on every row. The same
+ * script at σ = 30 against the OLD history reproduced spec §2.3 exactly
+ * (37,821 / 10,071 / 9,048 / 4,166 / 999 / 899 / 897), which is what validates it.
  *
  * ⚠ TWO LESSONS WEAKEN AT σ = 60, and it is better to know that than to discover it on
  * a slide:
@@ -73,17 +78,17 @@ const bench = (id: string, label: string, mse: number, note: string): Benchmark 
  *     but it is now a fine distinction rather than a striking one.
  */
 export const PUBLISHED_BENCHMARKS: readonly Benchmark[] = [
-  bench('flat_mean', 'Flat at the five-year mean', 40534,
+  bench('flat_mean', 'Flat at the five-year mean', 41338,
     "The lecture's “simple forecast” — one number for every month, so all the seasonality is error."),
-  bench('naive', 'Repeat last month', 15373,
+  bench('naive', 'Repeat last month', 16253,
     'Ignores both the trend and the season; systematically low on a rising series.'),
-  bench('ma12', 'Trailing 12-month moving average', 11913,
+  bench('ma12', 'Trailing 12-month moving average', 11881,
     'Barely better than doing nothing — averaging over a full year DELETES the seasonality that carries the signal. The trap that looks sophisticated.'),
-  bench('seasonal_naive', 'Same month last year', 8212,
+  bench('seasonal_naive', 'Same month last year', 8399,
     "The lecture's “seasonality forecast” — captures the season, but carries a whole year of noise and misses the trend."),
-  bench('reg_month_dummies', 'Regression: trend + eleven month dummies', 3699,
+  bench('reg_month_dummies', 'Regression: trend + eleven month dummies', 3853,
     'A good answer that still pays for ten parameters estimating nothing real — the parsimony price tag, though a smaller one at this noise level.'),
-  bench('reg_holiday', 'Regression: trend + ONE holiday dummy', 3601,
+  bench('reg_holiday', 'Regression: trend + ONE holiday dummy', 3607,
     "The lecture's own model, and the right answer here — three parameters, landing essentially on the floor."),
   bench('true_process', 'Knowing the true process', 3599,
     'What perfect knowledge of the systematic component buys. The regression is essentially at it.'),
