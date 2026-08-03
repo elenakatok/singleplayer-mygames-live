@@ -8,6 +8,7 @@ import { PD_COLLECTION_PREFIX, PD_CORS_ORIGINS } from './pd/config'
 import { PRICING_COLLECTION_PREFIX, PRICING_CORS_ORIGINS } from './pricing/config'
 import { NEWSVENDOR_COLLECTION_PREFIX, NEWSVENDOR_CORS_ORIGINS } from './newsvendor/config'
 import { FORECAST_COLLECTION_PREFIX, FORECAST_CORS_ORIGINS } from './forecast/config'
+import { PROCUREMENT_COLLECTION_PREFIX, PROCUREMENT_CORS_ORIGINS } from './procurement/config'
 
 admin.initializeApp()
 
@@ -181,6 +182,46 @@ export { forecastScoreAndRecord } from './forecast/scoreAndRecord'
 export { forecastGetReport } from './forecast/report'
 export { forecastGetConfig, forecastUpdateConfig } from './forecast/instructorConfig'
 
+// ── Procurement Auction (game_id: procurement) ────────────────────────────────
+//
+// SPAWN — the shell only. Instructor surfaces, the knowledge-check machinery, the
+// roster, scoring and the gradebook push are real; the BIDDING ROUND IS NOT BUILT.
+// procurementSubmitBid and procurementResolveRound are declared, deployable stubs that
+// throw `unimplemented` (see their headers for why they ship now: IAM invoker bindings
+// are per-function and persist, so declaring the full set means binding once).
+//
+// ⚠ ONE GAME, TWO FORMATS, ONE game_id. `format` (sealed_first_price | open_descending)
+// is INSTANCE CONFIG — never a second game_id and never a second set of callables. Same
+// structure as pricing's Standard/PMG pair and newsvendor's regular/dual flag. There is
+// exactly ONE set of names below to deploy, and it serves both instances.
+//
+// ⚠ `format` LOCKS on the first submission (procurement/instructorConfig.ts): rounds
+// resolved under two mechanisms in one result set would be incoherent.
+
+export const procurementBootstrap = makeSinglePlayerBootstrap({
+  collectionPrefix: PROCUREMENT_COLLECTION_PREFIX,
+  corsOrigins: PROCUREMENT_CORS_ORIGINS,
+})
+export const procurementInstructorSession = makeSinglePlayerInstructorSession({
+  corsOrigins: PROCUREMENT_CORS_ORIGINS,
+})
+
+// Student.
+export { procurementGetState } from './procurement/getState'
+export { procurementSubmitBid } from './procurement/submitBid'          // ⚠ stub
+export { procurementResolveRound } from './procurement/resolveRound'    // ⚠ stub (open format)
+export { procurementGetQuestions } from './procurement/getQuestions'
+export { procurementSubmitKcAnswer } from './procurement/submitKcAnswer'
+// ⚠ ONE callable for BOTH open-response paragraphs (prep and debrief), routed by the
+// question's own `stage` tag. They differ only in when they may be answered.
+export { procurementSubmitFreeText } from './procurement/submitFreeText'
+
+// Instructor.
+export { procurementSyncRoster } from './procurement/syncRoster'
+export { procurementScoreAndRecord } from './procurement/scoreAndRecord'
+export { procurementGetReport } from './procurement/report'
+export { procurementGetConfig, procurementUpdateConfig } from './procurement/instructorConfig'
+
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 
 function makeHealth(game: string, origins: string[]) {
@@ -203,3 +244,4 @@ export const pdHealth = makeHealth('pd', PD_CORS_ORIGINS)
 export const pricingHealth = makeHealth('pricing', PRICING_CORS_ORIGINS)
 export const newsvendorHealth = makeHealth('newsvendor', NEWSVENDOR_CORS_ORIGINS)
 export const forecastHealth = makeHealth('forecast', FORECAST_CORS_ORIGINS)
+export const procurementHealth = makeHealth('procurement', PROCUREMENT_CORS_ORIGINS)

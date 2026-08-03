@@ -5,6 +5,7 @@ import { PROCUREMENT_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECT
 import { loadInstance } from './instance'
 import {
   parseStoredRounds, toClientHistory, totalProfit, totalEquilibriumProfit, roundsWon,
+  toRevealPoints,
 } from './rounds'
 import { clientParams, phaseOf } from './clientState'
 import { drawPlayerCost } from './round'
@@ -70,6 +71,21 @@ export const procurementGetState = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, as
     ? null
     : drawPlayerCost(seed, participantId, currentRound, config)
 
+  // ── The §9 scatter's bot series ────────────────────────────────────────────
+  //
+  // ⚠⚠ THE ONE PLACE A RIVAL COST LEAVES THE SERVER, AND IT IS GATED ON `finished_at`.
+  // The stamp is written by the transaction that resolves the LAST round, so this is
+  // null for every student who still has a bid to make — including one sitting on the
+  // round-8 bidding screen. Gated on the stamp rather than on `stored.length >= rounds`
+  // deliberately: the stamp is the fact the server itself wrote, and a config change
+  // mid-assignment cannot make a count-based gate open early.
+  //
+  // Why it is safe here and nowhere else: the rounds are independent (§2), so these
+  // points predict no future draw — and the scatter's whole argument is that the bots sit
+  // exactly on the optimal line, which requires their costs on the x-axis. See §9.
+  const finished = pData.finished_at != null
+  const revealRivalPoints = finished ? toRevealPoints(stored) : null
+
   return {
     ok: true as const,
     /** Everything the bidding screen prints (Part 1 §6.1, Part 2 §5.1), and nothing else. */
@@ -86,6 +102,8 @@ export const procurementGetState = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, as
     /** The round to play next, and the cost drawn for it. Both null when there is none. */
     currentRound,
     currentCost,
+    /** ⚠ null until `finished_at` is stamped. See above — this is the gate. */
+    revealRivalPoints,
     /**
      * ⚠ THE ROUND COUNT IS SHOWN IN THIS GAME. Unlike PD and Pricing, there is no hidden
      * horizon to protect: eight rounds are independent, so there is no endgame effect

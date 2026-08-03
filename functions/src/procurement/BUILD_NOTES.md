@@ -168,6 +168,44 @@ Written and then deleted during CP3a. Both would have shipped looking correct.
 
 ---
 
+## 6c. Checkpoint 3b, Steps 1–3 (2026-08-03)
+
+**The §9 reveal is the one place a rival cost leaves the server, and it is gated on
+`finished_at`.** `getState.revealRivalPoints` is null for the entire live game, including
+for a student sitting on the round-8 bidding screen. Gated on the STAMP, not on
+`stored.length >= config.rounds`: the stamp is a fact the server wrote, and a config change
+mid-assignment cannot make a count-based gate open early. It exists because the scatter's
+argument — the bots sit *on* the optimal line — needs their costs on the x-axis. Guarded by
+8 per-round harness checks plus a key-set pin; mutation-verified by forcing the gate open,
+which fails exactly those 8.
+
+**The flow's ORDER is enforced by the server, not just by `Play.tsx`.** `submitFreeText`
+refuses a prep answer once `rounds_played > 0` and refuses a debrief answer until
+`finished_at` exists. So KC → prep → loop → results → debrief is a server contract; a
+rearranged client fails against it rather than merely looking wrong. Both directions are
+asserted in the harness §11.
+
+**The results screen has no stored completion fact, deliberately.** It writes nothing, so
+there is nothing to record. Resume expresses "past the results" as "the debrief has been
+answered" — a fact — rather than as a flag nothing would maintain. A student who reads the
+results and reloads sees them again, which is right for a screen whose job is to be read.
+
+**The optimal line is computed from config on BOTH sides.** The lecture slide's
+`b = 0.8c + 22` is β for θmax = 110, n = 5 *only*. `ScatterSVG.optimalBid` takes both from
+`params`, and three render tests move the rival range, the bidder count and the reserve to
+prove the line moves with them.
+
+### A harness trap worth not re-learning
+
+**A Firestore REST `PATCH` with no `updateMask` REPLACES the document.** Seeding an
+instance and then "adding" the KC keys in a second call silently deleted `rounds` and
+`reserve`, and the instance fell back to shipped defaults — the harness then measured the
+defaults while appearing to test a 1-round instance. `makeInstance` now writes every field
+in one call. This is the "a harness that inherits its config re-tunes itself" failure
+arriving through a different door.
+
+---
+
 ## 6. `allowDropOut` does not exist
 
 It appears in an early prompt's config list but in **neither** FINAL spec. Drop Out is

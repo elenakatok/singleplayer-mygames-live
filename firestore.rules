@@ -264,5 +264,60 @@ service cloud.firestore {
         allow write: if false;
       }
     }
+
+    // ── Procurement Auction (game_id: procurement) ─────────────────────────────
+    //
+    // ⚠ ONE BLOCK SERVES BOTH FORMATS. Sealed-bid and open-bid are two INSTANCES of one
+    // game (spec Part 1 §14.1), so they share this prefix, these paths and these rules.
+    // There is deliberately no procurement_open_ anything.
+
+    match /procurement_game_instances/{instanceId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+
+      // Per-instance instructor config (config/main). STUDENT-READABLE, and every field
+      // in it is safe to be: the format, the round count, the reserve, both cost ranges,
+      // the bid increment and the open-format pacing. All of it is printed on the
+      // bidding screen anyway.
+      //
+      // ⚠ THE RIVAL COST RANGE IS HERE ON PURPOSE, and it is the one field that looks
+      // like it should be secret and is not. The equilibrium markup the debrief
+      // discusses — and the line the Tier-3 scatter plots against — is only computable
+      // by a student who knows the top of that range, and the lecture states it. This
+      // game is NOT forecast: nothing about how a rival's cost is DRAWN is the answer to
+      // anything. What must stay hidden is the seed, below.
+      match /config/{doc} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+
+      // TRUTH (truth/main → the DETERMINISM SEED). DENY ALL CLIENT ACCESS — read AND
+      // write, unconditionally, with NO exception for the instructor (who reads and
+      // writes it only through an authenticated callable). Same eBay vCommon pattern as
+      // newsvendor's seed and forecast's model.
+      //
+      // ⚠ WHY THE SEED IS HERE RATHER THAN IN config/main: it derives every RIVAL COST
+      // DRAW. config/ above is student-readable, so a seed stored there could be read
+      // with the plain SDK and used to compute round 5's rival costs before bidding in
+      // round 4 — which is the whole game. Do not move it, and do not relax this rule.
+      match /truth/{doc} {
+        allow read, write: if false;
+      }
+
+      // Participant document — a per-INSTANCE subcollection (architecture §4.2).
+      // ⚠ NEVER top-level: that was a real v1 bug in both pennies and poll.
+      //
+      // ⚠ READ IS DENIED OUTRIGHT, not scoped to "your own doc", following PD, pricing,
+      // newsvendor and forecast rather than pennies/poll. A participant doc carries the
+      // resolved rounds, and Checkpoint 2 will store the rival costs alongside them for
+      // the reports (spec Part 1 §4). A self-read would hand a student the losing
+      // bidders' costs through the Firestore SDK without a callable being involved.
+      // Every student read goes through a callable whose response is a hand-built
+      // whitelist (functions procurement/rounds.ts). No client writes either.
+      match /participants/{participantId} {
+        allow read: if false;
+        allow write: if false;
+      }
+    }
   }
 }

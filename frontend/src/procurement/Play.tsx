@@ -5,44 +5,52 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 import { PageShell } from '../shared/PageShell'
 import { SequenceRunner, loopScreen, type SequenceScreen } from '../shared/sequence'
 import { PlaceBid, RoundResult } from './RoundScreen'
+import { KcScreen } from './KcScreen'
+import { FreeTextScreen } from './FreeTextScreen'
 import { EndScreen } from './EndScreen'
+import { procurementResumeIndex, procurementScreenCount, procurementStartIteration } from './resume'
 import {
-  procurementBootstrap, procurementGetState, STUDENT_CLASSROOM_URL,
+  procurementBootstrap, procurementGetState, procurementGetQuestions, STUDENT_CLASSROOM_URL,
   type ProcurementParams, type ProcurementPlayedRow, type ProcurementRoundResult,
+  type ProcurementKcQuestionClient, type ProcurementRivalPoint,
 } from './api'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Procurement Auction — student entry. The flow, as of Checkpoint 3a:
+// Procurement Auction — student entry. THE WHOLE FLOW, in one sequence (§6, §9, §10):
 //
-//   the round loop  →  final results
-//   (see your cost → bid → resolve → round result, ×8)
+//   KC  →  prep  →  the round loop  →  final results  →  debrief
+//   (17-question    (S8,     (see your cost →   (§9, with     (S9,
+//    merged pool,    open     bid → resolve →    the scatter)  open
+//    graded, NO      response,  round result,                   response,
+//    GATE)           ungraded)  ×8)                              ungraded)
 //
-// ⚠ NOT YET IN THIS FLOW: the knowledge check, the prep paragraph and the debrief
-// paragraph. All three exist server-side and are reachable through
-// `procurementGetQuestions` / `procurementSubmitKcAnswer` / `procurementSubmitFreeText`;
-// they are not wired into this sequence yet (CP3b). This is an omission, stated, not a
-// stub pretending to be a screen.
+// ⚠ THE KC IS NOT A GATE (§10). A wrong answer is recorded, explained, and the student
+// continues. There is no pass mark in this family and none may be added.
+//
+// ⚠ THE DENOMINATOR IS NEVER ON THE CLIENT. The number of questions rendered is whatever
+// the server resolved for this instance; `gradedTotal` rides along for display only, and
+// the score is computed server-side out of `gradedFor()` at scoring time. There is no
+// `/17` in this file and there must never be one.
 //
 // ⚠ THE TWO FORMATS SHARE THIS ENTRY POINT. `state.params.format` selects the bidding
-// screen — sealed today, open at CP4 — and nothing else about the flow differs. Never a
-// second Play component and never a second route: `format` is instance config. The open
-// format has no screen yet and says so below rather than rendering the sealed one, which
-// would silently resolve a different mechanism than the instance is configured for.
+// screen — sealed today, open at CP4 — and nothing else about the flow differs. The open
+// format has no screen yet and says so rather than rendering the sealed one, which would
+// resolve a different mechanism than the instance is configured for.
 //
-// ⚠ THE ROUND COUNT IS SHOWN in this game, unlike PD and pricing. Rounds are independent
-// (§2), so there is no endgame effect a visible horizon would let a student exploit, and
-// `params.rounds` is public config.
-//
-// RESUME: every step's completion is a fact stored on the server. `startIteration` is
-// just `roundsPlayed`, and the current round's cost is re-derived server-side from
-// (seed, participantId, round) rather than cached in the browser — so a student resumes
-// identically on another device, and cannot reload into a friendlier cost.
+// RESUME: every step's completion is a fact stored on the SERVER — KC answers, the two
+// free-text answers, the rounds array. `resume.ts` turns those into an index; nothing is
+// kept in the browser, so a student resumes identically on another device and cannot
+// skip a step by clearing storage. The current round's cost is re-derived server-side
+// rather than cached, so a reload cannot re-roll it either.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 type Loaded = {
   params: ProcurementParams
+  kc: ProcurementKcQuestionClient[]
+  prep: ProcurementKcQuestionClient | null
+  debrief: ProcurementKcQuestionClient | null
+  startIndex: number
   startIteration: number
-  currentCost: number | null
 }
 
 type Screen =
@@ -74,24 +82,52 @@ export default function Play() {
 
   const [screen, setScreen] = useState<Screen>({ name: 'loading' })
   const [loaded, setLoaded] = useState<Loaded | null>(null)
-  // The running history and totals: seeded by getState, then REPLACED WHOLESALE by each
-  // round's response. The server returns the entire history every time, so the client
-  // never accumulates and cannot drift out of step with the stored record.
+  // Replaced WHOLESALE by each round's response — the server returns the entire history
+  // every time, so the client never accumulates and cannot drift.
   const [history, setHistory] = useState<ProcurementPlayedRow[]>([])
   const [totals, setTotals] = useState({ profit: 0, benchmark: 0, wins: 0 })
-  // The cost for the round about to be played. Server-derived, never computed here.
   const [cost, setCost] = useState<number | null>(null)
+  // The scatter's bot series. Null the whole live game; re-fetched when the loop ends,
+  // because the state call that seeded this page was made before `finished_at` existed
+  // and the server correctly refused to send it.
+  const [rivalPoints, setRivalPoints] = useState<ProcurementRivalPoint[] | null>(null)
 
   useEffect(() => {
     if (session.kind !== 'ready') return
     let cancelled = false
-    procurementGetState()
-      .then(state => {
+    Promise.all([procurementGetState(), procurementGetQuestions()])
+      .then(([state, questions]) => {
         if (cancelled) return
+
+        // ⚠ ONE prep and ONE debrief question by construction (the pool carries S8 and
+        // S9 for the sealed format). Taking [0] rather than mapping keeps the flow's
+        // shape honest — if a second is ever authored, this is where it surfaces.
+        const prep = questions.prep[0] ?? null
+        const debrief = questions.debrief[0] ?? null
+        const kc = questions.kcEnabled ? questions.kc : []
+
+        const resumeArgs = {
+          kcCount: kc.length,
+          kcAnswered: questions.kcAnswered.length,
+          prepEnabled: prep !== null,
+          prepAnswered: questions.prepAnswered.length > 0,
+          debriefEnabled: debrief !== null,
+          debriefAnswered: questions.debriefAnswered.length > 0,
+          gameOver: state.gameOver || state.roundsPlayed >= state.params.rounds,
+          roundsPlayed: state.roundsPlayed,
+        }
+        const startIndex = procurementResumeIndex(resumeArgs)
+        const total = procurementScreenCount({
+          kcCount: kc.length, prepEnabled: prep !== null, debriefEnabled: debrief !== null,
+        })
+
         setLoaded({
           params: state.params,
-          startIteration: state.roundsPlayed,
-          currentCost: state.currentCost,
+          kc,
+          prep,
+          debrief,
+          startIndex,
+          startIteration: procurementStartIteration(state.roundsPlayed),
         })
         setHistory(state.played)
         setTotals({
@@ -100,10 +136,11 @@ export default function Play() {
           wins: state.roundsWon,
         })
         setCost(state.currentCost)
+        setRivalPoints(state.revealRivalPoints)
 
         if (state.params.format !== 'sealed_first_price') {
           setScreen({ name: 'unsupported-format' })
-        } else if (state.gameOver || state.roundsPlayed >= state.params.rounds) {
+        } else if (startIndex >= total) {
           setScreen({ name: 'done' })
         } else {
           setScreen({ name: 'flow' })
@@ -155,8 +192,7 @@ export default function Play() {
 
   // ⚠ Refuses rather than falling back to the sealed screen. An open instance resolved
   // through the sealed mechanism would produce rounds whose numbers mean something other
-  // than what the instance says they mean — which is exactly what the `format` lock
-  // exists to prevent (instance.ts).
+  // than what the instance says they mean — what the `format` lock exists to prevent.
   if (screen.name === 'unsupported-format') {
     return (
       <PageShell>
@@ -172,28 +208,50 @@ export default function Play() {
     return <PageShell><p style={{ fontFamily: typography.fontFamily }}>Loading…</p></PageShell>
   }
 
+  const results = (onContinue?: () => void) => (
+    <EndScreen
+      params={loaded.params}
+      history={history}
+      totalProfit={totals.profit}
+      totalEquilibriumProfit={totals.benchmark}
+      roundsWon={totals.wins}
+      rivalPoints={rivalPoints}
+      onContinue={onContinue}
+    />
+  )
+
+  // The terminal view: everything is done, so the results screen stands alone with no
+  // Continue. A returning student lands here.
   if (screen.name === 'done') {
-    return (
-      <PageShell>
-        <EndScreen
-          params={loaded.params}
-          history={history}
-          totalProfit={totals.profit}
-          totalEquilibriumProfit={totals.benchmark}
-          roundsWon={totals.wins}
-        />
-      </PageShell>
-    )
+    return <PageShell>{results()}</PageShell>
   }
 
   const screens: SequenceScreen[] = [
+    // ── The knowledge check: one graded screen per question, NO GATE (§10) ──────
+    ...loaded.kc.map((q, i) => ({
+      id: q.field,
+      render: ({ onDone }: { onDone: () => void }) => (
+        <KcScreen question={q} index={i} total={loaded.kc.length} params={loaded.params} onDone={onDone} />
+      ),
+    })),
+
+    // ── The prep paragraph (S8), before round 1 ────────────────────────────────
+    ...(loaded.prep ? [{
+      id: loaded.prep.field,
+      render: ({ onDone }: { onDone: () => void }) => (
+        <FreeTextScreen
+          question={loaded.prep!}
+          eyebrow="Before you start"
+          onDone={onDone}
+        />
+      ),
+    }] : []),
+
+    // ── The round loop: bid → reveal, until the SERVER says done ───────────────
     loopScreen<ProcurementRoundResult>({
       id: 'procurement-rounds',
       startIteration: loaded.startIteration,
       ask: ({ iteration, onResult }) => (
-        // The cost can only be null if the server said there was no round to play, and
-        // that case never reaches here — `done` is decided above. Guarding rather than
-        // asserting: a bidding screen with a missing cost must not render a bid field.
         cost === null
           ? <p style={{ fontFamily: typography.fontFamily }}>Loading your cost…</p>
           : (
@@ -210,6 +268,14 @@ export default function Play() {
                   wins: res.roundsWon,
                 })
                 setCost(res.nextCost)
+                // The game just ended, so `finished_at` now exists and the scatter's
+                // bot series is finally available. Fetched before the results screen
+                // mounts; the client cannot construct these points itself.
+                if (res.gameOver) {
+                  void procurementGetState()
+                    .then(s => setRivalPoints(s.revealRivalPoints))
+                    .catch(() => { /* the scatter still renders without the bot series */ })
+                }
                 onResult(res.round, res.gameOver)
               }}
             />
@@ -225,13 +291,32 @@ export default function Play() {
         />
       ),
     }),
+
+    // ── Final results (§9) ─────────────────────────────────────────────────────
+    // ⚠ A pass-through with no stored completion fact of its own — see resume.ts.
+    {
+      id: 'procurement-results',
+      render: ({ onDone }: { onDone: () => void }) => results(onDone),
+    },
+
+    // ── The debrief paragraph (S9), AFTER the results ──────────────────────────
+    ...(loaded.debrief ? [{
+      id: loaded.debrief.field,
+      render: ({ onDone }: { onDone: () => void }) => (
+        <FreeTextScreen
+          question={loaded.debrief!}
+          eyebrow="One last question"
+          onDone={onDone}
+        />
+      ),
+    }] : []),
   ]
 
   return (
     <PageShell>
       <SequenceRunner
         screens={screens}
-        startIndex={0}
+        startIndex={loaded.startIndex}
         onAllComplete={() => setScreen({ name: 'done' })}
       />
     </PageShell>

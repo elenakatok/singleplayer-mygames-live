@@ -94,6 +94,16 @@ export interface ClientRound {
   profit: number
   /** Cumulative profit through this round — the history table's running total. */
   profitTotal: number
+  /**
+   * What β would have bid at THIS student's own cost (§8) — the "your equilibrium bid"
+   * column of the §9 results table. Null when their cost was above the reserve.
+   *
+   * ⚠ THIS IS NOT NEW INFORMATION. It is a function of the student's own cost and the
+   * instance's public parameters, and the round-result screen already showed it. It is
+   * carried here so the results table and the scatter read one number rather than
+   * re-deriving β on the client, where it would drift from the server's.
+   */
+  yourEquilibriumBid: number | null
 }
 
 /**
@@ -253,6 +263,45 @@ export function toClientResult(
   }
 }
 
+/** One rival's (cost, bid) pair, for the §9 scatter's bot series. */
+export interface ClientRivalPoint {
+  round: number
+  cost: number
+  bid: number
+}
+
+/**
+ * The rivals' (cost, bid) pairs — THE ONLY PLACE A RIVAL COST EVER LEAVES THE SERVER.
+ *
+ * ⚠⚠ THE CALLER MUST GATE THIS ON `finished_at`. It is a function, not a field, precisely
+ * so that gating is an explicit decision at one call site (getState) rather than a
+ * property of a record that gets passed around. Nothing here checks the gate, because a
+ * pure reshaper cannot see the stamp — see getState.ts, where the check lives and where
+ * the harness asserts it.
+ *
+ * Why it is safe once the game is over: the rounds are independent (§2) and every one of
+ * them is resolved. There is no future draw these points predict, and the scatter is the
+ * §9 debrief's whole point — the bots sit exactly on the optimal line, so the plot
+ * DOCUMENTS its benchmark instead of asserting it. That only works if the bots' costs are
+ * on the x-axis.
+ *
+ * ⚠ A rival with no bid is OMITTED, not plotted at zero. It was absent from the auction
+ * (§3.1); a point at (cost, 0) would be a lie about a bid that was never made.
+ */
+export function toRevealPoints(rounds: readonly StoredRound[]): ClientRivalPoint[] {
+  const out: ClientRivalPoint[] = []
+  for (const r of rounds) {
+    r.rival_bids.forEach((bid, i) => {
+      const cost = r.rival_costs[i]
+      // Both must be present: a defensive parse may have emptied `rival_costs` without
+      // emptying `rival_bids`, and a point with half its coordinates is not a point.
+      if (bid === null || typeof cost !== 'number') return
+      out.push({ round: r.round, cost, bid })
+    })
+  }
+  return out
+}
+
 /** Cumulative profit the §8 benchmark bid would have earned against the SAME realized
  *  rival bids — "a perfect player would have earned X from your draws" (§9). */
 export function totalEquilibriumProfit(rounds: readonly StoredRound[]): number {
@@ -283,6 +332,7 @@ export function toClientHistory(rounds: readonly StoredRound[]): ClientRound[] {
       price: r.price,
       profit: r.profit,
       profitTotal,
+      yourEquilibriumBid: r.eq_bid,
     }
   })
 }

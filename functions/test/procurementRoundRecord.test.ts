@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { Timestamp } from 'firebase-admin/firestore'
 import {
   parseStoredRounds, toClientHistory, toClientResult, totalProfit, totalEquilibriumProfit,
-  roundsWon, type StoredRound,
+  roundsWon, toRevealPoints, type StoredRound,
 } from '../src/procurement/rounds'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -45,7 +45,8 @@ describe('§4 no student shape can carry a rival cost', () => {
   it('the history row has EXACTLY these keys — and rival_costs is not one', () => {
     const [row] = toClientHistory([round()])
     expect(Object.keys(row).sort()).toEqual(
-      ['profit', 'profitTotal', 'price', 'round', 'won', 'yourBid', 'yourCost'].sort(),
+      ['profit', 'profitTotal', 'price', 'round', 'won', 'yourBid', 'yourCost',
+       'yourEquilibriumBid'].sort(),
     )
   })
 
@@ -73,6 +74,47 @@ describe('§4 no student shape can carry a rival cost', () => {
     expect(JSON.stringify(toClientHistory([sneaky]))).not.toContain('secret_seed')
     expect(JSON.stringify(toClientResult([sneaky], 110))).not.toContain('secret_seed')
     expect(JSON.stringify(toClientResult([sneaky], 110))).not.toContain('rival_costs')
+  })
+})
+
+// ── The one gated exception ────────────────────────────────────────────────────
+
+describe('§9 toRevealPoints — the ONLY rival cost that ever leaves the server', () => {
+  it('pairs each rival cost with its own bid, in order', () => {
+    const pts = toRevealPoints([round()])
+    expect(pts).toEqual([
+      { round: 1, cost: 80, bid: 86 },
+      { round: 1, cost: 95, bid: 98 },
+      { round: 1, cost: 40, bid: 62 },
+      { round: 1, cost: 102, bid: 104 },
+    ])
+  })
+
+  it('OMITS a rival who made no bid rather than plotting them at zero', () => {
+    // They were ABSENT from the auction (§3.1). A point at (cost, 0) would be a lie
+    // about a bid that was never made — and it would sit far below the optimal line,
+    // which is exactly the claim this chart exists to support.
+    const pts = toRevealPoints([round({ rival_bids: [86, null, 62, null] })])
+    expect(pts.map(p => p.cost)).toEqual([80, 40])
+  })
+
+  it('omits a point whose cost went missing in a defensive parse', () => {
+    // `rival_costs` parses all-or-nothing, so a corrupt doc yields bids with no costs.
+    // Half a coordinate pair is not a point.
+    const pts = toRevealPoints([round({ rival_costs: [] })])
+    expect(pts).toEqual([])
+  })
+
+  it('spans every round', () => {
+    const pts = toRevealPoints([round({ round: 1 }), round({ round: 2 })])
+    expect(pts).toHaveLength(8)
+    expect(new Set(pts.map(p => p.round))).toEqual(new Set([1, 2]))
+  })
+
+  it('a point carries EXACTLY round, cost and bid', () => {
+    for (const p of toRevealPoints([round()])) {
+      expect(Object.keys(p).sort()).toEqual(['bid', 'cost', 'round'])
+    }
   })
 })
 

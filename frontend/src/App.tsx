@@ -25,6 +25,13 @@ import ForecastPlay from './forecast/Play'
 import ForecastDashboard from './forecast/Dashboard'
 import ForecastSettings from './forecast/Settings'
 import ForecastReports from './forecast/Reports'
+import ProcurementPlay from './procurement/Play'
+import ProcurementDashboard from './procurement/Dashboard'
+import ProcurementSettings from './procurement/Settings'
+import ProcurementReports from './procurement/Reports'
+// ⚠ The routing table lives in its own module so it can be unit-tested without pulling
+// firebase.ts (which calls initializeApp at load) into the test. See hostRouting.ts.
+import { gameForHost, type Game } from './hostRouting'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ONE Vite app serves EVERY single-player game (architecture: one bundle, many
@@ -37,29 +44,14 @@ import ForecastReports from './forecast/Reports'
 // games' sites serve on their next hosting deploy. Adding a game must therefore
 // never change another game's routing — hence the explicit per-game map below.
 //
-// DEV override: ?game=poll / ?game=pd / ?game=pricing / ?game=newsvendor / ?game=forecast (nav preserves
-// the query string, so it carries across pages). Production keys off the hostname alone.
+// DEV override: ?game=poll / ?game=pd / ?game=pricing / ?game=newsvendor / ?game=forecast /
+// ?game=procurement (nav preserves the query string, so it carries across pages).
+// Production keys off the hostname alone.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-type Game = 'pennies' | 'poll' | 'pd' | 'pricing' | 'newsvendor' | 'forecast'
-
-/** Hostname prefix → game. Checked in order; the first match wins. These are
- *  PREFIXES, not exact labels, because a site's default domain carries a suffix
- *  (e.g. the poll site is `poll-mygames.web.app`, pd's is `pd-mygames-live.web.app`). */
-const HOST_PREFIXES: ReadonlyArray<readonly [string, Game]> = [
-  ['pennies', 'pennies'],
-  ['poll', 'poll'],
-  ['pd', 'pd'],
-  ['pricing', 'pricing'],
-  ['newsvendor', 'newsvendor'],
-  ['forecast', 'forecast'],
-]
-
 function resolveGame(): Game {
-  const host = window.location.hostname
-  for (const [prefix, game] of HOST_PREFIXES) {
-    if (host.startsWith(prefix)) return game
-  }
+  const matched = gameForHost(window.location.hostname)
+  if (matched) return matched
   if (import.meta.env.DEV) {
     const q = new URLSearchParams(window.location.search).get('game')
     if (q === 'poll') return 'poll'
@@ -67,6 +59,7 @@ function resolveGame(): Game {
     if (q === 'pricing') return 'pricing'
     if (q === 'newsvendor') return 'newsvendor'
     if (q === 'forecast') return 'forecast'
+    if (q === 'procurement') return 'procurement'
   }
   return 'pennies'
 }
@@ -103,6 +96,13 @@ const GAMES: Record<Game, GameScreens> = {
   forecast: {
     title: 'The Forecasting Game',
     Play: ForecastPlay, Dashboard: ForecastDashboard, Settings: ForecastSettings, Reports: ForecastReports,
+  },
+  // ⚠ ONE ENTRY FOR BOTH FORMATS. Sealed and open are two INSTANCES of this game,
+  // distinguished by `format` in instance config and read off getState — never a second
+  // game_id, never a second hostname, never a second row here.
+  procurement: {
+    title: 'Procurement Auction',
+    Play: ProcurementPlay, Dashboard: ProcurementDashboard, Settings: ProcurementSettings, Reports: ProcurementReports,
   },
 }
 

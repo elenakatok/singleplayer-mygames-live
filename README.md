@@ -20,6 +20,35 @@ spec (e.g. `Jar_of_Pennies_Game_Specification_v1.md`).
 | `pricing` | Pricing Game (Cheyenne Shipping) | `pricing.mygames.live` | `pricing-mygames-live` |
 | `newsvendor` | Newsvendor | `newsvendor.mygames.live` | `newsvendor-mygames-live` |
 | `forecast` | The Forecasting Game | `forecast.mygames.live` | `forecast-mygames` |
+| `procurement` | Procurement Auction | `procurement.mygames.live` | `procurement-mygames` |
+
+> `procurement` is **SPAWNED, NOT BUILT** (2026-08-03). The instructor surfaces, the
+> knowledge-check machinery, the roster, participation scoring and the gradebook push are
+> real; **the bidding round is not**. `procurementSubmitBid` and `procurementResolveRound`
+> are declared, deployable stubs that throw `unimplemented`, so the full function set can
+> take its IAM invoker bindings in one pass rather than two.
+>
+> ⚠ **The hosting site is `procurement-mygames`, NOT `procurement`** — plain `procurement`
+> is globally taken (confirmed 08-03), so this follows the `poll-mygames` / `forecast-mygames`
+> precedent rather than the `<game>-mygames-live` one. The deploy target is still
+> `--only hosting:procurement`.
+>
+> ⚠ **ONE GAME, TWO FORMATS, ONE `game_id`.** Sealed-bid first-price and open-bid
+> descending are two **instances** distinguished by the `format` config key — never a
+> second `game_id`, never a second hosting site, never a second function set. Same
+> structure as pricing's Standard/PMG pair. `format` **locks** once an instance has its
+> first submission: results from two mechanisms in one set would be incoherent.
+>
+> ⚠ **Its config/truth split follows NEWSVENDOR, not forecast, and the rival cost range
+> is deliberately PUBLIC.** The equilibrium markup the debrief discusses is only
+> computable by a student who knows the top of that range, and the lecture states it —
+> hiding it would hide the lesson. The only secret is the **seed**, in the rules-denied
+> `truth/main`, because it derives every rival cost draw.
+>
+> ⚠ **The knowledge check is ONE MERGED POOL with per-question visibility**, and the
+> graded denominator is **computed from the visible graded questions at scoring time and
+> never stored**. There is no `/17` anywhere in this game. `gradedFor()` is the single
+> derivation, called by Settings, the student's question list and the grader alike.
 
 > `forecast` is **FEATURE-COMPLETE**: knowledge check → the month loop → final results
 > → debrief → the process reveal, participation scoring + the gradebook push, the

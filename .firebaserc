@@ -22,6 +22,9 @@
         ],
         "forecast": [
           "forecast-mygames"
+        ],
+        "procurement": [
+          "procurement-mygames"
         ]
       }
     }

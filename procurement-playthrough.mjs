@@ -152,7 +152,7 @@ function resolveIndependently(bids, reserve) {
 
 const GET_STATE_KEYS = [
   'ok', 'params', 'played', 'totalProfit', 'totalEquilibriumProfit', 'roundsWon',
-  'roundsPlayed', 'currentRound', 'currentCost', 'phase', 'gameOver',
+  'roundsPlayed', 'currentRound', 'currentCost', 'revealRivalPoints', 'phase', 'gameOver',
 ].sort()
 
 const PARAMS_KEYS = [
@@ -161,7 +161,14 @@ const PARAMS_KEYS = [
   'decrementSchedule', 'botDelayMs',
 ].sort()
 
-const PLAYED_KEYS = ['round', 'yourCost', 'yourBid', 'won', 'price', 'profit', 'profitTotal'].sort()
+const PLAYED_KEYS = [
+  'round', 'yourCost', 'yourBid', 'won', 'price', 'profit', 'profitTotal',
+  'yourEquilibriumBid',
+].sort()
+
+/** ⚠ The §9 reveal — the ONLY rival cost that ever reaches a client, gated on
+ *  `finished_at`. Pinned so a fourth field cannot appear here unnoticed. */
+const REVEAL_POINT_KEYS = ['round', 'cost', 'bid'].sort()
 
 const SUBMIT_KEYS = [
   'ok', 'nextRound', 'nextCost', 'round', 'history', 'totalProfit',
@@ -181,6 +188,10 @@ const sameKeys = (o, expected) => JSON.stringify(keysOf(o)) === JSON.stringify(e
 
 function pinStateShape(state, label) {
   check(sameKeys(state, GET_STATE_KEYS), `${label}: getState key set is exactly the contract`)
+  if (state.revealRivalPoints !== null) {
+    check(state.revealRivalPoints.every(p => sameKeys(p, REVEAL_POINT_KEYS)),
+      `${label}: every reveal point key set is exactly the contract`)
+  }
   check(sameKeys(state.params, PARAMS_KEYS), `${label}: params key set is exactly the contract`)
   check(state.played.every(r => sameKeys(r, PLAYED_KEYS)),
     `${label}: every history row key set is exactly the contract`)
@@ -198,8 +209,16 @@ function pinSubmitShape(res, label) {
 // ── Instance setup ─────────────────────────────────────────────────────────────
 
 let seq = 0
-async function makeInstance({ rounds, reserve, rivalCount = 4, seed = null, format = 'sealed_first_price' }) {
+async function makeInstance({
+  rounds, reserve, rivalCount = 4, seed = null, format = 'sealed_first_price',
+  kcEnabled = false, kcVisible = [],
+}) {
   const gid = `proc-${++seq}-${Date.now()}`
+  // ⚠ ONE WRITE, EVERY FIELD. A Firestore REST PATCH with no updateMask REPLACES the
+  // document — a second call to set just the KC keys silently deletes `rounds` and
+  // `reserve`, and the instance quietly falls back to the shipped defaults. That is
+  // exactly the "a harness that inherits its config re-tunes itself" failure this file's
+  // header warns about, arriving by a different door.
   await putDoc(`procurement_game_instances/${gid}/config/main`, {
     format: strVal(format),
     rounds: intVal(rounds),
@@ -209,8 +228,8 @@ async function makeInstance({ rounds, reserve, rivalCount = 4, seed = null, form
     playerCostDist: distVal(10, 60),
     bidIncrementUnit: intVal(1),
     currencyLabel: strVal('ECU'),
-    kcEnabled: boolVal(false),
-    kcVisible: arrVal([]),
+    kcEnabled: boolVal(kcEnabled),
+    kcVisible: arrVal(kcVisible.map(strVal)),
   })
   if (seed !== null) {
     await putDoc(`procurement_game_instances/${gid}/truth/main`, { seed: strVal(seed) })
@@ -295,6 +314,16 @@ async function main() {
     const strayRivalKeys = Object.keys(beforeDoc).filter(k => /rival|cost|bot|draw|seed/i.test(k))
     check(strayRivalKeys.length === 0,
       `§4 round ${t}: the participant doc holds no rival/cost/seed scratch field of any kind`)
+
+    // ⚠⚠ THE §9 REVEAL GATE, checked on EVERY round including the last one before the
+    // final bid. `revealRivalPoints` is the one field that ever carries a rival COST, and
+    // a student mid-game must never hold it — a student sitting on the round-8 bidding
+    // screen who could see rounds 1-7's rival costs would learn nothing, but one who
+    // could see round 8's would have no decision left. Gated on `finished_at`, which is
+    // stamped by the transaction that resolves the last round.
+    const midState = (await callFn('procurementGetState', asStudent(gid, pid))).result
+    check(midState.revealRivalPoints === null,
+      `§9 round ${t}: the rival-cost reveal is null while a bid is still outstanding`)
 
     // A markup that is neither the equilibrium nor a round number, so a check that
     // accidentally compares the bid to β cannot pass by coincidence.
@@ -398,6 +427,23 @@ async function main() {
     'a finished student is handed no ninth cost')
   check(finalState.gameOver === true, 'the finished student is past play')
   check(finalState.totalProfit === expectedTotal, 'the reloaded total matches the playthrough')
+
+  // ── The gate opens, and only now ────────────────────────────────────────────
+  check(Array.isArray(finalState.revealRivalPoints),
+    '§9 the rival-cost reveal appears ONCE the game is finished — the scatter needs it')
+  check(finalState.revealRivalPoints.length > 0 &&
+    finalState.revealRivalPoints.every(p => typeof p.cost === 'number' && typeof p.bid === 'number'),
+    '§9 and it carries (cost, bid) pairs for the bot series')
+  check(finalState.revealRivalPoints.every(p => p.cost >= 10 && p.cost <= 110),
+    '§9 the revealed costs are from the RIVAL range — the bots are drawn U[10,110]')
+  // Every revealed bid must be β at its own revealed cost: this is what makes the
+  // scatter's claim ("the bots sit exactly on the optimal line") true rather than
+  // asserted, and it is checked here against the harness's own β.
+  check(finalState.revealRivalPoints.every(p => p.bid === betaInt(p.cost, eq)),
+    '§9 ⚠ every revealed bot bid IS β at its revealed cost — the plot documents its own benchmark')
+
+  mustFail(() => finalState.revealRivalPoints.some(p => p.bid !== betaInt(p.cost, eq)),
+    'some bot bid off the optimal line (none may — the whole chart rests on this)')
 
   // The pins above are the leak defence. This is their negative control: the exact same
   // pin, run against a key set that OMITS a field the response really does carry.
@@ -558,6 +604,106 @@ async function main() {
 
   mustFail(() => new Set(vectors).size === 1,
     'all six students share one rival vector (they must not — that would be an instance-wide draw)')
+
+  // ── §11 the whole flow: KC → prep → rounds → results → debrief ─────────────
+  section('§11  The flow the student actually walks')
+
+  const gidF = await makeInstance({ rounds: 2, reserve: RESERVE, seed: 'flow-seed' })
+  const pidF = 'student-flow'
+  await callFn('procurementBootstrap', asStudent(gidF, pidF))
+
+  const q0 = (await callFn('procurementGetQuestions', asStudent(gidF, pidF))).result
+  check(sameKeys(q0, [
+    'ok', 'kcEnabled', 'kc', 'kcAnswered', 'gradedTotal',
+    'prep', 'prepAnswered', 'debrief', 'debriefAnswered',
+  ].sort()), 'getQuestions key set is exactly the contract')
+  check(q0.kc.every(q => sameKeys(q, ['field', 'kind', 'prompt', 'options', 'placeholder'].sort())),
+    'every question key set is exactly the contract')
+
+  // ⚠ THE ANSWER KEY NEVER SHIPS. A key-name check across the whole tree — the two
+  // fields that would carry it are named, so this is a contract check, not a scan.
+  const qJson = JSON.stringify(q0)
+  check(!qJson.includes('correct_value') && !qJson.includes('explanation'),
+    '⚠ the answer key and the explanations are absent from the question payload')
+
+  check(q0.kcEnabled === false,
+    'this harness instance runs with the KC OFF, so the flow below is the KC-off path')
+  check(q0.kc.length === 0 && q0.gradedTotal === 0,
+    'and with it off there are no questions and the denominator is zero — NOT 17')
+
+  // ⚠ THE DENOMINATOR IS DYNAMIC. Turn the KC on with two graded questions visible and
+  // it must be 2 — never 17, never the pool size, never a stored number.
+  const gidK = await makeInstance({
+    rounds: 1, reserve: RESERVE, seed: 'kc-seed',
+    kcEnabled: true, kcVisible: ['S1', 'S2', 'S8', 'S9'],
+  })
+  const pidK = 'student-kc'
+  await callFn('procurementBootstrap', asStudent(gidK, pidK))
+  const qK = (await callFn('procurementGetQuestions', asStudent(gidK, pidK))).result
+  check(qK.kc.length === 2, 'two graded questions visible ⇒ two questions asked')
+  check(qK.gradedTotal === 2,
+    '⚠ the denominator is gradedFor() over the VISIBLE set — 2, not 17, not the pool size')
+  check(qK.prep.length === 1 && qK.debrief.length === 1,
+    'S8 and S9 come from the same pool, tagged prep and debrief')
+  check(qK.prep[0].kind === 'text' && qK.debrief[0].kind === 'text',
+    'and both are free text')
+
+  mustFail(() => qK.gradedTotal === 17,
+    'the denominator is the pool size (it must be the visible graded count)')
+
+  // ⚠ A HIDDEN QUESTION CANNOT REACH THE DENOMINATOR — nor be answered.
+  const hidden = await callFn('procurementSubmitKcAnswer', asStudent(gidK, pidK, { field: 'S3', answer: 'a' }))
+  check(!hidden.ok && /not a knowledge-check question/i.test(hidden.error ?? ''),
+    '⚠ a hidden question cannot be answered, so it cannot reach the denominator')
+
+  const kcAns = (await callFn('procurementSubmitKcAnswer', asStudent(gidK, pidK, { field: 'S1', answer: 'a' }))).result
+  check(kcAns.ok && kcAns.graded === true, 'a graded question grades')
+  check(typeof kcAns.explanation === 'string' && kcAns.explanation.length > 0,
+    'and the explanation is EARNED by answering — this is the only path that returns it')
+
+  // Per-question one-shot lock.
+  const kcRe = (await callFn('procurementSubmitKcAnswer', asStudent(gidK, pidK, { field: 'S1', answer: 'b' }))).result
+  check(kcRe.correct === kcAns.correct,
+    'a re-answer is DISCARDED — a double-click cannot overwrite a wrong answer with a right one')
+
+  const qK2 = (await callFn('procurementGetQuestions', asStudent(gidK, pidK))).result
+  check(qK2.kcAnswered.includes('S1'), 'the answered set is what resume reads')
+
+  // The two free-text stages, through ONE callable, routed by the pool's stage tag.
+  const prepRes = (await callFn('procurementSubmitFreeText',
+    asStudent(gidK, pidK, { field: qK.prep[0].field, answer: 'I plan to bid a bit above my cost.' }))).result
+  check(prepRes.ok && prepRes.stage === 'prep', 'the prep answer routes to the prep stage')
+  // ⚠⚠ THE TWO STAGES ARE GATED IN OPPOSITE DIRECTIONS, and the flow's ORDER is what
+  // satisfies both: prep is refused once a round has been played, debrief is refused
+  // until `finished_at` exists. So a Play.tsx that put prep after the loop, or the
+  // debrief before the results, would fail against the server rather than merely look
+  // wrong — which is the right place for that rule to live.
+  const earlyDebrief = await callFn('procurementSubmitFreeText',
+    asStudent(gidK, pidK, { field: qK.debrief[0].field, answer: 'too early' }))
+  check(!earlyDebrief.ok, '⚠ the debrief is REFUSED before the game is finished')
+
+  const stateK = (await callFn('procurementGetState', asStudent(gidK, pidK))).result
+  const rK = (await callFn('procurementSubmitBid',
+    asStudent(gidK, pidK, { round: 1, bid: Math.min(RESERVE, stateK.currentCost + 10) }))).result
+  check(rK.gameOver === true, 'the one configured round ends the game')
+
+  const latePrep = await callFn('procurementSubmitFreeText',
+    asStudent(gidK, pidK, { field: qK.prep[0].field, answer: 'after the fact' }))
+  check(!latePrep.ok, '⚠ and the prep answer is refused once a round has been played')
+
+  const debRes = (await callFn('procurementSubmitFreeText',
+    asStudent(gidK, pidK, { field: qK.debrief[0].field, answer: 'I bid too high early on.' }))).result
+  check(debRes.ok && debRes.stage === 'debrief',
+    '⚠ the SAME callable routes the debrief answer, by the question\'s stage tag')
+
+  const qK3 = (await callFn('procurementGetQuestions', asStudent(gidK, pidK))).result
+  check(qK3.prepAnswered.length === 1 && qK3.debriefAnswered.length === 1,
+    'both answered sets are what resume reads')
+
+  const debRe = (await callFn('procurementSubmitFreeText',
+    asStudent(gidK, pidK, { field: qK.debrief[0].field, answer: 'REWRITTEN' }))).result
+  check(debRe.answer !== 'REWRITTEN' && debRe.stored === true,
+    '⚠ a free-text answer is LOCKED on first submit — the prep half of the pair is worthless if it can be revised after the fact')
 
   // ═══════════════════════════════════════════════════════════════════════════
   console.log(`\n${'═'.repeat(70)}`)

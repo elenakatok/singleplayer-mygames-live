@@ -92,6 +92,22 @@ export type ProcurementPlayedRow = {
   price: number | null
   profit: number
   profitTotal: number
+  /** What β would have bid at this student's own cost (§8). Null when their cost was
+   *  above the reserve. The SERVER's number — never re-derived on the client. */
+  yourEquilibriumBid: number | null
+}
+
+/** One rival's (cost, bid) pair, for the §9 scatter's bot series.
+ *
+ *  ⚠⚠ THE ONLY RIVAL COST THAT EVER REACHES A CLIENT, and the server sends it only once
+ *  `finished_at` is stamped — `revealRivalPoints` is null for the entire live game. It
+ *  exists because the scatter's argument is that the bots sit ON the optimal line, which
+ *  needs their costs on the x-axis. Do not read it anywhere but the results scatter, and
+ *  do not add a call that fetches it earlier. */
+export type ProcurementRivalPoint = {
+  round: number
+  cost: number
+  bid: number
 }
 
 export type ProcurementPhase = 'kc' | 'play' | 'debrief' | 'done'
@@ -116,6 +132,8 @@ export type ProcurementState = {
    */
   currentRound: number | null
   currentCost: number | null
+  /** ⚠ null until the server stamps `finished_at`. The gate lives on the server. */
+  revealRivalPoints: ProcurementRivalPoint[] | null
   phase: ProcurementPhase
   gameOver: boolean
 }
