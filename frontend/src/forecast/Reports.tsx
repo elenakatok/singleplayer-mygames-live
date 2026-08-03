@@ -474,10 +474,16 @@ export default function Reports() {
           <p style={{ margin: '0 0 0.9rem', fontSize: '0.82rem', color: colors.textSecondary }}>
             The {data.history.length} months of demand every student opens on — identical
             for all of them. This is the data the exercise asks them to explain: a rising
-            trend with a high season they have to spot for themselves. Nothing here is
-            shaded or annotated on the student's copy, deliberately.
+            trend with a high season they have to spot for themselves.
+            {' '}<strong>The student&rsquo;s own copy carries the demand line ALONE</strong> —
+            the dashed reference below is yours, not theirs.
           </p>
-          <DemandChartSVG history={data.history} totalPeriods={data.history.length} height={340} />
+          <DemandChartSVG
+            history={data.history}
+            totalPeriods={data.history.length}
+            height={340}
+            reference={data.historySystematic.map((value, i) => ({ period: i + 1, value }))}
+          />
         </Modal>
       )}
 

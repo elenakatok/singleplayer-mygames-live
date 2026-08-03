@@ -250,6 +250,13 @@ async function main() {
     check(!(await exists(page, '[data-testid="fc-line-forecast"]')),
       'no forecast line before the first month is played')
 
+    // ⚠⚠ AND NO SYSTEMATIC REFERENCE, EVER. DemandChartSVG takes an optional
+    // `reference` prop that draws the TRUE process — the reports page passes it, and a
+    // student screen never may. It is the worst leak available in this game: the
+    // process is exactly what the exercise asks them to infer.
+    check(!(await exists(page, '[data-testid="fc-line-systematic"]')),
+      '⚠⚠ the student chart draws NO true-process reference line')
+
     // ───────────────────────────────────────────────────────────────────────
     section('[3] The month-by-year grid (spec §4, laid out as §2.1)')
     // ───────────────────────────────────────────────────────────────────────
@@ -316,6 +323,8 @@ async function main() {
     // ⚠ The forecast line now exists — "the cheapest learning aid in the game" (§4).
     check(await exists(page, '[data-testid="fc-line-forecast"]'),
       '⚠ the student\'s forecasts are plotted as a SECOND line (spec §4)')
+    check(!(await exists(page, '[data-testid="fc-line-systematic"]')),
+      '⚠⚠ …and still NO true-process reference, now that months have been played')
 
     // The history table and its ten columns.
     check(await exists(page, '[data-testid="fc-history-table"]'), 'the history table renders')

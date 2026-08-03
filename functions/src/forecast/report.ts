@@ -5,6 +5,7 @@ import {
   FORECAST_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, BONUS_AT_PERFECT,
 } from './config'
 import { loadInstance } from './instance'
+import { systematic } from './demand'
 import { parseStoredRounds, toPoints } from './rounds'
 import { runningMetrics, yearComparison } from './metrics'
 import { clientParams, clientHistory } from './clientState'
@@ -213,5 +214,17 @@ export const forecastGetReport = onCall({ cors: FORECAST_CORS_ORIGINS }, async (
      * reports could not show.
      */
     history: clientHistory(history),
+    /**
+     * ⚠ INSTRUCTOR-ONLY: the TRUE systematic component over the history months.
+     *
+     * The history tile draws it as a dashed reference, which turns "here is the data
+     * they were given" into "…and here is what they were supposed to find in it".
+     *
+     * Sent as its OWN array rather than as a field on each history point, deliberately:
+     * `clientHistory` is the STUDENT shape, and a `systematic` field on it would be one
+     * careless reuse away from printing the answer on the opening screen. Keeping it
+     * separate means the student shape stays incapable of carrying it.
+     */
+    historySystematic: history.map((_, i) => systematic(model, i + 1)),
   }
 })

@@ -463,6 +463,9 @@ export type ForecastReportData = {
   history: ForecastHistoryPoint[]
   /** How many flagged students Tier 3 dropped (spec §5b). The captions state it. */
   excludedFromCharts: number
+  /** ⚠ INSTRUCTOR-ONLY: the true systematic component over the history months, for the
+   *  history tile's dashed reference. Never on a student payload. */
+  historySystematic: number[]
 }
 
 export const forecastGetReport = () => callFn<ForecastReportData>('forecastGetReport')

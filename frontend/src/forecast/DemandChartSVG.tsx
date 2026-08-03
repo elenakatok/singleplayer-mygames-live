@@ -32,6 +32,7 @@ const ACTUAL_COLOR = '#2563eb'      // blue — realized demand
 const FORECAST_COLOR = '#dc2626'    // red  — the student's own forecasts
 const BOUNDARY_COLOR = '#cbd5e1'    // slate-300, the year rules
 const AXIS_COLOR = '#94a3b8'
+const REF_COLOR = '#64748b'    // slate, dashed — the instructor-only reference
 
 const MONTH_TICKS = [1, 4, 7, 10]   // Jan, Apr, Jul, Oct
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -46,6 +47,16 @@ export type DemandChartProps = {
    *  not rescale under the student every month as play proceeds. */
   totalPeriods: number
   height?: number
+  /**
+   * ⚠⚠ INSTRUCTOR-ONLY. The TRUE systematic component, drawn as a dashed reference.
+   *
+   * THIS IS THE ANSWER KEY. Passing it on a student screen would print the process the
+   * whole exercise asks them to infer — the single worst leak available in this game.
+   * It is optional and undefined everywhere on the student side; only the reports page
+   * supplies it, and the browser harness asserts that the student's chart has no
+   * reference line. Do not thread it through Play.tsx, ever.
+   */
+  reference?: { period: number; value: number }[]
 }
 
 export function DemandChartSVG({
@@ -53,6 +64,7 @@ export function DemandChartSVG({
   played = [],
   totalPeriods,
   height = 300,
+  reference,
 }: DemandChartProps) {
   const W = 900
   const H = height
@@ -69,6 +81,7 @@ export function DemandChartSVG({
     ...history.map(h => h.demand),
     ...played.map(p => p.actual),
     ...played.map(p => p.forecast),
+    ...(reference ?? []).map(r => r.value),
   ]
   const dataMin = values.length ? Math.min(...values) : 0
   const dataMax = values.length ? Math.max(...values) : 1
@@ -160,6 +173,15 @@ export function DemandChartSVG({
           </text>
         ))}
 
+      {/* ── The TRUE systematic component, instructor-only (see the prop doc) ── */}
+      {reference && reference.length > 1 && (
+        <path
+          data-testid="fc-line-systematic"
+          d={path(reference.map(r => ({ period: r.period, value: r.value })))}
+          fill="none" stroke={REF_COLOR} strokeWidth={1.5} strokeDasharray="6 4"
+        />
+      )}
+
       {/* ── The demand series ──────────────────────────────────────────────── */}
       <path
         data-testid="fc-line-actual"
@@ -190,6 +212,12 @@ export function DemandChartSVG({
           <>
             <line x1={130} x2={148} y1={-4} y2={-4} stroke={FORECAST_COLOR} strokeWidth={2} strokeDasharray="4 3" />
             <text x={154} y={0} fontSize={11} fill={colors.textSecondary}>Your forecasts</text>
+          </>
+        )}
+        {reference && reference.length > 1 && (
+          <>
+            <line x1={130} x2={148} y1={-4} y2={-4} stroke={REF_COLOR} strokeWidth={1.5} strokeDasharray="6 4" />
+            <text x={154} y={0} fontSize={11} fill={colors.textSecondary}>True systematic component</text>
           </>
         )}
       </g>

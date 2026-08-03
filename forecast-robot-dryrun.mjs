@@ -214,6 +214,10 @@ try {
       check(yearRules >= 4, `the history chart marks its year boundaries (${yearRules} rules)`)
       check(await page.locator('[data-testid="fc-line-forecast"]').count() === 0,
         '…and draws NO forecast line — it is the given data, not anyone\'s play')
+      // ⚠ The INSTRUCTOR's copy adds the true process as a dashed reference — "here is
+      // what they were given, and here is what they were supposed to find in it".
+      check(await page.locator('[data-testid="fc-line-systematic"]').count() === 1,
+        '…but DOES draw the true systematic component, which the student never sees')
       await page.locator('text=Close').first().click()
       await page.waitForTimeout(200)
 
