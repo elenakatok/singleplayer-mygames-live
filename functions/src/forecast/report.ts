@@ -17,6 +17,7 @@ import {
   classSeries, classSummary, studentOutcome, mseHistogram, studentMonthRows,
   type ForecastGameRow,
 } from './reportStats'
+import { belowFloorFlag, type BelowFloorResult } from './belowFloor'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // forecastGetReport (instructor) — the single instructor-facing data source, feeding
@@ -64,6 +65,20 @@ export interface ForecastReportParticipant {
   debrief: string | null
   /** The per-student drill-down (spec §10): their full month-by-month table. */
   months: ReturnType<typeof studentMonthRows>
+  /**
+   * ⚠ THE BELOW-FLOOR FLAG (spec §5b) — INSTRUCTOR-ONLY, and informational only.
+   *
+   * Null when the test cannot be run (nothing played, or a degenerate σ). Non-null
+   * otherwise, with `flagged` true only past the display minimum. It affects NO score
+   * and gates nothing; it exists so Elena can see on the roster that a student's MSE is
+   * below what the noise alone permits, which `demandDraw: 'common'` makes possible.
+   *
+   * It must never reach a student — not on the results screen, not on the final screen,
+   * not in the reveal, not in either CSV. This field exists on the INSTRUCTOR payload
+   * only, and the harness carries a negative control asserting its absence everywhere
+   * else.
+   */
+  below_floor: BelowFloorResult | null
 }
 
 export const forecastGetReport = onCall({ cors: FORECAST_CORS_ORIGINS }, async (request) => {
@@ -93,6 +108,9 @@ export const forecastGetReport = onCall({ cors: FORECAST_CORS_ORIGINS }, async (
     gameRows.push({ participant_id: d.id, points })
 
     const out = studentOutcome(points, runningMetrics, yearComparison)
+    // ⚠ σ FROM THE INSTANCE, never a constant — an instructor can edit it in Settings
+    // and every threshold moves with it (belowFloor.ts).
+    const belowFloor = belowFloorFlag(out.mse, out.monthsPlayed, model.sigma)
     const freeText = (p.free_text_answers ?? {}) as Record<string, { answer?: unknown }>
     const debriefRaw = freeText[debriefQuestion.field]?.answer
 
@@ -117,8 +135,25 @@ export const forecastGetReport = onCall({ cors: FORECAST_CORS_ORIGINS }, async (
       participation_score: typeof p.normalized_score === 'number' ? p.normalized_score : null,
       debrief: typeof debriefRaw === 'string' ? debriefRaw : null,
       months: studentMonthRows(points),
+      below_floor: belowFloor,
     }
   })
+
+  /**
+   * ⚠ FLAGGED STUDENTS ARE EXCLUDED FROM TIER 3 (spec §5b), and the charts SAY SO.
+   *
+   * One student who had the answers can drag the class-average forecast line onto the
+   * true process and put a spike at the bottom of the histogram — turning the lecture
+   * asset into a picture of the leak rather than of the class. So they come out.
+   *
+   * The count travels with the payload precisely so the caption can state it: Elena
+   * must never be looking at a filtered chart without knowing it is filtered. Tier 1
+   * still lists them — the roster is the report where they should be visible.
+   */
+  const flaggedIds = new Set(
+    participants.filter(p => p.below_floor?.flagged).map(p => p.participant_id),
+  )
+  const chartRows = gameRows.filter(row => !flaggedIds.has(row.participant_id))
 
   const usePublished = publishedBenchmarksValid(model, config.numHistory)
 
@@ -137,9 +172,9 @@ export const forecastGetReport = onCall({ cors: FORECAST_CORS_ORIGINS }, async (
     participants,
     /** Tier 3, chart 1: class average actual vs class average forecast vs the true
      *  systematic component, with per-month denominators (spec §10). */
-    classChart: classSeries(gameRows, model, periodLabelShort),
+    classChart: classSeries(chartRows, model, periodLabelShort),
     /** Tier 3, the summary box — "this box IS the debrief slide" (spec §10). */
-    summary: classSummary(gameRows, runningMetrics),
+    summary: classSummary(chartRows, runningMetrics),
     /**
      * The §2.3 benchmark table for the summary box.
      *
@@ -153,8 +188,15 @@ export const forecastGetReport = onCall({ cors: FORECAST_CORS_ORIGINS }, async (
     /** Tier 3, chart 2: the MSE histogram (spec §10, "BUILD IN v1"). Log-binned — see
      *  reportStats.ts for why linear bins would hide the whole lesson. */
     histogram: mseHistogram(
-      participants.map(p => p.mse).filter((m): m is number => m !== null),
+      participants
+        .filter(p => !flaggedIds.has(p.participant_id))
+        .map(p => p.mse).filter((m): m is number => m !== null),
     ),
+    /**
+     * How many students Tier 3 dropped, and why — so the caption can say it out loud
+     * (spec §5b). Zero on a healthy instance, which is the common case.
+     */
+    excludedFromCharts: flaggedIds.size,
     /** The prompt the paragraphs answered, so the Tier-2 tile is labelled with the
      *  question that was actually asked. */
     debriefPrompt: config.debriefPrompt,

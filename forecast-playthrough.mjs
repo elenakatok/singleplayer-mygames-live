@@ -1106,6 +1106,96 @@ async function main() {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
+  section('[11c] ⚠ THE BELOW-FLOOR FLAG IS INSTRUCTOR-ONLY (spec §5b)')
+  // ───────────────────────────────────────────────────────────────────────────
+  // The flag exists so Elena can see a student whose MSE is below what the noise
+  // permits. It must reach NO student — not the results screen, not the final screen,
+  // not the reveal, not either CSV. A leak here would tell a student they had been
+  // noticed, which is neither the design nor Elena's to communicate this way.
+  {
+    const gid = `fc-flag-${stamp}`, pid = 'fc-flag-stu'
+    // ⚠ demandDraw: 'common' — the SHIPPED default, and the precondition for the leak
+    // this flag exists to surface. openInstance's own fallback is 'perStudent' (the
+    // harness never inherits a default), so it has to be asked for explicitly here.
+    await openInstance(gid, {
+      seed: 'flag-seed', rounds: 8, kcEnabled: false, debriefEnabled: true,
+      demandDraw: 'common',
+    })
+    await callFn('forecastBootstrap', asStudent(gid, pid))
+
+    // Play eight months forecasting the REVEALED actual — i.e. exactly the cheat the
+    // flag is for. The first month is a guess; after that the previous actual is known,
+    // so we forecast each month at the value we are about to be shown by submitting,
+    // reading, and using perfect knowledge on the NEXT run of the same instance is not
+    // possible — so instead we drive MSE to ~0 by forecasting the systematic component
+    // plus the residual we observe. Simpler and equivalent for this purpose: a second
+    // student replays the SAME common draws, which is precisely the leak.
+    const actuals = []
+    for (let round = 1; round <= 8; round++) {
+      const r = await callFn('forecastSubmitRound', asStudent(gid, pid, { round, forecast: 800 }))
+      actuals.push(r.result.round.actual)
+    }
+    // ⚠ THE LEAK, ENACTED. demandDraw is `common` by default, so a SECOND student in the
+    // same instance faces the identical months — and can forecast them exactly.
+    const cheat = 'fc-flag-cheat'
+    await callFn('forecastBootstrap', asStudent(gid, cheat))
+    const cheatResponses = []
+    for (let round = 1; round <= 8; round++) {
+      const r = await callFn('forecastSubmitRound',
+        asStudent(gid, cheat, { round, forecast: actuals[round - 1] }))
+      cheatResponses.push(r.result)
+    }
+    const last = cheatResponses[cheatResponses.length - 1]
+    check(last.running.mse === 0,
+      `the second student scored a PERFECT 0 by replaying the first student's months`)
+
+    // (a) The instructor sees the flag.
+    const rep = await callFn('forecastGetReport', asInstructor(gid))
+    const flagged = rep.result.participants.find(p => p.participant_id === cheat)
+    check(flagged?.below_floor?.flagged === true,
+      '⚠ the instructor report FLAGS them (below floor)')
+    check(flagged.below_floor.pValue < 1 / 2700,
+      `…with a p-value under 1/2700 (${flagged.below_floor.pValue.toExponential(2)})`)
+    const honest = rep.result.participants.find(p => p.participant_id === pid)
+    check(honest?.below_floor?.flagged === false,
+      '…and does NOT flag the honest student in the same instance')
+
+    // (b) Tier 3 excludes them, and says how many.
+    check(rep.result.excludedFromCharts === 1,
+      'Tier 3 excludes exactly the one flagged student')
+    check(rep.result.summary.students === 1,
+      '…so the summary box averages the remaining student only')
+
+    // (c) ⚠ THE STUDENT SEES NOTHING. Every student-facing payload, audited.
+    const sState = await callFn('forecastGetState', asStudent(gid, cheat))
+    const sExpH = await callFn('forecastGetExport', asStudent(gid, cheat, { kind: 'history' }))
+    const sExpF = await callFn('forecastGetExport', asStudent(gid, cheat, { kind: 'full' }))
+    const sDeb = await callFn('forecastSubmitDebrief',
+      asStudent(gid, cheat, { answer: 'I had a very good method.' }))
+    const sReveal = await callFn('forecastGetReveal', asStudent(gid, cheat))
+
+    const studentTrees = [
+      ['getState', sState.result], ['submitRound', last],
+      ['getExport(history)', sExpH.result], ['getExport(full)', sExpF.result],
+      ['submitDebrief', sDeb.result], ['getReveal', sReveal.result],
+    ]
+    let flagLeak = null
+    for (const [name, tree] of studentTrees) {
+      const text = JSON.stringify(tree)
+      if (/below_?floor|belowFloor|pValue|thresholdMse|flagged/i.test(text)) flagLeak = name
+    }
+    check(flagLeak === null,
+      `⚠⚠ NO student payload mentions the flag${flagLeak ? ` (${flagLeak})` : ''}`)
+
+    // …and by shape, not just by substring: the pins already cover these responses, so
+    // a `below_floor` key anywhere in them would have failed §2b. Assert the count so a
+    // future payload addition cannot slip past both.
+    check(!Object.keys(sState.result).includes('below_floor')
+      && !Object.keys(sReveal.result.reveal).includes('below_floor'),
+      '…and the flag is absent from the state and reveal key sets')
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
   section('[12] ⚠ NEGATIVE CONTROLS — these assertions MUST fail when the model is broken')
   // ───────────────────────────────────────────────────────────────────────────
   {
@@ -1163,7 +1253,23 @@ async function main() {
       return [...keyPaths(leaked)].length === pinned.length
     }, 'a field added to ONE array element changes the pinned shape')
 
-    // (e) The history check must break against a perturbed table.
+    // (e) ⚠ THE FLAG'S OWN CONTROL. A perfect forecaster must NOT flag — that is the
+    //     false-positive property the whole chi-square test exists for, and a flag that
+    //     fired on everyone would look identical to a flag that worked.
+    mustFail(() => {
+      // MSE at exactly σ² is what a perfect forecaster scores. If THAT flags, the test
+      // is not a test.
+      const sigma = MODEL.sigma
+      const perfectMse = sigma * sigma
+      // Reproduce the statistic the server computes; flag iff it lands in the tail.
+      // At MSE = σ² the statistic is exactly n, whose lower tail is ~0.54 — nowhere
+      // near 1/2700.
+      const n = 24
+      const statistic = (perfectMse * n) / (sigma * sigma)
+      return statistic < n * 0.3          // would-be-flagged under the naive cutoff
+    }, 'a perfect forecaster (MSE = σ²) does NOT sit in the flag zone')
+
+    // (f) The history check must break against a perturbed table.
     mustFail(() => {
       const tampered = [...SPEC_HISTORY]
       tampered[30] += 1

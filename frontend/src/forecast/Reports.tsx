@@ -91,6 +91,43 @@ function ProcessHeader({ data }: { data: ForecastReportData }) {
   )
 }
 
+/**
+ * The below-floor badge (spec §5b) — INFORMATION FOR ELENA, nothing more.
+ *
+ * ⚠ DELIBERATELY NOT AN ACCUSATION. It says what is measurably true — this MSE is below
+ * what the noise alone permits — and stops there. Nothing is blocked, nothing is
+ * penalised, no score moves, and the student is never told. Scoring is
+ * participation-only and forecast accuracy is never graded (spec §6), so a badge that
+ * read like a verdict would be claiming an authority this game does not have.
+ *
+ * The tooltip carries the arithmetic, because a flag Elena cannot check is a flag she
+ * has to either trust blindly or ignore.
+ */
+function BelowFloorBadge({ r }: { r: ForecastReportParticipant }) {
+  const f = r.below_floor
+  if (!f?.flagged) return null
+  const odds = f.pValue > 0 ? Math.round(1 / f.pValue).toLocaleString() : '∞'
+  return (
+    <span
+      data-testid={`fc-below-floor-${r.participant_id}`}
+      title={
+        `MSE ${formatBig(r.mse ?? 0)} over ${f.months} months. A perfect forecaster — one who `
+        + `knew the true process exactly — would still carry the noise, and would score `
+        + `below ${formatBig(f.thresholdMse)} only about 1 time in ${odds}. `
+        + `Informational only: no score is affected.`
+      }
+      style={{
+        marginLeft: '0.4rem', padding: '0.05rem 0.35rem', borderRadius: 4,
+        fontSize: '0.68rem', fontWeight: 600, whiteSpace: 'nowrap',
+        background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a',
+        cursor: 'help',
+      }}
+    >
+      below floor
+    </span>
+  )
+}
+
 // ── Tier 1: the outcomes roster ────────────────────────────────────────────────
 
 type RosterKey =
@@ -129,7 +166,12 @@ function OutcomesTable({
     },
     {
       key: 'status', label: 'Status',
-      render: r => (r.completed ? 'Finished' : r.launched ? `In progress (${r.months_played})` : 'Not started'),
+      render: r => (
+        <>
+          {r.completed ? 'Finished' : r.launched ? `In progress (${r.months_played})` : 'Not started'}
+          {r.below_floor?.flagged && <BelowFloorBadge r={r} />}
+        </>
+      ),
       compare: (a, b) => (a.completed ? 2 : a.launched ? 1 : 0) - (b.completed ? 2 : b.launched ? 1 : 0),
     },
     { key: 'months', label: 'Months', render: r => <span style={tnum}>{r.months_played}</span>, compare: (a, b) => a.months_played - b.months_played },
@@ -445,6 +487,13 @@ export default function Reports() {
             Class average actual demand and class average forecast, against the true
             systematic component. Later months average fewer students — that is
             composition, not behaviour, which is why every month carries its own n.
+          {data.excludedFromCharts > 0 && (
+            <strong data-testid="fc-exclusion-note" style={{ display: 'block', marginTop: '0.4rem', color: '#92400e' }}>
+              ⚠ {data.excludedFromCharts} student{data.excludedFromCharts === 1 ? '' : 's'} flagged
+              &ldquo;below floor&rdquo; {data.excludedFromCharts === 1 ? 'is' : 'are'} EXCLUDED from this
+              chart, so one of them cannot distort it. They are still listed on the outcomes roster.
+            </strong>
+          )}
           </p>
           <ClassChartSVG points={data.classChart} />
         </Modal>
@@ -455,6 +504,13 @@ export default function Reports() {
           <p style={{ margin: '0 0 0.9rem', fontSize: '0.82rem', color: colors.textSecondary }}>
             The class&rsquo;s own numbers beside what each forecasting rule would have
             scored. This is the debrief slide.
+          {data.excludedFromCharts > 0 && (
+            <strong data-testid="fc-exclusion-note" style={{ display: 'block', marginTop: '0.4rem', color: '#92400e' }}>
+              ⚠ {data.excludedFromCharts} student{data.excludedFromCharts === 1 ? '' : 's'} flagged
+              &ldquo;below floor&rdquo; {data.excludedFromCharts === 1 ? 'is' : 'are'} EXCLUDED from this
+              chart, so one of them cannot distort it. They are still listed on the outcomes roster.
+            </strong>
+          )}
           </p>
           <BenchmarkComparison data={data} />
         </Modal>
@@ -466,6 +522,13 @@ export default function Reports() {
             Where the class landed, with the benchmark rules marked. The tail on the right
             is the chased-the-noise group. The axis is logarithmic — MSE spans a 40× range,
             and on a linear axis everything competent would pile up at the left edge.
+          {data.excludedFromCharts > 0 && (
+            <strong data-testid="fc-exclusion-note" style={{ display: 'block', marginTop: '0.4rem', color: '#92400e' }}>
+              ⚠ {data.excludedFromCharts} student{data.excludedFromCharts === 1 ? '' : 's'} flagged
+              &ldquo;below floor&rdquo; {data.excludedFromCharts === 1 ? 'is' : 'are'} EXCLUDED from this
+              chart, so one of them cannot distort it. They are still listed on the outcomes roster.
+            </strong>
+          )}
           </p>
           <MseHistogramSVG histogram={data.histogram} benchmarks={data.benchmarks ?? []} />
         </Modal>

@@ -230,7 +230,22 @@ describe('drawDemand — per student, per period (spec §2.2)', () => {
     const played = Array.from({ length: 24 }, (_, i) => 61 + i)
     const a = played.map(p => drawDemand(m, '1', 'stu-a', p))
     const b = played.map(p => drawDemand(m, '1', 'stu-b', p))
+    const c = played.map(p => drawDemand(m, '1', 'someone-else-entirely', p))
     expect(a).toEqual(b)
+    expect(a).toEqual(c)
+  })
+
+  it('⚠ …but demand still VARIES across periods — "same draw" means same per MONTH', () => {
+    // Guarding a misreading that would gut the game: `common` makes every student see
+    // the SAME demand as each other in a given month. It does NOT make demand
+    // constant over time — the trend and the season are the whole exercise.
+    const played = Array.from({ length: 24 }, (_, i) => 61 + i)
+    const series = played.map(p => drawDemand(m, '1', 'stu-a', p))
+    expect(new Set(series).size).toBeGreaterThan(15)
+    // …and it still tracks the season: November/December sit far above the low months.
+    const nov = drawDemand(m, '1', 'stu-a', 71)
+    const jun = drawDemand(m, '1', 'stu-a', 66)
+    expect(nov - jun).toBeGreaterThan(100)
   })
 
   it('perStudent STILL differs across students — the leak closure is intact', () => {

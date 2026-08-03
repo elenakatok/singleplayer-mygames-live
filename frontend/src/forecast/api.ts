@@ -407,6 +407,20 @@ export type ForecastReportParticipant = {
   participation_score: number | null
   debrief: string | null
   months: ForecastStudentMonth[]
+  /**
+   * ⚠ THE BELOW-FLOOR FLAG (spec §5b) — INSTRUCTOR-ONLY, informational, no score effect.
+   *
+   * It appears on THIS type and nowhere else in this file. If it ever shows up on a
+   * STUDENT type, that is a server bug: nothing about it may reach the player.
+   */
+  below_floor: {
+    flagged: boolean
+    /** P(χ²_n ≤ observed) — how unlikely this MSE is for a perfect forecaster. */
+    pValue: number
+    /** The MSE they would have had to beat, at their own n and this instance's σ. */
+    thresholdMse: number
+    months: number
+  } | null
 }
 
 /** One month of the Tier-3 class chart. `n` thins as the class spreads out, and the
@@ -447,6 +461,8 @@ export type ForecastReportData = {
   historyLength: number
   /** The five years students were given — the same array every one of them saw. */
   history: ForecastHistoryPoint[]
+  /** How many flagged students Tier 3 dropped (spec §5b). The captions state it. */
+  excludedFromCharts: number
 }
 
 export const forecastGetReport = () => callFn<ForecastReportData>('forecastGetReport')
