@@ -11,6 +11,7 @@ import {
   type ForecastReportData, type ForecastReportParticipant,
 } from './api'
 import { ClassChartSVG, MseHistogramSVG } from './ClassChartSVG'
+import { DemandChartSVG } from './DemandChartSVG'
 import { formatBig, formatMetric, formatMoney, formatPercent, formatSigned } from './format'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -308,7 +309,7 @@ function BenchmarkComparison({ data }: { data: ForecastReportData }) {
 
 // ── The page ───────────────────────────────────────────────────────────────────
 
-type TileId = 'outcomes' | 'debrief' | 'chart' | 'comparison' | 'histogram'
+type TileId = 'outcomes' | 'debrief' | 'history' | 'chart' | 'comparison' | 'histogram'
 
 export default function Reports() {
   const session = useInstructorSession(forecastInstructorSession)
@@ -364,6 +365,16 @@ export default function Reports() {
       onOpen: () => setActive('debrief'),
     },
     {
+      // ⚠ THE DATA STUDENTS WERE GIVEN (Elena, 08-02). Every other chart on this page
+      // starts at the first PLAYED month, so until now the reports could show what the
+      // class did but not what they were looking at when they did it. It is the same
+      // sixty months every student saw, so it is ALWAYS available — no play required.
+      id: 'history',
+      title: 'The five years students were given',
+      preview: <span>{data.history.length} months of demand — the common starting data</span>,
+      onOpen: () => setActive('history'),
+    },
+    {
       // ⚠ NAMED FOR WHAT IT SHOWS, not for its tier (Elena, 08-02). "The class chart"
       // said nothing about WHICH class chart, and the three series are the whole point.
       id: 'chart',
@@ -413,6 +424,18 @@ export default function Reports() {
       {active === 'debrief' && (
         <Modal title="Debrief paragraphs — after play" onClose={() => setActive(null)}>
           <DebriefAnswers rows={data.participants} prompt={data.debriefPrompt} />
+        </Modal>
+      )}
+
+      {active === 'history' && (
+        <Modal title="The five years students were given" onClose={() => setActive(null)}>
+          <p style={{ margin: '0 0 0.9rem', fontSize: '0.82rem', color: colors.textSecondary }}>
+            The {data.history.length} months of demand every student opens on — identical
+            for all of them. This is the data the exercise asks them to explain: a rising
+            trend with a high season they have to spot for themselves. Nothing here is
+            shaded or annotated on the student's copy, deliberately.
+          </p>
+          <DemandChartSVG history={data.history} totalPeriods={data.history.length} height={340} />
         </Modal>
       )}
 

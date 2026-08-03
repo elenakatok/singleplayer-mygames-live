@@ -323,7 +323,11 @@ export function loadForecastModel(truthData: Record<string, unknown> | undefined
     // no-op it is on a default one.
     monthOffsets: numArray(d.month_offsets, 12)
       ?? Array.from({ length: 12 }, (_, i) => (months.includes(i + 1) ? H : 0)),
-    demandDraw: d.demand_draw === 'common' ? 'common' : 'perStudent',
+    // ⚠ ABSENT ⇒ 'common', matching the shipped default (demand.ts, Elena 08-02).
+    // The loader and DEFAULT_MODEL must agree: if this still said 'perStudent' an
+    // instance whose truth doc predates the field would quietly run the OTHER draw
+    // mode from the one the defaults advertise — and nothing on screen would say so.
+    demandDraw: d.demand_draw === 'perStudent' ? 'perStudent' : 'common',
   }
 }
 

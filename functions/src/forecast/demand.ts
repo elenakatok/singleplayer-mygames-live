@@ -15,14 +15,19 @@ import {
 // the rules-denied `truth/main`, never in the student-readable `config/main`, and no
 // student response carries them. Nothing in this file is imported by the frontend.
 //
-// ⚠⚠ HISTORY IS COMMON, FUTURES ARE NOT (spec §2.2). Two different functions:
+// ⚠⚠ HISTORY IS COMMON, AND SO ARE THE FUTURES BY DEFAULT (Elena, 08-02 — this
+// REVERSES spec §2.2's default). Two different functions:
 //   • `resolveHistory` returns the same sixty numbers for EVERY student — no
 //     participant id enters it at all, which is why byte-identity across students is
 //     structural rather than a property to test for.
-//   • `drawDemand` is seeded on (seed, participant_id, period), so two students in
-//     one instance face unrelated futures. That closes the async leak: a week-long
-//     take-home with a common future lets the first finisher hand the class 24
-//     correct answers.
+//   • `drawDemand` is seeded on (seed, participant_id, period) under `perStudent`, and
+//     drops the participant id under `common` — which is now the DEFAULT, so every
+//     student faces the same 24 months.
+//
+// ⚠ THAT RE-OPENS THE ASYNC LEAK spec §2.2 closed, knowingly: over a week-long
+// take-home the first finisher can hand the class every answer. Elena's call, made
+// with the consequence stated. `perStudent` is still there and is still the right
+// setting for a take-home where the leak matters.
 //
 // ⚠ DRAWN SERVER-SIDE AT RESOLUTION TIME, after the forecast is committed, in the same
 // transaction (spec §2.2, §4). Realized demand for an unplayed month must not exist
@@ -75,7 +80,27 @@ export interface ForecastModel {
 export const DEFAULT_A = 560
 export const DEFAULT_B = 4
 export const DEFAULT_H = 230
-export const DEFAULT_SIGMA = 30
+/**
+ * Noise standard deviation.
+ *
+ * ⚠ RAISED FROM 30 TO 60 (Elena, 08-02). Two consequences, both real and both
+ * accounted for elsewhere in this build rather than left to surface later:
+ *   • THE FLOOR QUADRUPLES, from σ² = 900 to σ² = 3,600. No forecast can beat it, and
+ *     it is what the debrief reveals as the limit of the predictable.
+ *   • THE WHOLE §2.3 BENCHMARK TABLE MOVES. Those figures are a function of σ, so they
+ *     were re-simulated at 60 and replaced (benchmarks.ts). Leaving the old numbers in
+ *     place would have printed a confident, wrong comparison on the debrief screen.
+ *
+ * ⚠ THE PUBLISHED HISTORY WAS DRAWN AT σ = 30 AND IS UNCHANGED. It is a fixed table
+ * (history.ts), so raising σ affects only the months the student PLAYS. See
+ * `usesPublishedHistory` for why that is deliberate rather than an oversight.
+ */
+export const DEFAULT_SIGMA = 60
+
+/** The σ the PUBLISHED history was drawn at. Not the game's σ any more — kept because
+ *  it is a fact about that fixed table, and because a future change that regenerates
+ *  the history needs to know it. */
+export const PUBLISHED_HISTORY_SIGMA = 30
 /** Seed 1 is what produced the published history (spec §2.1). */
 export const DEFAULT_SEED = '1'
 
@@ -90,7 +115,18 @@ export const DEFAULT_MODEL: ForecastModel = {
   // The two-season pattern written out: the flip to perMonth is a no-op until edited.
   monthOffsets: Array.from({ length: 12 }, (_, i) =>
     DEFAULT_HIGH_SEASON_MONTHS.includes(i + 1) ? DEFAULT_H : 0),
-  demandDraw: 'perStudent',
+  // ⚠ COMMON, NOT perStudent (Elena, 08-02). Every student now faces the SAME
+  // realized future — the same seed, so the same 24 months of demand.
+  //
+  // This deliberately re-opens the async leak that spec §2.2 closed: a week-long
+  // take-home means the first finisher can hand the class 24 correct answers. Elena's
+  // call, made with that consequence stated. `perStudent` remains available and is
+  // still the right choice for a graded take-home where the leak matters.
+  //
+  // What it buys: every student is comparable on identical data, so the Tier-3 class
+  // chart averages one series rather than seven unrelated ones, and two students'
+  // MSEs differ only by their forecasts.
+  demandDraw: 'common',
 }
 
 // ── The systematic component ───────────────────────────────────────────────────
@@ -226,11 +262,24 @@ export function drawDemand(
  * check: none of them changes what the first sixty months are.
  */
 export function usesPublishedHistory(model: ForecastModel, numHistory: number): boolean {
+  // ⚠ σ IS DELIBERATELY NOT CHECKED HERE, and that changed when the default σ moved to
+  // 60 (Elena, 08-02). The published history is a CONSTANT — sixty transcribed integers
+  // — so σ cannot alter it, and gating the table on σ would mean a default instance
+  // silently stopped using the very history the spec publishes.
+  //
+  // The history therefore carries σ = 30 noise while play carries σ = 60. That is a
+  // real inconsistency and it is accepted: the history's job is to be LEARNABLE (spec
+  // §2.1 chose its seed so the high season reads as a rule, not a run of luck), and
+  // raising its noise would blur the pattern the whole exercise asks students to find.
+  // A student who estimates σ off the history will under-estimate their own error;
+  // nothing is graded on that, and MSE — which is graded on nothing — is unaffected.
+  //
+  // ⚠ THE BENCHMARKS ARE A DIFFERENT MATTER. They DO depend on σ, so
+  // `publishedBenchmarksValid` checks it separately (benchmarks.ts).
   return numHistory === PUBLISHED_HISTORY_LENGTH
     && model.a === DEFAULT_A
     && model.b === DEFAULT_B
     && model.H === DEFAULT_H
-    && model.sigma === DEFAULT_SIGMA
     && model.seasonality === 'additive'
     && model.seasonStructure === 'twoSeason'
     && model.highSeasonMonths.length === DEFAULT_HIGH_SEASON_MONTHS.length

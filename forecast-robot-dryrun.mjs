@@ -96,8 +96,12 @@ try {
   await putDoc(`forecast_game_instances/${GID}/truth/main`, {
     intercept: intVal(560), trend: intVal(4), high_season_lift: intVal(230),
     high_season_months: arrVal([intVal(11), intVal(12)]),
-    sigma: intVal(30), seasonality: strVal('additive'),
-    season_structure: strVal('twoSeason'), demand_draw: strVal('perStudent'),
+    // ⚠ σ = 60 and demandDraw = common, matching the shipped defaults (Elena, 08-02).
+    // Set EXPLICITLY, per the standing rule — but chosen to mirror the real game.
+    // `common` also sharpens this run: every robot faces the SAME 24 months, so their
+    // MSEs differ ONLY by style, which is exactly the comparison the cohort exists for.
+    sigma: intVal(60), seasonality: strVal('additive'),
+    season_structure: strVal('twoSeason'), demand_draw: strVal('common'),
     seed: strVal('robot-dryrun'),
   })
 
@@ -131,9 +135,14 @@ try {
   const mses = rep.participants.map(p => p.mse).filter(m => m !== null).sort((a, b) => a - b)
   const best = mses[0], worst = mses[mses.length - 1]
   console.log(`\n  MSE spread: ${mses.map(m => Math.round(m).toLocaleString()).join(' · ')}`)
-  check(worst / best > 8,
-    `the cohort SEPARATES — worst/best MSE ratio is ${(worst / best).toFixed(0)}× (spec §2.3)`)
-  check(best < 3000, `the best robot is near the §2.3 floor (${Math.round(best).toLocaleString()})`)
+  // ⚠ THE BANDS MOVED WITH σ (Elena, 08-02: 30 → 60). The floor is now σ² = 3,600, not
+  // 900, and the whole benchmark table rose with it — so a band tuned to the old table
+  // would fail on a perfectly healthy cohort. The separation also narrows: worst/best
+  // was ~42× in the design table at σ = 30 and is ~11× at σ = 60, because the floor
+  // quadrupled while the seasonality did not.
+  check(worst / best > 4,
+    `the cohort SEPARATES — worst/best MSE ratio is ${(worst / best).toFixed(0)}× (~11× expected at σ=60)`)
+  check(best < 9000, `the best robot is near the σ² = 3,600 floor (${Math.round(best).toLocaleString()})`)
   // The top end is whichever of the flat-mean, noise-chasing or guessing robots drew
   // worst on the day — they cluster up there and their order between runs is noise.
   check(worst > 15000, `the worst robot is up in the no-method band (${Math.round(worst).toLocaleString()})`)
@@ -141,8 +150,8 @@ try {
   // The single strongest coherence check in the build: the regression-fitter's realized
   // MSE against the value spec §2.3 predicts for that exact rule (902). If the draws,
   // the metrics, the grid rendering or the robot's own fit were wrong, this misses.
-  check(best > 700 && best < 2500,
-    `the fitted-regression robot lands in the §2.3 band for its rule (~902, got ${Math.round(best).toLocaleString()})`)
+  check(best > 2000 && best < 7000,
+    `the fitted-regression robot lands in the σ=60 band for its rule (~3,601, got ${Math.round(best).toLocaleString()})`)
 
   // Tier 3 is populated and correctly shaped.
   check(rep.classChart.length === 24, 'the Tier-3 class chart spans all 24 months')
@@ -176,8 +185,9 @@ try {
       await page.waitForSelector('[data-testid="fc-process-banner"]', { timeout: 30000 })
 
       const banner = (await page.locator('[data-testid="fc-process-banner"]').innerText()).trim()
-      check(/560/.test(banner) && /230/.test(banner) && /sd 30/.test(banner),
-        'the instructor banner states the true process')
+      check(/560/.test(banner) && /230/.test(banner) && /sd 60/.test(banner),
+        'the instructor banner states the true process (σ = 60 since 08-02)')
+      check(/3,600/.test(banner), '…including the floor σ² = 3,600 it now implies')
 
       // ⚠ FIVE SEPARATE TILES (Elena, 08-02) — the grid format, not one long page.
       const titles = await page.locator('h3, h2').allInnerTexts()
@@ -185,6 +195,7 @@ try {
       for (const t of [
         'Outcomes — all students',
         'Debrief paragraphs — after play',
+        'The five years students were given',
         'Forecast vs actual vs the true process, by month',
         'Class result against the benchmark rules',
         'Spread of student MSE',
@@ -193,6 +204,18 @@ try {
 
       check(!/Tier 3 — the class chart/.test(body),
         'the old un-informative "Tier 3 — the class chart" heading is gone')
+
+      // ⚠ THE NEW HISTORY TILE (Elena, 08-02). Every other chart starts at the first
+      // PLAYED month, so until this tile existed the reports could show what the class
+      // did but not the data they were looking at when they did it.
+      await page.locator('text=The five years students were given').first().click()
+      await page.waitForSelector('[data-testid="fc-demand-chart"]', { timeout: 15000 })
+      const yearRules = await page.locator('[data-testid^="fc-year-boundary-"]').count()
+      check(yearRules >= 4, `the history chart marks its year boundaries (${yearRules} rules)`)
+      check(await page.locator('[data-testid="fc-line-forecast"]').count() === 0,
+        '…and draws NO forecast line — it is the given data, not anyone\'s play')
+      await page.locator('text=Close').first().click()
+      await page.waitForTimeout(200)
 
       // Open the outcomes tile and check the column order + the removed columns.
       await page.locator('text=Outcomes — all students').first().click()

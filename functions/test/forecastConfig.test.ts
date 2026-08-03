@@ -164,7 +164,12 @@ describe('loadForecastModel — the rules-denied half', () => {
   it('unknown enum values fall back to the taught defaults', () => {
     expect(loadForecastModel({ seasonality: 'wibble' }).seasonality).toBe('additive')
     expect(loadForecastModel({ season_structure: 'wibble' }).seasonStructure).toBe('twoSeason')
-    expect(loadForecastModel({ demand_draw: 'wibble' }).demandDraw).toBe('perStudent')
+    // ⚠ 'common' is the shipped default since 08-02, so an unrecognised value falls
+    // back to THAT, not to perStudent. The loader and DEFAULT_MODEL must agree — an
+    // instance whose truth doc predates the field would otherwise run the other mode.
+    expect(loadForecastModel({ demand_draw: 'wibble' }).demandDraw).toBe('common')
+    expect(loadForecastModel({}).demandDraw).toBe('common')
+    expect(loadForecastModel({ demand_draw: 'perStudent' }).demandDraw).toBe('perStudent')
   })
 })
 

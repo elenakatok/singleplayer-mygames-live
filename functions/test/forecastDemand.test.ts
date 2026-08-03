@@ -222,14 +222,24 @@ describe('drawDemand — per student, per period (spec §2.2)', () => {
     expect(a).toBe(b)
   })
 
-  it('differs across students — the async-leak closure', () => {
-    // Spec §2.2: a week-long take-home with a COMMON future lets the first finisher
-    // hand the class 24 correct answers. Different students must face different draws.
+  it('⚠ the DEFAULT is now `common` — every student faces the same future', () => {
+    // Elena, 08-02: this REVERSES spec §2.2's default. The async leak it re-opens is
+    // known and accepted. Asserted here so a silent revert would fail rather than
+    // quietly change what every instance does.
+    expect(DEFAULT_MODEL.demandDraw).toBe('common')
     const played = Array.from({ length: 24 }, (_, i) => 61 + i)
     const a = played.map(p => drawDemand(m, '1', 'stu-a', p))
     const b = played.map(p => drawDemand(m, '1', 'stu-b', p))
+    expect(a).toEqual(b)
+  })
+
+  it('perStudent STILL differs across students — the leak closure is intact', () => {
+    // The non-default is what a graded take-home should use, so it has to keep working.
+    const per: ForecastModel = { ...DEFAULT_MODEL, demandDraw: 'perStudent' }
+    const played = Array.from({ length: 24 }, (_, i) => 61 + i)
+    const a = played.map(p => drawDemand(per, '1', 'stu-a', p))
+    const b = played.map(p => drawDemand(per, '1', 'stu-b', p))
     expect(a).not.toEqual(b)
-    // …and not merely different in one place: most months should differ.
     const same = a.filter((v, i) => v === b[i]).length
     expect(same).toBeLessThan(6)
   })
@@ -239,27 +249,30 @@ describe('drawDemand — per student, per period (spec §2.2)', () => {
     expect(new Set(xs).size).toBeGreaterThan(15)
   })
 
-  it('demandDraw: "common" gives every student the SAME future (spec §2.2, non-default)', () => {
-    const common: ForecastModel = { ...DEFAULT_MODEL, demandDraw: 'common' }
-    const played = Array.from({ length: 24 }, (_, i) => 61 + i)
-    const a = played.map(p => drawDemand(common, '1', 'stu-a', p))
-    const b = played.map(p => drawDemand(common, '1', 'stu-b', p))
-    expect(a).toEqual(b)
+  it('the shipped σ is 60, and the floor it implies is 3,600', () => {
+    // Elena, 08-02. The floor is what the debrief reveals as the limit of the
+    // predictable, and the whole benchmark table is a function of it.
+    expect(DEFAULT_MODEL.sigma).toBe(60)
+    expect(DEFAULT_MODEL.sigma ** 2).toBe(3600)
   })
 
   it('lands on the right mean and sd, and lifts the high season', () => {
     // 4,000 draws of one high-season and one low-season month, across distinct
     // students, checked against the model's own systematic component.
+    // ⚠ perStudent, because the whole point is to vary the draw ACROSS students. At the
+    // shipped `common` default every one of these 4,000 would be the same number and the
+    // sample sd would be exactly 0 — a test that measured nothing.
+    const per: ForecastModel = { ...DEFAULT_MODEL, demandDraw: 'perStudent' }
     const draw = (p: number) =>
-      Array.from({ length: 4000 }, (_, i) => drawDemand(m, 'S', `stu-${i}`, p))
+      Array.from({ length: 4000 }, (_, i) => drawDemand(per, 'S', `stu-${i}`, p))
 
     for (const p of [61, 71]) {
       const xs = draw(p)
       const mean = xs.reduce((s, v) => s + v, 0) / xs.length
       const sd = Math.sqrt(xs.reduce((s, v) => s + (v - mean) ** 2, 0) / (xs.length - 1))
       // Standard error of the mean is sigma/sqrt(4000) ≈ 0.47, so 3 units is ~6 SE.
-      expect(Math.abs(mean - systematic(m, p))).toBeLessThan(3)
-      expect(Math.abs(sd - m.sigma)).toBeLessThan(3)
+      expect(Math.abs(mean - systematic(per, p))).toBeLessThan(5)
+      expect(Math.abs(sd - per.sigma)).toBeLessThan(4)
     }
 
     const low = draw(61).reduce((s, v) => s + v, 0) / 4000
@@ -272,10 +285,11 @@ describe('drawDemand — per student, per period (spec §2.2)', () => {
     // Without the avalanche, consecutive period keys differ by one character and the
     // draws would be visibly correlated — which in a FORECASTING game would be a
     // learnable signal inside what the game promises is unpredictable.
+    const per: ForecastModel = { ...DEFAULT_MODEL, demandDraw: 'perStudent' }
     const resid: number[] = []
     for (let i = 0; i < 4000; i++) {
       for (let p = 61; p <= 84; p++) {
-        resid.push(drawDemand(m, 'C', `stu-${i}`, p) - systematic(m, p))
+        resid.push(drawDemand(per, 'C', `stu-${i}`, p) - systematic(per, p))
       }
     }
     // lag-1 autocorrelation of the residuals

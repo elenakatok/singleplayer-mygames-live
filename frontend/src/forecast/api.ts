@@ -445,6 +445,8 @@ export type ForecastReportData = {
   debriefPrompt: string
   numHistory: number
   historyLength: number
+  /** The five years students were given — the same array every one of them saw. */
+  history: ForecastHistoryPoint[]
 }
 
 export const forecastGetReport = () => callFn<ForecastReportData>('forecastGetReport')

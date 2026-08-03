@@ -7,7 +7,7 @@ import {
 import { loadInstance } from './instance'
 import { parseStoredRounds, toPoints } from './rounds'
 import { runningMetrics, yearComparison } from './metrics'
-import { clientParams } from './clientState'
+import { clientParams, clientHistory } from './clientState'
 import { periodLabelShort } from './history'
 import { debriefQuestion } from './questions'
 import {
@@ -161,5 +161,15 @@ export const forecastGetReport = onCall({ cors: FORECAST_CORS_ORIGINS }, async (
     /** How many months of history the class was shown — the chart's left edge. */
     numHistory: config.numHistory,
     historyLength: history.length,
+    /**
+     * The five-year history itself, so the reports page can chart it (Elena, 08-02).
+     *
+     * ⚠ NOT SECRET, and worth saying why it is safe to add here: this is the same
+     * array every student is shown on their opening screen, identical for all of them.
+     * The instructor had no view of it at all before — the class chart starts at the
+     * first PLAYED month — so the data students were given was the one thing the
+     * reports could not show.
+     */
+    history: clientHistory(history),
   }
 })

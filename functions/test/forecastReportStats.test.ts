@@ -236,14 +236,14 @@ describe('buildReveal (spec §9)', () => {
     expect(r.process.intercept).toBe(560)
     expect(r.process.trend).toBe(4)
     expect(r.process.highSeasonLift).toBe(230)
-    expect(r.process.floorMse).toBe(900)
+    expect(r.process.floorMse).toBe(3600)
   })
 
   it('serves the PUBLISHED §2.3 table on a default instance', () => {
     const r = buildReveal(DEFAULT_MODEL, CONFIG, PUBLISHED_HISTORY, rounds)
     expect(r.benchmarksAreRealized).toBe(false)
     expect(r.benchmarks).toHaveLength(8)
-    expect(r.benchmarks.find(b => b.id === 'reg_holiday')!.mse).toBe(902)
+    expect(r.benchmarks.find(b => b.id === 'reg_holiday')!.mse).toBe(3601)
     expect(r.lectureModelId).toBe('reg_holiday')
   })
 

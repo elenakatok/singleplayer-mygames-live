@@ -96,9 +96,22 @@ function warningsFor(
   if (!usesPublishedHistory(model, config.numHistory)) {
     out.push(
       'This instance no longer uses the published five-year history, so the benchmark '
-      + 'table from the game design (flat-mean 37,840 … regression 902) does not describe '
-      + 'it. Students will see benchmarks recomputed against their own months instead, '
-      + 'and the reports page will say so.',
+      + 'table from the game design does not describe it. Students will see benchmarks '
+      + 'recomputed against their own months instead, and the reports page will say so.',
+    )
+  }
+
+  // ⚠ σ HAS ITS OWN WARNING, separate from the history one above. The published
+  // history survives a σ edit (it is a fixed table) but the published BENCHMARKS do
+  // not — they are expectations computed AT a σ. So an instance can keep the real
+  // history and still need the realized comparison.
+  if (usesPublishedHistory(model, config.numHistory) && model.sigma !== DEFAULT_MODEL.sigma) {
+    out.push(
+      `The noise level has been changed from the shipped ${DEFAULT_MODEL.sigma} to `
+      + `${model.sigma}. The five-year history is unaffected, but every benchmark figure `
+      + 'is a function of the noise, so students will see benchmarks recomputed against '
+      + `their own months instead of the design's table. The floor becomes `
+      + `${Math.round(model.sigma * model.sigma).toLocaleString()} — no forecast can beat it.`,
     )
   }
 
@@ -111,11 +124,16 @@ function warningsFor(
     )
   }
 
-  if (model.demandDraw === 'common') {
+  // ⚠ NO WARNING FOR demandDraw: 'common' ANY MORE — it is the shipped DEFAULT as of
+  // 08-02, and a warning that fires on every unedited instance is noise that trains an
+  // instructor to skim this box. The leak it re-opens is real and is documented at the
+  // default itself (demand.ts); the warning below fires on the NON-default instead, so
+  // the box only ever speaks when something has been changed.
+  if (model.demandDraw === 'perStudent') {
     out.push(
-      'Every student will face the SAME future demand. That is fine for an in-class run, '
-      + 'but for a take-home the first student to finish can hand the class every '
-      + 'remaining month.',
+      'Each student will face a DIFFERENT future. That closes the take-home leak — no '
+      + 'student can hand the class the answers — but it also means two students\' MSEs '
+      + 'are not strictly comparable, and the class chart averages unrelated series.',
     )
   }
 

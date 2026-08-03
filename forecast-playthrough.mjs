@@ -162,7 +162,10 @@ const SPEC_HISTORY = [
 ]
 
 /** The shipped model (spec §2 defaults). Used to predict distributions, never draws. */
-const MODEL = { a: 560, b: 4, H: 230, sigma: 30, high: [11, 12] }
+// ⚠ σ = 60 and demandDraw defaults to `common` (Elena, 08-02). The harness still SETS
+// both explicitly per instance — never inheriting a default is the standing rule — but
+// these mirror the shipped values so the §3 checks below describe the real game.
+const MODEL = { a: 560, b: 4, H: 230, sigma: 60, high: [11, 12] }
 const modelSystematic = (p) => MODEL.a + MODEL.b * p + (MODEL.high.includes(monthOf(p)) ? MODEL.H : 0)
 
 // ── Seeding ────────────────────────────────────────────────────────────────────
@@ -501,10 +504,15 @@ async function main() {
     ]
     check(JSON.stringify(paramKeys) === JSON.stringify(expectedParamKeys),
       `params carries EXACTLY the whitelisted keys — a model parameter under any name fails here (got ${paramKeys.join(',')})`)
-    const paramValues = Object.values(s.result.params).filter(v => typeof v === 'number')
-    check(!paramValues.includes(MODEL.H) && !paramValues.includes(MODEL.sigma)
-      && !paramValues.includes(MODEL.a),
-      'no model parameter value appears among the params scalars')
+    // ⚠ THE VALUE SCAN IS GONE, DELIBERATELY, AND THIS IS THE SECOND TIME IT EARNED
+    // ITS REMOVAL. Checking whether any params value EQUALS a model parameter is
+    // unsound, because model parameters and legitimate config share a number line:
+    //   • σ² = 900 collided with a squared error of 900 (an error of ±30);
+    //   • σ = 60 collides with numHistory = 60 — the five-year history, in months.
+    // Both were correct payloads flagged as leaks. The EXACT KEY-SET PIN above is the
+    // real control and is strictly stronger: a model parameter arriving under ANY name,
+    // with ANY value, is a new key and fails there. A value scan can only ever add
+    // false positives on top of it.
 
     // (c) THE FUTURES. The student has played ONE month; months 62…84 must be absent.
     const played = r1.result.history.map(h => h.period)
@@ -640,7 +648,7 @@ async function main() {
       drawsB.push(rb.result.round.actual)
     }
     check(JSON.stringify(drawsA) !== JSON.stringify(drawsB),
-      'their realized futures DIFFER — the async leak is closed')
+      'with demandDraw=perStudent their futures DIFFER — the leak closure still works')
     const same = drawsA.filter((v, i) => v === drawsB[i]).length
     check(same <= 3, `…and differ in most months (${12 - same} of 12 differ)`)
 
@@ -652,6 +660,33 @@ async function main() {
     const mean = resid.reduce((a, x) => a + x, 0) / resid.length
     check(Math.abs(mean) < 3 * MODEL.sigma,
       `realizations track the systematic component (mean residual ${mean.toFixed(1)})`)
+
+    // ⚠ AND THE SHIPPED DEFAULT IS THE OTHER WAY (Elena, 08-02). An instance that sets
+    // no demand_draw at all must give every student the SAME future — the leak spec
+    // §2.2 closed is deliberately re-opened, and a silent revert would show up here.
+    const gidDefault = `fc-default-draw-${stamp}`
+    await putDoc(`forecast_game_instances/${gidDefault}/config/main`, {
+      num_history: intVal(60), rounds: intVal(4),
+      forecast_min: intVal(0), forecast_max: intVal(3000),
+      kc_enabled: boolVal(false), debrief_enabled: boolVal(false),
+    })
+    // truth doc WITHOUT demand_draw — the field is simply absent.
+    await putDoc(`forecast_game_instances/${gidDefault}/truth/main`, {
+      intercept: intVal(MODEL.a), trend: intVal(MODEL.b),
+      high_season_lift: intVal(MODEL.H),
+      high_season_months: arrVal(MODEL.high.map(intVal)),
+      sigma: intVal(MODEL.sigma), seed: strVal('default-draw-seed'),
+    })
+    const dA = [], dB = []
+    for (const who of ['def-a', 'def-b']) {
+      await callFn('forecastBootstrap', asStudent(gidDefault, who))
+      for (let round = 1; round <= 4; round++) {
+        const r = await callFn('forecastSubmitRound', asStudent(gidDefault, who, { round, forecast: 800 }))
+        ;(who === 'def-a' ? dA : dB).push(r.result.round.actual)
+      }
+    }
+    check(JSON.stringify(dA) === JSON.stringify(dB),
+      `⚠ the DEFAULT draw is COMMON — both students got ${dA.join('/')}`)
   }
 
   // ───────────────────────────────────────────────────────────────────────────
