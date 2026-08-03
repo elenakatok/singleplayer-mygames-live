@@ -79,6 +79,7 @@ export default function Settings() {
         highSeasonMonths: r.model.highSeasonMonths.join(','),
         monthOffsets: r.model.monthOffsets.join(','),
         seed: r.seed ?? '',
+        demandDraw: r.model.demandDraw,
       })
       setError(null)
     } catch (err) {
@@ -210,6 +211,16 @@ export default function Settings() {
           demand = {data.model.a} + {data.model.b} × month + {data.model.H} in{' '}
           {data.model.highSeasonMonths.map(m => MONTHS[m - 1]).join(' and ')} + noise (sd {data.model.sigma})
         </p>
+        <p data-testid="fc-model-draw-summary" style={{ margin: '0 0 0.9rem', fontSize: '0.8rem', color: colors.textSecondary }}>
+          Currently: <strong>
+            {data.model.demandDraw === 'common'
+              ? 'every student faces the same months'
+              : 'each student faces their own months'}
+          </strong>
+          {data.model.demandDraw === 'common' && (data.seed
+            ? ' (reproducible — this instance uses a seed)'
+            : ' (unique to this instance)')}.
+        </p>
         {numField('a', 'Intercept (a)', 'The low-season level at month 0.')}
         {numField('b', 'Trend per month (b)')}
         {numField('H', 'High-season lift (H)')}
@@ -225,6 +236,30 @@ export default function Settings() {
             Comma-separated month numbers. 11,12 is November and December.
           </div>
         </div>
+        {/* ⚠ THE DRAW MODE WAS MISSING FROM THIS PAGE UNTIL 08-02, and its absence is
+            why a bug in it took three rounds to find: it is the setting that decides
+            whether students share a series, and there was no way to see or change it. */}
+        <div style={row}>
+          <label style={label} htmlFor="fc-set-demandDraw">Demand each student faces</label>
+          <select
+            id="fc-set-demandDraw" data-testid="fc-set-demandDraw"
+            value={draft.demandDraw ?? 'common'}
+            onChange={e => set('demandDraw', e.target.value)}
+            style={{ ...input, width: '22rem' }}
+          >
+            <option value="common">Everyone gets the SAME months</option>
+            <option value="perStudent">Each student gets their OWN months</option>
+          </select>
+          <div style={{ fontSize: '0.73rem', color: colors.textSecondary, marginTop: '0.15rem' }}>
+            {draft.demandDraw === 'perStudent'
+              ? 'No student can hand the class the answers — but two students\' MSEs are '
+                + 'not strictly comparable, and the class chart averages unrelated series.'
+              : 'Every student is scored on identical data, so their MSEs are directly '
+                + 'comparable. A student who finishes early can hand the class the answers; '
+                + 'the outcomes report flags anyone whose error is below what the noise allows.'}
+          </div>
+        </div>
+
         <div style={row}>
           <label style={label} htmlFor="fc-set-seed">Determinism seed</label>
           <input
@@ -233,8 +268,18 @@ export default function Settings() {
             style={{ ...input, width: '12rem' }}
           />
           <div style={{ fontSize: '0.73rem', color: colors.textSecondary, marginTop: '0.15rem' }}>
-            Blank means real randomness for the futures. The five-year history is fixed
-            either way.
+            {/* ⚠ THE SEED DOES NOT CONTROL WHETHER STUDENTS SHARE A SERIES — the
+                setting above does. The seed only controls REPRODUCIBILITY, and the two
+                are easy to conflate. */}
+            <strong>Leave this blank unless you want to repeat a specific set of months.</strong>
+            {' '}It does not decide whether students share demand — the setting above does.
+            {draft.demandDraw === 'perStudent'
+              ? ' Blank means real randomness; a value makes each student\'s own months reproducible.'
+              : ' Blank still gives everyone the same months, unique to this instance. '
+                + 'Setting a value makes those months reproducible — so ANOTHER instance with '
+                + 'the same seed would get the identical series, which is how last term\'s '
+                + 'class could hand this term the answers.'}
+            {' '}The five-year history is fixed either way.
           </div>
         </div>
         <button
@@ -247,6 +292,7 @@ export default function Settings() {
             sigma: num('sigma'),
             highSeasonMonths: (draft.highSeasonMonths ?? '')
               .split(',').map(s => Number(s.trim())).filter(n => Number.isInteger(n)),
+            demandDraw: draft.demandDraw ?? 'common',
             seed: draft.seed ?? '',
           })}
           style={{
