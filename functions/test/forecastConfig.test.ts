@@ -5,7 +5,8 @@ import {
   HARD_MIN_ROUNDS, HARD_MAX_ROUNDS, HARD_MIN_HISTORY, HARD_MAX_HISTORY,
   parseAddedKcQuestion,
 } from '../src/forecast/config'
-import { DEFAULT_MODEL } from '../src/forecast/demand'
+import { DEFAULT_MODEL, type ForecastModel } from '../src/forecast/demand'
+import { warningsFor } from '../src/forecast/instructorConfig'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Forecasting — the config/truth split (spec §4, §12), and the two loaders' shared
@@ -212,5 +213,54 @@ describe('⚠ the split itself (spec §4, §12)', () => {
     expect(c.a).toBeUndefined()
     expect(c.sigma).toBeUndefined()
     expect(c.seed).toBeUndefined()
+  })
+})
+
+describe('⚠ Settings warnings — the redraw and the stale CSV (Elena, 08-02)', () => {
+  const CONFIG = loadForecastConfig(undefined)
+  const M = (o: Partial<ForecastModel>): ForecastModel => ({ ...DEFAULT_MODEL, ...o })
+  const joined = (model: ForecastModel, config = CONFIG) =>
+    warningsFor(config, model, '7', false).join(' ⏐ ')
+
+  it('says nothing about a redraw at the shipped model', () => {
+    expect(joined(DEFAULT_MODEL)).not.toMatch(/REDRAWN/)
+  })
+
+  it('⚠ warns that the history is REDRAWN whenever a generator input moves', () => {
+    // One per input — the sentence must not be reachable only through σ.
+    for (const edit of [{ a: 500 }, { b: 6 }, { H: 300 }, { sigma: 90 },
+      { highSeasonMonths: [6, 7] }] as Partial<ForecastModel>[]) {
+      expect(joined(M(edit))).toMatch(/THE FIVE-YEAR HISTORY HAS BEEN REDRAWN/)
+    }
+  })
+
+  it('⚠ names the stale CSV, and names it BEFORE the benchmark note', () => {
+    // Elena's ordering, and it is the right one: the CSV is where the regression is
+    // actually run, so a student holding a pre-edit copy is fitting replaced data.
+    const list = warningsFor(CONFIG, M({ sigma: 90 }), '7', false)
+    const staleAt = list.findIndex(w => /stale/.test(w))
+    const benchAt = list.findIndex(w => /benchmark table/.test(w))
+    expect(staleAt).toBeGreaterThanOrEqual(0)
+    expect(list[staleAt]).toMatch(/download the history CSV afresh/)
+    expect(staleAt).toBeLessThan(benchAt)
+  })
+
+  it('the σ edit no longer claims the history is unaffected', () => {
+    // ⚠ THIS SENTENCE WAS DEAD CODE AND WRONG. It sat behind
+    // `usesPublishedHistory(...) && sigma !== DEFAULT`, which cannot both hold now that
+    // σ is part of the predicate — and it told the instructor the history survives a σ
+    // edit, which is exactly the belief this change exists to correct.
+    expect(joined(M({ sigma: 90 }))).not.toMatch(/history is unaffected/)
+  })
+
+  it('⚠ warns when the model has no season worth showing, without refusing it', () => {
+    // σ = 400 against H = 230: the search cannot find a visible season because there
+    // isn't one. Inform, don't block.
+    const w = joined(M({ sigma: 400 }))
+    expect(w).toMatch(/hard to SEE in the redrawn history/)
+  })
+
+  it('stays quiet about visibility when the redraw does show the season', () => {
+    expect(joined(M({ sigma: 90 }))).not.toMatch(/hard to SEE/)
   })
 })

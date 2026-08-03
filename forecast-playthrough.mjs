@@ -741,6 +741,60 @@ async function main() {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
+  section('[3c] ⚠ A GENERATOR-INPUT EDIT REDRAWS THE HISTORY STUDENTS ACTUALLY SEE')
+  // ───────────────────────────────────────────────────────────────────────────
+  // a, b, H, σ and the high season are INPUTS to the sixty months, not estimates of
+  // them (Elena, 08-02). The unit tests pin that in the pure function; this pins that it
+  // crosses the wire — an instance at a different σ must serve DIFFERENT months, still
+  // identical across its own students, and still with a season a student can see.
+  {
+    const gid = `fc-redraw-${stamp}`
+    await putDoc(`forecast_game_instances/${gid}/config/main`, {
+      num_history: intVal(60), rounds: intVal(2),
+      forecast_min: intVal(0), forecast_max: intVal(3000),
+      kc_enabled: boolVal(false), debrief_enabled: boolVal(false),
+    })
+    // Everything shipped EXCEPT σ.
+    await putDoc(`forecast_game_instances/${gid}/truth/main`, {
+      intercept: intVal(MODEL.a), trend: intVal(MODEL.b),
+      high_season_lift: intVal(MODEL.H),
+      high_season_months: arrVal(MODEL.high.map(intVal)),
+      sigma: intVal(90), seed: strVal('redraw-seed'),
+    })
+    for (const who of ['rd-a', 'rd-b']) await callFn('forecastBootstrap', asStudent(gid, who))
+    const ha = (await callFn('forecastGetState', asStudent(gid, 'rd-a'))).result.history
+    const hb = (await callFn('forecastGetState', asStudent(gid, 'rd-b'))).result.history
+
+    check(ha.length === 60, 'the redrawn history is still sixty months')
+    check(JSON.stringify(ha) !== JSON.stringify(SPEC_HISTORY.map((d, i) => ({ period: i + 1, demand: d }))),
+      '⚠ it is NOT the published table — σ moved, so the history moved')
+    check(JSON.stringify(ha.map(h => h.demand)) !== JSON.stringify(SPEC_HISTORY),
+      '⚠ …checked on the demands themselves, not just the wrapper shape')
+    check(JSON.stringify(ha) === JSON.stringify(hb),
+      'and it is still BYTE-IDENTICAL across two students')
+
+    // THE SCREEN REACHED THE STUDENT. A redraw that hid the season would leave the
+    // exercise with nothing to find, which is the failure this search exists to prevent.
+    const demands = ha.map(h => h.demand)
+    let worst = Infinity
+    for (let y = 0; y < 5; y++) {
+      const year = demands.slice(y * 12, y * 12 + 12)
+      const high = Math.min(year[10], year[11])
+      const ordinary = Math.max(...year.slice(0, 10))
+      worst = Math.min(worst, high - ordinary)
+    }
+    check(worst >= 90,
+      `⚠ the high season still reads as a rule in every year (worst margin ${worst} ≥ σ = 90)`)
+
+    // …and the residual scatter is the NEW σ, not the old one.
+    const sd = (() => {
+      const r = demands.map((d, i) => d - (MODEL.a + MODEL.b * (i + 1) + ([11, 12].includes(((i) % 12) + 1) ? MODEL.H : 0)))
+      const m = r.reduce((a, x) => a + x, 0) / r.length
+      return Math.sqrt(r.reduce((a, x) => a + (x - m) ** 2, 0) / (r.length - 1))
+    })()
+    check(sd > 60 && sd < 130, `the history's own scatter is the instance's σ (sd ${sd.toFixed(1)} against 90)`)
+  }
+
   section('[4] Submit-and-lock: a resubmit re-draws NOTHING')
   // ───────────────────────────────────────────────────────────────────────────
   {

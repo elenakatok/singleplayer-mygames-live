@@ -334,8 +334,10 @@ export function loadForecastModel(truthData: Record<string, unknown> | undefined
 /**
  * The determinism seed, from the same rules-denied truth doc.
  *
- * Blank/absent = real randomness for the FUTURES (the history is fixed regardless —
- * see resolveHistory). Set = every draw is a pure function of
+ * Blank/absent = real randomness for the FUTURES. The history stays fixed regardless —
+ * but "fixed" here means fixed WITH RESPECT TO THE SEED, not fixed absolutely: the sixty
+ * months are generated from a, b, H, σ and the high season, so they move when those do
+ * (see resolveHistory). Set = every draw is a pure function of
  * (seed, participant_id, period), so a harness run is reproducible while draws stay
  * independent across students. A number seed is normalized to its string form, so
  * seed: 7 and seed: "7" produce the SAME draws.

@@ -279,7 +279,12 @@ export default function Settings() {
                 + 'Setting a value makes those months reproducible — so ANOTHER instance with '
                 + 'the same seed would get the identical series, which is how last term\'s '
                 + 'class could hand this term the answers.'}
-            {' '}The five-year history is fixed either way.
+            {/* ⚠ THIS USED TO SAY "the five-year history is fixed either way", which was
+                true of the SEED and false of everything else — and read as a blanket
+                promise that the history never moves. It moves whenever a, b, H, σ or the
+                high season moves, because it is generated FROM them. */}
+            {' '}The five-year history does not depend on the seed — but it is drawn from
+            the demand model above, so editing any of those parameters redraws it.
           </div>
         </div>
         <button

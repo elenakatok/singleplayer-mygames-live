@@ -8,7 +8,8 @@ import {
   type ForecastConfig, type ForecastAddedKcQuestion,
 } from './config'
 import {
-  DEFAULT_MODEL, systematic, usesPublishedHistory, type ForecastModel,
+  DEFAULT_MODEL, systematic, usesPublishedHistory, resolveHistory, seasonMargin,
+  HISTORY_SEARCH_CAP, type ForecastModel,
 } from './demand'
 import { resolveForecastKcQuestions, AUTHORED_KC_COUNT } from './questions'
 
@@ -47,10 +48,15 @@ const has = (d: Record<string, unknown>, k: string) => Object.prototype.hasOwnPr
  * ⚠ EVERY ONE IS ADVICE, NOT A REFUSAL. They exist because each of these edits is
  * legitimate but has a consequence an instructor would not otherwise see until the
  * reports looked wrong.
+ *
+ * Exported for the unit tests only — this is the sole place these sentences exist, and
+ * the redraw/stale-CSV one is a claim about student-visible consequences that ought to be
+ * pinned rather than eyeballed on the page.
  */
-function warningsFor(
+export function warningsFor(
   config: ForecastConfig,
   model: ForecastModel,
+  seed: string | null,
   anyRoundsPlayed: boolean,
 ): string[] {
   const out: string[] = []
@@ -92,27 +98,48 @@ function warningsFor(
     )
   }
 
-  // ── The published history and the §2.3 benchmark table ──────────────────────
+  // ── The five-year history is REDRAWN, and downloaded CSVs go stale ──────────
+  //
+  // ⚠⚠ THE HISTORY IS A FUNCTION OF a, b, H, σ AND THE HIGH SEASON (Elena, 08-02). They
+  // are generator INPUTS, not estimates, so editing one does not merely make the shipped
+  // table "no longer the recommended one" — it makes it not this instance's history at
+  // all, and the sixty months are redrawn at the new parameters.
+  //
+  // ⚠ THE STALE CSV IS THE HEADLINE, ahead of the benchmark note. The CSV is where the
+  // regression actually gets run: a student who downloaded before the edit is fitting a
+  // model to data the game has since replaced, and will get coefficients that disagree
+  // with everyone else's for a reason no one in the room can see. Nothing prompts a
+  // re-download, so this is the one consequence that needs saying out loud.
   if (!usesPublishedHistory(model, config.numHistory)) {
     out.push(
-      'This instance no longer uses the published five-year history, so the benchmark '
-      + 'table from the game design does not describe it. Students will see benchmarks '
-      + 'recomputed against their own months instead, and the reports page will say so.',
+      'THE FIVE-YEAR HISTORY HAS BEEN REDRAWN at these parameters — it is generated from '
+      + 'them, so it moves when they do. Any CSV a student has already downloaded is now '
+      + 'stale, and nothing tells them to fetch it again: ask anyone who has started to '
+      + 'download the history CSV afresh.',
     )
-  }
-
-  // ⚠ σ HAS ITS OWN WARNING, separate from the history one above. The published
-  // history survives a σ edit (it is a fixed table) but the published BENCHMARKS do
-  // not — they are expectations computed AT a σ. So an instance can keep the real
-  // history and still need the realized comparison.
-  if (usesPublishedHistory(model, config.numHistory) && model.sigma !== DEFAULT_MODEL.sigma) {
     out.push(
-      `The noise level has been changed from the shipped ${DEFAULT_MODEL.sigma} to `
-      + `${model.sigma}. The five-year history is unaffected, but every benchmark figure `
-      + 'is a function of the noise, so students will see benchmarks recomputed against '
-      + `their own months instead of the design's table. The floor becomes `
+      'The benchmark table from the game design no longer describes this instance either '
+      + '— those figures were computed against the published history at the shipped noise '
+      + 'level. Students will see benchmarks recomputed against their own months instead, '
+      + `and the reports page will say so. The floor becomes `
       + `${Math.round(model.sigma * model.sigma).toLocaleString()} — no forecast can beat it.`,
     )
+
+    // ⚠ THE REDRAW IS SCREENED, BUT SOME MODELS CANNOT PASS. The generator searches for a
+    // history in which the high season beats every ordinary month of its own year by at
+    // least one σ, because a season the student cannot SEE leaves them nothing to model.
+    // At H = 230 against σ = 300 no such series exists — the model does not have a visible
+    // season to draw. Say so rather than shipping the best of a bad set in silence.
+    const margin = seasonMargin(resolveHistory(model, seed, config.numHistory), model)
+    if (margin !== null && margin < model.sigma) {
+      out.push(
+        `The high season is hard to SEE in the redrawn history: in its worst year the `
+        + `seasonal months clear the ordinary ones by only ${Math.round(margin)} units `
+        + `against noise of ${model.sigma}. The best of ${HISTORY_SEARCH_CAP} candidate `
+        + 'draws was used, so this is the model, not the draw — the lift is small relative to the noise. Students '
+        + 'are being asked to spot a pattern the chart barely shows.',
+      )
+    }
   }
 
   // ── Editing mid-flight (spec §3, the pricing precedent) ─────────────────────
@@ -193,7 +220,7 @@ async function readConfigView(db: admin.firestore.Firestore, gameInstanceId: str
      *  published benchmark table applies (reports and debrief both branch on it). */
     usesPublishedHistory: usesPublishedHistory(model, config.numHistory),
     /** Advisory only — spec §3's warn-never-block posture. */
-    warnings: warningsFor(config, model, anyRoundsPlayed),
+    warnings: warningsFor(config, model, loadForecastSeed(truthSnap.data()), anyRoundsPlayed),
     /**
      * Read-only preview of the AUTHORED knowledge check, with the answer key
      * (instructor-side). Not editable: the stems carry their own numbers on purpose, so

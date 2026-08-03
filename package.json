@@ -2,7 +2,7 @@
   "name": "singleplayer-harness",
   "private": true,
   "version": "1.0.0",
-  "description": "Emulator harnesses for the single-player game family. NOT a build unit: functions/ and frontend/ each have their own package.json and are what get deployed. This root package exists solely to hold the browser driver the .mjs harnesses use.",
+  "description": "Emulator harnesses for the single-player game family. NOT a build unit: functions/ and frontend/ each have their own package.json and are what get deployed. This root package exists solely to hold the browser driver the .mjs harnesses use. \u26a0 THE FORECAST HARNESSES BUILD functions/ FIRST. emulators:exec serves functions/lib, so without it a harness silently runs the PREVIOUS compile and reports a green suite for code that was never executed \u2014 which happened, 08-03. The other games' scripts predate this and still assume the caller built.",
   "type": "module",
   "scripts": {
     "harness:pd": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pd-playthrough.mjs\"",
@@ -10,13 +10,13 @@
     "harness:poll": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node poll-playthrough.mjs\"",
     "harness:pricing": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pricing-playthrough.mjs\"",
     "harness:newsvendor": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node newsvendor-playthrough.mjs\"",
-    "harness:forecast": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node forecast-playthrough.mjs\"",
-    "harness:forecast:browser": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node forecast-playwright.mjs\"",
+    "harness:forecast": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node forecast-playthrough.mjs\"",
+    "harness:forecast:browser": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node forecast-playwright.mjs\"",
     "harness:newsvendor:browser": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node newsvendor-playwright.mjs\"",
     "harness:pd:browser": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pd-playwright.mjs\"",
     "harness:pricing:browser": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pricing-playwright.mjs\"",
     "repro:pd:student-session": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node pd-student-session-repro.mjs\"",
-    "robots:forecast:dryrun": "firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node forecast-robot-dryrun.mjs\""
+    "robots:forecast:dryrun": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node forecast-robot-dryrun.mjs\""
   },
   "devDependencies": {
     "playwright": "^1.49.0"

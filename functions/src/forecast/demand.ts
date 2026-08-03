@@ -92,9 +92,9 @@ export const DEFAULT_H = 230
  *     were re-simulated at 60 and replaced (benchmarks.ts). Leaving the old numbers in
  *     place would have printed a confident, wrong comparison on the debrief screen.
  *
- * ⚠ THE PUBLISHED HISTORY WAS DRAWN AT σ = 30 AND IS UNCHANGED. It is a fixed table
- * (history.ts), so raising σ affects only the months the student PLAYS. See
- * `usesPublishedHistory` for why that is deliberate rather than an oversight.
+ *   • THE PUBLISHED HISTORY MOVES WITH IT. σ is a GENERATOR INPUT, not an estimate —
+ *     the sixty months are a function of it — so the table was redrawn at 60
+ *     (history.ts). It is not a fixed artifact that survives a σ edit.
  */
 export const DEFAULT_SIGMA = 60
 
@@ -284,16 +284,23 @@ export function resolveDrawSeed(
  * Whether this instance may serve the PUBLISHED history (spec §2.1) rather than a
  * generated one.
  *
- * ⚠ THE PUBLISHED TABLE IS ONLY VALID AT THE SHIPPED MODEL. It was drawn from
- * a = 560, b = 4, H = 230, σ = 30 with a Nov/Dec high season, and the Tier-3 chart
- * draws `systematic()` over it as the true process. If an instructor edits any of
- * those, the published numbers would no longer BE that instance's history and the
- * reference line would sit somewhere the data never was — so the history is
- * regenerated from the edited model instead. Settings warns before this happens
- * (spec §3: warn, never block).
+ * ⚠⚠ a, b, H, σ, the high season and the seasonal STRUCTURE ARE GENERATOR INPUTS, NOT
+ * ESTIMATES (Elena, 08-02). The sixty months are a *function* of them. So the rule this
+ * predicate encodes is not "the instructor has wandered off the shipped defaults, serve
+ * something else" — it is that the published table is simply not this instance's history
+ * once any input to it has moved, and a redraw at the new parameters is the only series
+ * that IS. Every input therefore appears below; anything absent must be provably unable
+ * to change the first `numHistory` months:
  *
- * `demandDraw`, `seed` and the play-side settings are deliberately NOT part of this
- * check: none of them changes what the first sixty months are.
+ *   • `monthOffsets` — read by `systematic()` only under `perMonth`, which this predicate
+ *     already excludes, so under twoSeason it cannot reach the draw.
+ *   • `demandDraw` and `seed` — statements about the FUTURES. `resolveHistory` takes no
+ *     participant id at all, and the seed only selects among series the same model
+ *     generates, so neither changes what the first sixty months ARE.
+ *
+ * The Tier-3 chart draws `systematic()` over the history as the true process, so serving
+ * a stale table would put the reference line somewhere the data never was. Settings warns
+ * before any of this happens (spec §3: warn, never block).
  */
 export function usesPublishedHistory(model: ForecastModel, numHistory: number): boolean {
   // ⚠ σ IS CHECKED AGAIN (Elena, 08-02, second pass). It was briefly excluded, while
@@ -313,6 +320,134 @@ export function usesPublishedHistory(model: ForecastModel, numHistory: number): 
     && DEFAULT_HIGH_SEASON_MONTHS.every(m => model.highSeasonMonths.includes(m))
 }
 
+// ── The structural screen a redrawn history must pass ──────────────────────────
+//
+// ⚠⚠ A REDRAW IS NOT JUST "RUN THE GENERATOR ONCE". The published table was not the
+// first draw at σ = 60 — it was chosen out of a search, because at that noise level only
+// about one seed in six produces five years in which the high season is visibly a season,
+// and the best-FITTING candidate had a worst-year margin of 17 units on an 860 level:
+// arithmetically a peak, visually a wobble. A student who cannot SEE the season has
+// nothing to model, so the exercise fails at the first screen.
+//
+// An instructor who edits σ or H therefore needs the same treatment the shipped table
+// got. Handing them one unscreened draw would silently give their class the 17-unit
+// version of the game.
+
+/**
+ * The calendar months this model ELEVATES — the ones the student is meant to notice.
+ *
+ * Derived from the model rather than read off `highSeasonMonths`, because under
+ * `perMonth` the high season is whatever the offsets say it is, and because a
+ * non-positive `H` means there is no season to see however the months are listed.
+ */
+export function elevatedMonths(model: ForecastModel): number[] {
+  if (model.seasonStructure === 'perMonth') {
+    const offsets = model.monthOffsets
+    if (offsets.length !== 12) return []
+    const max = Math.max(...offsets)
+    // A flat offset vector is a model with no season at all, not a season of twelve.
+    if (max <= Math.min(...offsets)) return []
+    return offsets.map((v, i) => (v === max ? i + 1 : 0)).filter(m => m > 0)
+  }
+  if (model.H <= 0) return []
+  return model.highSeasonMonths.filter(m => m >= 1 && m <= 12)
+}
+
+/**
+ * How clearly the season reads in a drawn history: the WORST YEAR's gap between the
+ * lowest elevated month and the highest ordinary month. Positive means the season wins
+ * outright in every year; larger means it wins obviously.
+ *
+ * `null` when the question is vacuous — no elevated months, every month elevated, or no
+ * complete year to judge. A model with no season cannot fail a screen about its season,
+ * and a redraw for such a model must not loop looking for one.
+ */
+export function seasonMargin(history: readonly number[], model: ForecastModel): number | null {
+  const high = new Set(elevatedMonths(model))
+  if (high.size === 0 || high.size >= 12) return null
+
+  let worst = Infinity
+  for (let start = 0; start + 12 <= history.length; start += 12) {
+    let lowestHigh = Infinity
+    let highestOrdinary = -Infinity
+    for (let i = 0; i < 12; i++) {
+      const value = history[start + i]
+      if (high.has(monthOf(start + i + 1))) lowestHigh = Math.min(lowestHigh, value)
+      else highestOrdinary = Math.max(highestOrdinary, value)
+    }
+    // A year with no elevated month, or none without one, cannot be judged — skip it
+    // rather than let an Infinity poison the worst-case.
+    if (lowestHigh === Infinity || highestOrdinary === -Infinity) continue
+    worst = Math.min(worst, lowestHigh - highestOrdinary)
+  }
+  return worst === Infinity ? null : worst
+}
+
+/** How many candidate draws a redraw will look at before settling for its best. */
+export const HISTORY_SEARCH_CAP = 400
+
+/** One unscreened draw of `numHistory` months at a given seed. The generator itself. */
+export function generateHistoryAt(
+  model: ForecastModel,
+  seed: string,
+  numHistory: number,
+): number[] {
+  const out: number[] = []
+  for (let p = 1; p <= numHistory; p++) {
+    out.push(realize(systematic(model, p), gaussian(seed, `history:${p}`) * model.sigma))
+  }
+  return out
+}
+
+/**
+ * The acceptance bar, in demand units: one σ of clear air in the worst year.
+ *
+ * Scale-free on purpose — "the season beats the noise" is the property, and stating it in
+ * units of the noise means it keeps meaning that at any σ. The shipped table clears it
+ * about twice over (133 against 60).
+ */
+const marginBar = (model: ForecastModel) => model.sigma
+
+/**
+ * THE CAPPED REJECTION SEARCH. Deterministic in (model, base seed, numHistory): walks a
+ * fixed ladder of candidate seeds, stops at the first draw whose season clears the bar,
+ * and if the cap runs out returns the BEST it saw rather than the last.
+ *
+ * ⚠ IT NEVER THROWS AND NEVER LOOPS FOREVER. An instructor can ask for σ = 400 against
+ * H = 230, where no draw will ever show a clean season because the model does not have
+ * one to show. That is a legitimate configuration; the honest response is the best
+ * available series plus a Settings warning, not a refusal or a hang.
+ */
+function searchHistory(model: ForecastModel, baseSeed: string, numHistory: number): number[] {
+  const first = generateHistoryAt(model, `${baseSeed}:h0`, numHistory)
+  let bestMargin = seasonMargin(first, model)
+  // Vacuous: this model has no season, so there is nothing to screen for.
+  if (bestMargin === null) return first
+
+  const bar = marginBar(model)
+  if (bestMargin >= bar) return first
+
+  let best = first
+  for (let k = 1; k < HISTORY_SEARCH_CAP; k++) {
+    const candidate = generateHistoryAt(model, `${baseSeed}:h${k}`, numHistory)
+    const margin = seasonMargin(candidate, model) ?? -Infinity
+    if (margin >= bar) return candidate
+    if (margin > bestMargin) {
+      best = candidate
+      bestMargin = margin
+    }
+  }
+  return best
+}
+
+// The search is pure, so its result is memoizable, and memoizing matters: `resolveHistory`
+// runs on every getState, and a full cap sweep is four hundred sixty-month draws. Warm
+// function instances make this free after the first request. Keyed on exactly the inputs
+// the draw depends on — bounded, and evicted oldest-first so a long-lived instance that
+// has seen many edits cannot grow it without limit.
+const HISTORY_CACHE_MAX = 64
+const historyCache = new Map<string, number[]>()
+
 /**
  * The history every student in this instance sees, p = 1…numHistory (spec §2.2).
  *
@@ -320,11 +455,11 @@ export function usesPublishedHistory(model: ForecastModel, numHistory: number): 
  * every student" structural rather than a coincidence the harness has to police — and
  * the harness polices it anyway (spec §12).
  *
- * The generated branch is keyed on `history:<p>` with the instance seed, so it is
- * stable across calls and across students. A null seed still generates a FIXED
- * history — it falls back to DEFAULT_SEED — because "blank = random futures"
- * (spec §2) is a statement about the futures only; a history that changed between two
- * students, or between two page loads, would not be a history.
+ * A null seed still produces a FIXED history — it falls back to PUBLISHED_HISTORY_SEED —
+ * because "blank = random futures" (spec §2) is a statement about the futures only; a
+ * history that changed between two students, or between two page loads, would not be a
+ * history. That fallback is the published table's own seed, so an edited instance lands
+ * in the same family rather than somewhere unrelated.
  */
 export function resolveHistory(
   model: ForecastModel,
@@ -333,13 +468,21 @@ export function resolveHistory(
 ): number[] {
   if (usesPublishedHistory(model, numHistory)) return [...PUBLISHED_HISTORY]
 
-  // ⚠ PUBLISHED_HISTORY_SEED, not DEFAULT_SEED: the published table IS this generator's
-  // output at that seed, so an edited instance falling back here produces a series in
-  // the same family rather than an unrelated one.
-  const historySeed = seed ?? PUBLISHED_HISTORY_SEED
-  const out: number[] = []
-  for (let p = 1; p <= numHistory; p++) {
-    out.push(realize(systematic(model, p), gaussian(historySeed, `history:${p}`) * model.sigma))
+  const baseSeed = seed ?? PUBLISHED_HISTORY_SEED
+  const key = JSON.stringify([
+    baseSeed, numHistory, model.a, model.b, model.H, model.sigma,
+    [...model.highSeasonMonths].sort((x, y) => x - y),
+    model.seasonality, model.seasonStructure, model.monthOffsets,
+  ])
+
+  const hit = historyCache.get(key)
+  if (hit) return [...hit]
+
+  const drawn = searchHistory(model, baseSeed, numHistory)
+  if (historyCache.size >= HISTORY_CACHE_MAX) {
+    const oldest = historyCache.keys().next().value
+    if (oldest !== undefined) historyCache.delete(oldest)
   }
-  return out
+  historyCache.set(key, drawn)
+  return [...drawn]
 }

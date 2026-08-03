@@ -5,7 +5,8 @@ import {
 } from '../src/forecast/history'
 import {
   DEFAULT_MODEL, DEFAULT_SEED, systematic, isHighSeason, drawDemand,
-  resolveHistory, resolveDrawSeed, usesPublishedHistory, hash32, type ForecastModel,
+  resolveHistory, resolveDrawSeed, usesPublishedHistory, hash32,
+  seasonMargin, elevatedMonths, generateHistoryAt, type ForecastModel,
 } from '../src/forecast/demand'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -408,5 +409,130 @@ describe('⚠ resolveDrawSeed — the null-seed bug that shipped (production, 08
     const r2 = drawDemand(m, null, 'stu-a', 61)
     const r3 = drawDemand(m, null, 'stu-a', 61)
     expect(new Set([r1, r2, r3]).size).toBeGreaterThan(1)
+  })
+})
+
+describe('⚠ the history is a FUNCTION of the generator inputs (Elena, 08-02)', () => {
+  // a, b, H, σ and the high season are INPUTS to the draw, not estimates of it. So the
+  // shipped table is not a document that survives an edit — once any input moves it is
+  // simply not that instance's history, and a redraw at the new parameters is the only
+  // series that is. These tests pin exactly that: every input, one at a time.
+  const M = (o: Partial<ForecastModel>): ForecastModel => ({ ...DEFAULT_MODEL, ...o })
+
+  const INPUT_EDITS: [string, Partial<ForecastModel>][] = [
+    ['a', { a: 500 }],
+    ['b', { b: 6 }],
+    ['H', { H: 300 }],
+    ['sigma', { sigma: 90 }],
+    ['highSeasonMonths', { highSeasonMonths: [6, 7] }],
+    ['seasonality', { seasonality: 'multiplicative' }],
+    ['seasonStructure', { seasonStructure: 'perMonth', monthOffsets: Array(12).fill(0).map((_, i) => i * 10) }],
+  ]
+
+  for (const [name, edit] of INPUT_EDITS) {
+    it(`editing ${name} redraws the sixty months`, () => {
+      const model = M(edit)
+      expect(usesPublishedHistory(model, PUBLISHED_HISTORY_LENGTH)).toBe(false)
+      const drawn = resolveHistory(model, '7', PUBLISHED_HISTORY_LENGTH)
+      expect(drawn).toHaveLength(PUBLISHED_HISTORY_LENGTH)
+      expect(drawn).not.toEqual([...PUBLISHED_HISTORY])
+    })
+  }
+
+  it('numHistory is an input too — a different length cannot be the published table', () => {
+    expect(usesPublishedHistory(DEFAULT_MODEL, 36)).toBe(false)
+    expect(resolveHistory(DEFAULT_MODEL, '7', 36)).toHaveLength(36)
+  })
+
+  it('⚠ but demandDraw and the seed are NOT inputs to the history', () => {
+    // Both are statements about the FUTURES. A history that changed with the seed would
+    // mean two students who happened to load different instances of the same game saw
+    // different pasts — and `common` vs `perStudent` says nothing about the past at all.
+    expect(usesPublishedHistory(M({ demandDraw: 'perStudent' }), PUBLISHED_HISTORY_LENGTH)).toBe(true)
+    expect(resolveHistory(DEFAULT_MODEL, 'abc', PUBLISHED_HISTORY_LENGTH))
+      .toEqual(resolveHistory(DEFAULT_MODEL, null, PUBLISHED_HISTORY_LENGTH))
+  })
+
+  it('monthOffsets cannot reach the draw while seasonStructure is twoSeason', () => {
+    // The one input deliberately absent from usesPublishedHistory. It is safe only
+    // because `systematic()` ignores it under twoSeason — assert that, don't assume it.
+    const weird = M({ monthOffsets: [999, 999, 999, 999, 999, 999, 999, 999, 999, 999, 999, 999] })
+    expect(usesPublishedHistory(weird, PUBLISHED_HISTORY_LENGTH)).toBe(true)
+    expect(resolveHistory(weird, null, PUBLISHED_HISTORY_LENGTH)).toEqual([...PUBLISHED_HISTORY])
+  })
+})
+
+describe('⚠ the capped rejection search — a redraw is SCREENED, not just drawn', () => {
+  const M = (o: Partial<ForecastModel>): ForecastModel => ({ ...DEFAULT_MODEL, ...o })
+
+  it('rescues a σ at which the unscreened first draw hides the season', () => {
+    // THE WHOLE POINT. At σ = 120 against H = 230 the first candidate has the seasonal
+    // months BELOW ordinary ones in its worst year — a chart with no visible season, and
+    // therefore an exercise with nothing to find. The search finds a series that shows it.
+    const model = M({ sigma: 120 })
+    const unscreened = seasonMargin(generateHistoryAt(model, 'z:h0', 60), model)!
+    const screened = seasonMargin(resolveHistory(model, 'z', 60), model)!
+    // The SIGN FLIP is the property, and it is the whole claim: a negative margin means
+    // some ordinary month outsold a seasonal one, so the chart shows no season. How much
+    // better the screened draw is beyond zero depends on the seed and is not a promise.
+    expect(unscreened).toBeLessThan(0)
+    expect(screened).toBeGreaterThan(0)
+  })
+
+  it('stops at the first draw clearing one σ of clear air, and that is the one returned', () => {
+    const model = M({ sigma: 90 })
+    const history = resolveHistory(model, 'z', 60)
+    expect(seasonMargin(history, model)!).toBeGreaterThanOrEqual(model.sigma)
+  })
+
+  it('⚠ never hangs or throws on a model with no visible season to find', () => {
+    // σ = 400 against H = 230: no draw will ever separate the seasons, because the model
+    // does not separate them. The honest answer is the best available series plus a
+    // Settings warning — not a refusal, and not an unbounded search.
+    const model = M({ sigma: 400 })
+    const history = resolveHistory(model, 'z', 60)
+    expect(history).toHaveLength(60)
+    expect(seasonMargin(history, model)!).toBeLessThan(model.sigma)
+  })
+
+  it('⚠ returns immediately when the model HAS no season (H = 0)', () => {
+    // A vacuous screen must not spend the cap looking for something that cannot exist.
+    const model = M({ H: 0 })
+    expect(elevatedMonths(model)).toEqual([])
+    expect(seasonMargin(resolveHistory(model, 'z', 60), model)).toBeNull()
+  })
+
+  it('is deterministic in (model, seed, numHistory) — every student sees one history', () => {
+    const a = resolveHistory(M({ sigma: 120 }), 'z', 60)
+    const b = resolveHistory({ ...M({ sigma: 120 }) }, 'z', 60)
+    expect(a).toEqual(b)
+    // …and a different seed selects a different series from the same family.
+    expect(resolveHistory(M({ sigma: 120 }), 'y', 60)).not.toEqual(a)
+  })
+
+  it('the memo cannot be mutated by a caller', () => {
+    // resolveHistory hands out copies; a caller that sorts its history in place must not
+    // corrupt what the next request gets.
+    const model = M({ sigma: 120 })
+    const first = resolveHistory(model, 'z', 60)
+    first[0] = -1
+    expect(resolveHistory(model, 'z', 60)[0]).not.toBe(-1)
+  })
+
+  it('elevatedMonths reads the offsets under perMonth, not highSeasonMonths', () => {
+    const offsets = [0, 0, 0, 0, 0, 300, 0, 0, 0, 0, 0, 0]
+    const model = M({ seasonStructure: 'perMonth', monthOffsets: offsets, highSeasonMonths: [11, 12] })
+    expect(elevatedMonths(model)).toEqual([6])
+  })
+
+  it('seasonMargin is vacuous when every month is elevated', () => {
+    const model = M({ highSeasonMonths: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] })
+    expect(seasonMargin(resolveHistory(model, 'z', 60), model)).toBeNull()
+  })
+
+  it('the SHIPPED table would itself pass the screen it imposes on redraws', () => {
+    // The bar is not one the published history is exempt from — it clears it twice over.
+    expect(seasonMargin(PUBLISHED_HISTORY, DEFAULT_MODEL)!)
+      .toBeGreaterThanOrEqual(DEFAULT_MODEL.sigma)
   })
 })
