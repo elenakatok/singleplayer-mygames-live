@@ -43,6 +43,10 @@ import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+// The SHIPPED auto-drive sequence — the same module the launcher's "Start at game" runs
+// before it opens a student tab. Imported rather than reimplemented so the tab this
+// harness opens is the tab Elena gets.
+import { driveNewsvendorStudentPastKc } from './bot/newsvendor-autodrive.mjs'
 
 const PROJECT = 'demo-singleplayer'
 const FUNCTIONS = `http://127.0.0.1:5010/${PROJECT}/us-central1`
@@ -956,6 +960,116 @@ async function main() {
       + `(laid out at ${overflow.laidOut}px)`)
     check(/\$[\d,]{7,}/.test(tableText),
       'the dollar columns are FULL PRECISION ($1,785,189) — measured to fit')
+
+    // ───────────────────────────────────────────────────────────────────────────
+    console.log('\n[LAUNCHER] ⚠ "Start at game" — the auto-drive the launcher runs')
+    // ───────────────────────────────────────────────────────────────────────────
+    // ⚠ THE OPTION SHIPPED DOING NOTHING for every single-player game but pricing
+    // (Elena, 08-03): the launcher offered a second start position and choosing it left
+    // the student on the knowledge check. What makes that possible is a sequence nobody
+    // executes in test, so the sequence runs here, from the SHIPPED module, and the tab
+    // is then opened to see where a student actually lands.
+    //
+    // ⚠⚠ AND THE PREP IS THE WHOLE REASON THIS IS NOT FORECAST'S TEST. Newsvendor's flow
+    // is KC → PREP → loop. A drive that answered only the KC would pass every
+    // KC-shaped assertion and still strand the student one screen short, which is why
+    // the landing check below is on the ORDER screen and the prep screen is asserted
+    // absent by name rather than merely "not the KC".
+    {
+      const GID_D = `nv-drive-${stamp}`
+      const DPID = 'nv-drive-stu'
+      await openInstance(GID_D, { ...CFG, periods: 3 }, 'drive-seed')
+
+      const drove = await driveNewsvendorStudentPastKc(
+        async (fnName, data) => {
+          const r = await callFn(fnName, data)
+          if (!r.ok) throw new Error(`${fnName}: ${r.error}`)
+          return r.result
+        },
+        { _test: { participant_id: DPID, game_instance_id: GID_D } },
+      )
+
+      // ⚠ NOT A HARDCODED TEN. The authored set depends on whether the instance is
+      // dual-mode, so the count is checked against what the server itself reports —
+      // a literal here would fail the day a dual instance is driven.
+      const asked = await callFn('newsvendorGetQuestions',
+        { _test: { participant_id: DPID, game_instance_id: GID_D } })
+      const expected = [...(asked.result.kc.authored ?? []), ...(asked.result.kc.added ?? [])].length
+      check(drove.kcEnabled === true && drove.kcTotal === expected,
+        `the drive found every knowledge-check question the server asks (${drove.kcTotal})`)
+      check(drove.questionsAnswered === drove.kcTotal,
+        `…and answered all of them (${drove.questionsAnswered}/${drove.kcTotal})`)
+      check(drove.prepEnabled === true && drove.prepSubmitted === true,
+        '⚠ …AND submitted the prep paragraph — the screen forecast does not have')
+
+      // Recorded SERVER-SIDE, so the student is past both for good rather than
+      // appearing to be. The launcher's whole claim rests on this being durable.
+      const doc = (await callFn('newsvendorGetQuestions',
+        { _test: { participant_id: DPID, game_instance_id: GID_D } })).result
+      check(doc.kcAnswered.length === expected, 'the KC answers are RECORDED server-side')
+      check(doc.prepSubmitted === true, '…and so is the prep')
+
+      // Now open the tab, exactly as the launcher does after driving.
+      const ctxD = await browser.newContext()
+      const pageD = await ctxD.newPage()
+      await pageD.goto(studentUrl(GID_D, DPID))
+      await pageD.waitForSelector(
+        '[data-testid="nv-period-heading"], [data-testid="nv-kc-prompt"], [data-testid="nv-freetext-input"]',
+        { timeout: 30_000 })
+
+      check(await exists(pageD, '[data-testid="nv-period-heading"]'),
+        '⚠ the opened tab lands on the ORDER-ENTRY screen')
+      check(!(await exists(pageD, '[data-testid="nv-kc-prompt"]')),
+        '…not on the knowledge check')
+      check(!(await exists(pageD, '[data-testid="nv-freetext-input"]')),
+        '⚠ …and NOT on the prep paragraph — the one-screen-short failure')
+      check(await exists(pageD, '[data-testid="nv-order-input"]'),
+        'with the order box ready to type in')
+
+      // ⚠ THE TAB STAYS OPEN. An opened student tab is something Elena inspects.
+      await new Promise(r => setTimeout(r, 1500))
+      check(!pageD.isClosed(), '⚠ the tab is STILL OPEN after the drive (not auto-closed)')
+
+      // A re-drive is the normal case — Elena reopens a tab. Both submits are one-shot
+      // and return the STORED answer rather than overwriting, so this must not throw and
+      // must not disturb anything.
+      const before = JSON.stringify((await callFn('newsvendorGetState',
+        { _test: { participant_id: DPID, game_instance_id: GID_D } })).result)
+      const again = await driveNewsvendorStudentPastKc(
+        async (fnName, data) => {
+          const r = await callFn(fnName, data)
+          if (!r.ok) throw new Error(`${fnName}: ${r.error}`)
+          return r.result
+        },
+        { _test: { participant_id: DPID, game_instance_id: GID_D } },
+      )
+      check(again.prepSubmitted === true, 're-driving the same student does not throw')
+      const after = JSON.stringify((await callFn('newsvendorGetState',
+        { _test: { participant_id: DPID, game_instance_id: GID_D } })).result)
+      check(after === before, '⚠ …and leaves the student state BYTE-IDENTICAL')
+
+      // Both blocks OFF: nothing in front of the game, so the drive is a clean no-op
+      // rather than an error against a prep question this instance does not ask.
+      const GID_OFF = `nv-drive-off-${stamp}`
+      await openInstance(GID_OFF, { ...CFG, periods: 3 }, 'drive-off-seed')
+      await putDoc(`newsvendor_game_instances/${GID_OFF}/config/main`, {
+        kc_enabled: boolVal(false), prep_enabled: boolVal(false),
+      })
+      const droveOff = await driveNewsvendorStudentPastKc(
+        async (fnName, data) => {
+          const r = await callFn(fnName, data)
+          if (!r.ok) throw new Error(`${fnName}: ${r.error}`)
+          return r.result
+        },
+        { _test: { participant_id: 'nv-drive-off-stu', game_instance_id: GID_OFF } },
+      )
+      check(droveOff.kcEnabled === false && droveOff.questionsAnswered === 0
+        && droveOff.prepEnabled === false && droveOff.prepSubmitted === false,
+        'with the KC and prep both disabled the drive is a clean no-op')
+
+      await pageD.close()
+      await ctxD.close()
+    }
 
     console.log(`\n${'═'.repeat(70)}`)
     console.log(`Newsvendor browser harness: ${passed} passed, ${failed} failed`)
