@@ -92,6 +92,41 @@ function ProcessHeader({ data }: { data: ForecastReportData }) {
 }
 
 /**
+ * The Tier-3 exclusion note (spec §5b, §6) — ⚠ PRINTED AT ALL TIMES, INCLUDING ZERO.
+ *
+ * ⚠⚠ THIS USED TO RENDER ONLY WHEN SOMETHING WAS FLAGGED, which quietly made the two
+ * cases indistinguishable: a chart with nobody excluded and a chart whose exclusion note
+ * had been forgotten looked exactly alike (Elena, 08-03). A FILTERED CHART MUST NEVER BE
+ * MISTAKABLE FOR AN UNFILTERED ONE — and "no note" is not evidence of "nobody dropped",
+ * it is evidence of nothing at all. Saying "0 excluded" is what tells the reader the
+ * check ran, which is the same reason the reports index says "none of 16 flagged".
+ *
+ * Styled quietly at zero and loudly above it: it is reassurance in the common case and a
+ * warning in the rare one, and those should not look the same either.
+ */
+function ExclusionNote({ n }: { n: number }) {
+  const some = n > 0
+  return (
+    <strong
+      data-testid="fc-exclusion-note"
+      style={{
+        display: 'block',
+        marginTop: '0.4rem',
+        color: some ? '#92400e' : colors.textSecondary,
+        fontWeight: some ? 600 : 400,
+      }}
+    >
+      {some
+        ? `⚠ ${n} student${n === 1 ? '' : 's'} excluded as below the theoretical error `
+          + `floor, so ${n === 1 ? 'one of them' : 'they'} cannot distort this chart. `
+          + 'They are still listed on the outcomes roster.'
+        : '0 students excluded as below the theoretical error floor — every student who '
+          + 'played is in this chart.'}
+    </strong>
+  )
+}
+
+/**
  * The below-floor badge (spec §5b) — INFORMATION FOR ELENA, nothing more.
  *
  * ⚠ DELIBERATELY NOT AN ACCUSATION. It says what is measurably true — this MSE is below
@@ -524,18 +559,34 @@ export default function Reports() {
       {active === 'chart' && (
         <Modal title="Forecast vs actual vs the true process, by month" onClose={() => setActive(null)}>
           <p style={{ margin: '0 0 0.9rem', fontSize: '0.82rem', color: colors.textSecondary }}>
-            Class average actual demand and class average forecast, against the true
-            systematic component. Later months average fewer students — that is
-            composition, not behaviour, which is why every month carries its own n.
-          {data.excludedFromCharts > 0 && (
-            <strong data-testid="fc-exclusion-note" style={{ display: 'block', marginTop: '0.4rem', color: '#92400e' }}>
-              ⚠ {data.excludedFromCharts} student{data.excludedFromCharts === 1 ? '' : 's'} flagged
-              &ldquo;below floor&rdquo; {data.excludedFromCharts === 1 ? 'is' : 'are'} EXCLUDED from this
-              chart, so one of them cannot distort it. They are still listed on the outcomes roster.
-            </strong>
-          )}
+            {data.demandDraw === 'common'
+              ? <>
+                  <strong>Actual demand</strong> — the identical series every student
+                  faced — and the class&rsquo;s average forecast, against the true
+                  systematic component with a shaded ±1σ band around it: the range demand
+                  actually varied in. A forecast inside that band is as close as the
+                  process allows.
+                  {' '}<em>The n under each month is the FORECAST line&rsquo;s
+                  denominator only.</em> Later months average fewer students because play
+                  is spread across the week — that is composition, not behaviour. The
+                  demand line is one realized series and does not move with who was
+                  playing.
+                </>
+              : <>
+                  <strong>Class average actual demand</strong> and the class&rsquo;s
+                  average forecast, against the true systematic component with a shaded
+                  ±1σ band around it: the range demand actually varied in. This instance
+                  draws a DIFFERENT future for every student, so both lines are averages.
+                  Later months average fewer students — that is composition, not
+                  behaviour, which is why every month carries its own n.
+                </>}
+          <ExclusionNote n={data.excludedFromCharts} />
           </p>
-          <ClassChartSVG points={data.classChart} />
+          <ClassChartSVG
+            points={data.classChart}
+            sigma={data.process.sigma}
+            demandDraw={data.demandDraw}
+          />
         </Modal>
       )}
 
@@ -544,13 +595,7 @@ export default function Reports() {
           <p style={{ margin: '0 0 0.9rem', fontSize: '0.82rem', color: colors.textSecondary }}>
             The class&rsquo;s own numbers beside what each forecasting rule would have
             scored. This is the debrief slide.
-          {data.excludedFromCharts > 0 && (
-            <strong data-testid="fc-exclusion-note" style={{ display: 'block', marginTop: '0.4rem', color: '#92400e' }}>
-              ⚠ {data.excludedFromCharts} student{data.excludedFromCharts === 1 ? '' : 's'} flagged
-              &ldquo;below floor&rdquo; {data.excludedFromCharts === 1 ? 'is' : 'are'} EXCLUDED from this
-              chart, so one of them cannot distort it. They are still listed on the outcomes roster.
-            </strong>
-          )}
+          <ExclusionNote n={data.excludedFromCharts} />
           </p>
           <BenchmarkComparison data={data} />
         </Modal>
@@ -562,13 +607,7 @@ export default function Reports() {
             Where the class landed, with the benchmark rules marked. The tail on the right
             is the chased-the-noise group. The axis is logarithmic — MSE spans a 40× range,
             and on a linear axis everything competent would pile up at the left edge.
-          {data.excludedFromCharts > 0 && (
-            <strong data-testid="fc-exclusion-note" style={{ display: 'block', marginTop: '0.4rem', color: '#92400e' }}>
-              ⚠ {data.excludedFromCharts} student{data.excludedFromCharts === 1 ? '' : 's'} flagged
-              &ldquo;below floor&rdquo; {data.excludedFromCharts === 1 ? 'is' : 'are'} EXCLUDED from this
-              chart, so one of them cannot distort it. They are still listed on the outcomes roster.
-            </strong>
-          )}
+          <ExclusionNote n={data.excludedFromCharts} />
           </p>
           <MseHistogramSVG histogram={data.histogram} benchmarks={data.benchmarks ?? []} />
         </Modal>

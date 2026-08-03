@@ -424,7 +424,10 @@ export type ForecastReportParticipant = {
 }
 
 /** One month of the Tier-3 class chart. `n` thins as the class spreads out, and the
- *  chart says so — composition, not behaviour (spec §10). */
+ *  chart says so — composition, not behaviour (spec §10).
+ *
+ *  ⚠ `n` IS THE FORECAST LINE'S DENOMINATOR. Under the shipped `common` draw `actual` is
+ *  one realized series shared by everyone, so it does not move with n at all. */
 export type ForecastClassPoint = {
   period: number
   label: string
@@ -443,6 +446,14 @@ export type ForecastReportData = {
   process: ForecastProcess
   participants: ForecastReportParticipant[]
   classChart: ForecastClassPoint[]
+  /**
+   * ⚠ Whether the Tier-3 demand line is an AVERAGE at all. Under `common` — the shipped
+   * default — every student faced the identical series, so it is realized demand and the
+   * per-month n applies to the FORECAST line only. Under `perStudent` both lines are
+   * averages. The captions and the chart legend branch on this rather than hardcoding
+   * wording that is wrong for half the instances.
+   */
+  demandDraw: 'perStudent' | 'common'
   summary: {
     students: number
     meanMae: number | null

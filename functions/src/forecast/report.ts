@@ -171,9 +171,24 @@ export const forecastGetReport = onCall({ cors: FORECAST_CORS_ORIGINS }, async (
      */
     process: revealProcess(model),
     participants,
-    /** Tier 3, chart 1: class average actual vs class average forecast vs the true
+    /** Tier 3, chart 1: realized demand vs the class's average forecast vs the true
      *  systematic component, with per-month denominators (spec §10). */
     classChart: classSeries(chartRows, model, periodLabelShort),
+    /**
+     * ⚠ WHETHER THE DEMAND LINE IS AN AVERAGE AT ALL (Elena, 08-03).
+     *
+     * Under `common` — the shipped default — every student faced the IDENTICAL series,
+     * so the chart's demand line is realized demand, not a mean of anything, and calling
+     * it "class average actual demand" tells the reader the line moves with who happened
+     * to be playing. Under `perStudent` it genuinely is an average and the composition
+     * caveat genuinely applies to it. The page cannot tell those apart on its own, and
+     * hardcoding either wording makes it wrong for half the instances — so the fact
+     * travels with the data.
+     *
+     * Not a leak: it is a flow setting, shown on the Settings page, and reveals nothing
+     * about a, b, H or σ.
+     */
+    demandDraw: model.demandDraw,
     /** Tier 3, the summary box — "this box IS the debrief slide" (spec §10). */
     summary: classSummary(chartRows, runningMetrics),
     /**

@@ -1147,6 +1147,16 @@ async function main() {
       'the reference is auto-derived from the model, not hand-entered')
     check(chart[0].label === 'Y6 Jan', 'points are labelled by calendar month')
 
+    // ⚠ THE DEMAND LINE IS NOT AN AVERAGE UNDER THE SHIPPED DRAW (Elena, 08-03). The
+    // chart's wording branches on this, so the fact has to REACH the page — a caption
+    // that says "class average actual demand" over one realized series tells the reader
+    // the line moves with who happened to be playing, which is exactly the composition
+    // caveat that belongs to the FORECAST line only.
+    check(rep.result.demandDraw === 'perStudent',
+      `the report states which draw the instance runs (${rep.result.demandDraw})`)
+    check(Number.isFinite(rep.result.process.sigma) && rep.result.process.sigma > 0,
+      '…and carries σ, which the ±1σ band is drawn from (spec §9)')
+
     // Tier 3 — the summary box and the benchmark table.
     check(rep.result.summary.students === 2, 'the summary counts only students who played')
     check(near(rep.result.summary.standardError, Math.sqrt(rep.result.summary.meanMse)),

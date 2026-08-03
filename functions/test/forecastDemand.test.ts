@@ -530,9 +530,19 @@ describe('⚠ the capped rejection search — a redraw is SCREENED, not just dra
     expect(seasonMargin(resolveHistory(model, 'z', 60), model)).toBeNull()
   })
 
-  it('the SHIPPED table would itself pass the screen it imposes on redraws', () => {
-    // The bar is not one the published history is exempt from — it clears it twice over.
-    expect(seasonMargin(PUBLISHED_HISTORY, DEFAULT_MODEL)!)
-      .toBeGreaterThanOrEqual(DEFAULT_MODEL.sigma)
+  it('⚠ the SHIPPED table is held to the SAME screen it imposes on redraws', () => {
+    // ⚠⚠ THE DEFAULT AND THE REDRAWS WERE SELECTED UNDER DIFFERENT CRITERIA. The
+    // hardcoded table was chosen by hand — Nov and Dec above every other month in all
+    // five years, then the widest margin among good fits. Redraws are screened on the
+    // scale-free "one σ of clear air" bar. The published table DOES clear that bar, but
+    // until this assertion existed that was a coincidence: nothing stopped a future edit
+    // to the table shipping a default weaker than anything an instructor can trigger.
+    //
+    // Measured with the SAME function the redraw uses, so the two cannot diverge.
+    const margin = seasonMargin(PUBLISHED_HISTORY, DEFAULT_MODEL)!
+    expect(margin).toBeGreaterThanOrEqual(DEFAULT_MODEL.sigma)
+    // Pinned exactly, not just "clears the bar": the worst year is Y4 (Nov 933 against
+    // June's 800). A table edit that halved this would still pass a bar-only check.
+    expect(margin).toBe(133)
   })
 })

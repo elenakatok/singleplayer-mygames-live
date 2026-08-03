@@ -110,7 +110,7 @@ async function openInstance(gid, opts = {}) {
     sigma: intVal(MODEL.sigma),
     seasonality: strVal('additive'),
     season_structure: strVal('twoSeason'),
-    demand_draw: strVal('perStudent'),
+    demand_draw: strVal(opts.demandDraw ?? 'perStudent'),
     seed: strVal('browser-seed'),
   })
 }
@@ -148,6 +148,8 @@ async function startVite() {
 // ── Browser helpers ────────────────────────────────────────────────────────────
 
 const studentUrl = (gid, pid) => `${APP}/?game=forecast&_pid=${pid}&_gid=${gid}`
+/** Instructor pages, through the dev id path the other single-player harnesses use. */
+const instrUrl = (route, gid) => `${APP}${route}?game=forecast&_gid=${gid}`
 const testId = async (page, id) => (await page.locator(`[data-testid="${id}"]`).first().innerText()).trim()
 const count = (page, sel) => page.locator(sel).count()
 const exists = async (page, sel) => (await count(page, sel)) > 0
@@ -512,6 +514,108 @@ async function main() {
     check(periods.length > 0 && Math.max(...periods) <= 61,
       `⚠ after one month, no response mentions a month past 61 (max ${Math.max(...periods)})`)
     await page2.close()
+
+    // ───────────────────────────────────────────────────────────────────────────
+    section('[REPORTS] ⚠ The Tier-3 chart — the ±1σ band, the wording, the exclusion note')
+    // ───────────────────────────────────────────────────────────────────────────
+    // All three were found by Elena on the LIVE reports (08-03), and all three are
+    // claims about rendered output that only a browser can check. The HTTP harness can
+    // assert that σ and the draw reach the payload; only this can assert the band is
+    // actually drawn and the caption actually says what it should.
+    {
+      // ⚠ COMMON, which is the SHIPPED default and the case the wording changed for.
+      // The perStudent branch is checked separately at the end of this section — the
+      // page must not hardcode either, because each is wrong for the other instance.
+      const GID_R = `pw-reports-${stamp}`
+      const RPID = 'pw-rep-stu'
+      await openInstance(GID_R, { kc: false, debrief: false, demandDraw: 'common' })
+      await callFn('forecastBootstrap', { _test: { participant_id: RPID, game_instance_id: GID_R } })
+      for (let round = 1; round <= ROUNDS; round++) {
+        await callFn('forecastSubmitRound',
+          { _test: { participant_id: RPID, game_instance_id: GID_R }, round, forecast: 800 })
+      }
+
+      const ctxR = await browser.newContext()
+      const pageR = await ctxR.newPage()
+      await pageR.goto(instrUrl('/reports', GID_R))
+      await pageR.waitForSelector('[data-testid="fc-report-tile-chart"], [data-testid="fc-reports"]',
+        { timeout: 30_000 }).catch(() => {})
+      // Open the class-chart tile by its title — the board renders tiles as buttons.
+      await pageR.getByText('Forecast vs actual vs the true process, by month').first().click()
+      await pageR.waitForSelector('[data-testid="fc-class-chart"]', { timeout: 30_000 })
+
+      // ── 1. THE ±1σ BAND (spec §9) ──────────────────────────────────────────
+      check(await exists(pageR, '[data-testid="fc-class-band"]'),
+        '⚠ the ±1σ band is DRAWN around the systematic component')
+      const bandLegend = await svgText(pageR, 'fc-class-legend-band')
+      check(/range demand actually varied in/.test(bandLegend),
+        `…and labelled as spec §9 words it ("${bandLegend}")`)
+      check(/±1σ/.test(bandLegend) && /60/.test(bandLegend),
+        '…naming the instance\'s own σ, not a constant')
+
+      // The band must be a CLOSED ribbon, not a stray line: an unclosed path would
+      // render as a wedge and misstate the range at one end.
+      const bandPath = await pageR.getAttribute('[data-testid="fc-class-band"]', 'd')
+      check(typeof bandPath === 'string' && bandPath.trim().endsWith('Z'),
+        '…and it is a closed ribbon (upper edge out, lower edge back)')
+
+      // ── 2. THE WORDING, under the shipped common draw ──────────────────────
+      const legendActual = await svgText(pageR, 'fc-class-legend-actual')
+      check(legendActual === 'Actual demand',
+        `⚠ the legend says "Actual demand", not "Average actual demand" (got "${legendActual}")`)
+      const caption = (await pageR.locator('[data-testid="fc-class-chart"]')
+        .locator('xpath=preceding-sibling::p[1]').first().innerText()).replace(/\s+/g, ' ')
+      check(!/class average actual/i.test(caption),
+        '…and the caption no longer describes an average of demand')
+      check(/FORECAST line/i.test(caption) || /forecast line/i.test(caption),
+        '⚠ …with the per-month n attributed to the FORECAST line')
+      check(/does not move with who was playing/i.test(caption),
+        '…and the demand line explicitly exempted from the composition caveat')
+
+      // ── 3. THE EXCLUSION COUNT, STATED AT ZERO (spec §6) ───────────────────
+      const note = (await testId(pageR, 'fc-exclusion-note')).replace(/\s+/g, ' ')
+      check(/0 students excluded/.test(note),
+        `⚠ the exclusion count is printed even at ZERO ("${note}")`)
+      check(/below the theoretical error floor/.test(note),
+        '…naming what they would have been excluded FOR')
+
+      // …and on the histogram too, which is the other filtered chart.
+      await pageR.getByRole('button', { name: 'Close' }).first().click()
+      await pageR.getByText('Spread of student MSE').first().click()
+      await pageR.waitForSelector('[data-testid="fc-mse-histogram"]', { timeout: 30_000 })
+      const histNote = (await testId(pageR, 'fc-exclusion-note')).replace(/\s+/g, ' ')
+      check(/0 students excluded/.test(histNote),
+        '⚠ the MSE histogram states it too — a filtered chart is never mistakable for an unfiltered one')
+
+      await pageR.close()
+      await ctxR.close()
+
+      // ── 4. …AND THE perStudent BRANCH KEEPS THE AVERAGING WORDING ──────────
+      // ⚠ THE FIX IS NOT "DELETE THE WORD AVERAGE". Under perStudent every student
+      // faces a different future and the demand line IS a mean of different numbers, so
+      // the composition caveat applies to it too. A page that hardcoded either phrasing
+      // would be lying to half the instances; this is the half that would have been
+      // missed by testing only the default.
+      const GID_P = `pw-reports-ps-${stamp}`
+      const PPID = 'pw-rep-ps-stu'
+      await openInstance(GID_P, { kc: false, debrief: false, demandDraw: 'perStudent' })
+      await callFn('forecastBootstrap', { _test: { participant_id: PPID, game_instance_id: GID_P } })
+      for (let round = 1; round <= ROUNDS; round++) {
+        await callFn('forecastSubmitRound',
+          { _test: { participant_id: PPID, game_instance_id: GID_P }, round, forecast: 800 })
+      }
+      const ctxP = await browser.newContext()
+      const pageP = await ctxP.newPage()
+      await pageP.goto(instrUrl('/reports', GID_P))
+      await pageP.getByText('Forecast vs actual vs the true process, by month').first().click()
+      await pageP.waitForSelector('[data-testid="fc-class-chart"]', { timeout: 30_000 })
+      check(await svgText(pageP, 'fc-class-legend-actual') === 'Average actual demand',
+        '⚠ a perStudent instance still says "Average actual demand" — it really is one')
+      check(await exists(pageP, '[data-testid="fc-class-band"]'),
+        '…and still gets the ±1σ band')
+      await pageP.close()
+      await ctxP.close()
+    }
 
     // ───────────────────────────────────────────────────────────────────────────
     section('[LAUNCHER] ⚠ "Start at game" — the auto-drive the launcher runs')

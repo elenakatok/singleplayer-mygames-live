@@ -11,7 +11,8 @@ import { pointMetrics, type ForecastPoint } from './metrics'
 // checked. The per-month denominator travels with each point (`n`) precisely so a tail
 // wobble reads as three students being left rather than as a finding — spec §10 calls
 // this out explicitly ("late months average fewer students — composition, not
-// behavior").
+// behavior"). ⚠ Under the shipped `common` draw that caveat applies to the FORECAST
+// line only: the demand line is one realized series and does not move with n.
 //
 // ⚠ THE MODEL LIVES HERE AND ONLY HERE ON THE INSTRUCTOR SIDE. The Tier-3 dashed
 // reference is the true systematic component, "auto-derived from config, never
@@ -25,32 +26,44 @@ export interface ForecastGameRow {
   points: ForecastPoint[]
 }
 
-/** One month of the Tier-3 class chart, with the number of students it averages over. */
+/** One month of the Tier-3 class chart, with the number of students behind it. */
 export interface ClassSeriesPoint {
   period: number
   /** "Y6 Jan" — the axis label. */
   label: string
-  /** Class average of realized demand for this month. */
+  /**
+   * Realized demand for this month.
+   *
+   * ⚠ AN AVERAGE ONLY UNDER `perStudent`. Under the shipped `common` draw every student
+   * faced the SAME number, so the mean below is a mean of N copies of one value — it is
+   * realized demand, and calling it a class average on the chart tells the reader it
+   * moves with who happened to be playing (Elena, 08-03).
+   */
   actual: number
-  /** Class average of the forecasts submitted for this month. */
+  /** Class average of the forecasts submitted for this month. Always a real average —
+   *  students differ in what they forecast whatever the demand draw is. */
   forecast: number
   /** The TRUE systematic component (spec §10's dashed reference), from the model. */
   systematic: number
-  /** How many students this month averages over. Never omitted — see the header. */
+  /** How many students played this month — THE FORECAST LINE'S denominator. Never
+   *  omitted; see the header. */
   n: number
 }
 
 const mean = (xs: number[]): number => xs.reduce((a, b) => a + b, 0) / xs.length
 
 /**
- * The Tier-3 class chart (spec §10): average actual demand, average forecast, and the
- * true systematic component, month by month.
+ * The Tier-3 class chart (spec §10): realized demand, the class's average forecast, and
+ * the true systematic component, month by month.
  *
- * ⚠ AVERAGED OVER STUDENTS WHO PLAYED THAT MONTH, not over the class. Two students
- * face DIFFERENT realized demand for the same month (spec §2.2: futures are per
- * student), so "average actual" is a real average of different numbers rather than one
- * number repeated — and it should sit near the systematic component, which is the
- * comparison the chart exists to make.
+ * ⚠ AVERAGED OVER STUDENTS WHO PLAYED THAT MONTH, not over the class.
+ *
+ * ⚠⚠ AND WHAT THAT MEANS FOR THE DEMAND LINE DEPENDS ON THE DRAW. Spec §2.2's original
+ * default gave every student a different future, which made "average actual" a real
+ * average of different numbers. Elena reversed that default on 08-02: under `common`
+ * every student faces the SAME realized month, so this mean collapses to that one
+ * value — mathematically the same code, a different thing to CALL it. The arithmetic
+ * stays here and the wording is decided at the chart, which knows the draw.
  *
  * A month nobody has reached is SKIPPED rather than plotted as zero — a zero there
  * would draw a cliff at the end of every mid-week chart.
