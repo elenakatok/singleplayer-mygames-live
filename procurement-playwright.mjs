@@ -537,6 +537,40 @@ async function main() {
     check(again.prepSubmitted === true,
       '[launcher] re-driving an already-driven student succeeds rather than throwing')
 
+    // ── The ROBOT driver, spawned as the launcher spawns it ────────────────────
+    // ⚠⚠ THE CHECK THAT WAS MISSING. This section imported the AUTO-DRIVE and proved it
+    // worked, which said nothing about the ROBOT driver — a different module the launcher
+    // spawns as a CHILD PROCESS. That one shipped as a library with no CLI: node loaded
+    // it, nothing ran, exit 0, and the launcher logged "spawned robot-driver — 16 seats"
+    // followed by "driver exited (code 0)". Elena hit it; no harness did.
+    //
+    // Spawning is the only way to test an entry point. Importing tests a function.
+    const robotGid = await makeInstance({ rounds: 2, reserve: RESERVE, seed: 'pw-robots', kcVisible: KC })
+    const robotOut = await new Promise((resolve) => {
+      const child = spawn('node', [
+        path.join(ROOT, 'bot', 'procurement-robot-driver.mjs'),
+        '--instance', robotGid,
+        '--seats', '2',
+        '--pace', 'fast',
+        '--launcher', 'http://127.0.0.1:1',
+        '--emulator', '--app', APP, '--headless', '--exit-when-done',
+      ], { cwd: path.join(ROOT, 'bot'), stdio: ['ignore', 'pipe', 'pipe'] })
+      let out = ''
+      child.stdout.on('data', d => { out += d })
+      child.stderr.on('data', d => { out += d })
+      child.on('exit', code => resolve({ code, out }))
+    })
+    check(robotOut.code === 0,
+      `⚠⚠ [launcher] the ROBOT DRIVER runs to completion when spawned (exit ${robotOut.code})`)
+    check(/procurement robots —/.test(robotOut.out),
+      '⚠ [launcher] and it ANNOUNCES itself — a driver with no CLI exits 0 in silence')
+    check(/2\/2 robots finished/.test(robotOut.out),
+      '⚠ [launcher] and both robots played a whole game through the UI')
+
+    const robotRep = await callFn('procurementGetReport', { _dev: { game_instance_id: robotGid } })
+    check(robotRep.rows.length === 2 && robotRep.rows.every(r => r.roundsPlayed === 2),
+      '[launcher] and the server has both complete games on record')
+
     // The launcher seat is MARKED in the Tier-2 report, so it cannot be read as a
     // student's real answer.
     const repL = await callFn('procurementGetReport', { _dev: { game_instance_id: gidL } })

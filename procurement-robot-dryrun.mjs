@@ -145,12 +145,50 @@ async function main() {
   let results
   try {
     section(`[COHORT]  ${STUDENTS} robots × ${ROUNDS} rounds, through the real UI`)
-    results = await runCohort({
-      call: (fn, data) => callFn(fn, data),
-      studentUrl: (pid) => `${APP}/?game=procurement&_pid=${pid}&_gid=${GID}`,
-      authFor: (pid) => ({ _test: { participant_id: pid, game_instance_id: GID } }),
-      params, rounds: ROUNDS, students: STUDENTS, headed: HEADED,
-    })
+    // ⚠⚠ SPAWNED THE WAY THE LAUNCHER SPAWNS IT — as a CHILD PROCESS with the launcher's
+    // own flags — not by importing runCohort. The driver shipped as a library on 08-03
+    // (exports, no main, no argv); the launcher ran it, node loaded the module, nothing
+    // happened and it exited 0. This dry run was GREEN throughout, because it imported
+    // the function directly and never exercised the entry point the launcher uses.
+    //
+    // Importing would test the cohort. Spawning tests the DRIVER.
+    const driver = path.join(ROOT, 'bot', 'procurement-robot-driver.mjs')
+    const child = spawn('node', [
+      driver,
+      '--instance', GID,
+      '--seats', String(STUDENTS),
+      '--pace', 'fast',
+      '--launcher', 'http://127.0.0.1:1',   // unreachable ON PURPOSE: --emulator must not need it
+      '--emulator',
+      '--app', APP,
+      '--headless',
+      '--exit-when-done',
+    ], { cwd: path.join(ROOT, 'bot'), stdio: ['ignore', 'pipe', 'pipe'] })
+
+    let out = ''
+    child.stdout.on('data', d => { out += d; process.stdout.write(d) })
+    child.stderr.on('data', d => { out += d; process.stderr.write(d) })
+    const code = await new Promise(r => child.on('exit', r))
+
+    check(code === 0, `the driver the LAUNCHER spawns runs to completion (exit ${code})`)
+    check(/procurement robots —/.test(out),
+      '⚠ and it actually STARTED — a driver with no CLI exits 0 in silence')
+    const finished = Number((out.match(/(\d+)\/(\d+) robots finished/) ?? [])[1] ?? 0)
+    check(finished === STUDENTS,
+      `⚠ and all ${STUDENTS} robots finished their game (${finished})`)
+
+    // Everything below reads the SERVER's record of what those robots did, so the shape
+    // checks are about the data the cohort actually produced.
+    const rep0 = await callFn('procurementGetReport', { _dev: { game_instance_id: GID } })
+    results = rep0.rows
+      .filter(r => r.roundsPlayed > 0)
+      .map(r => ({
+        pid: r.participantId,
+        style: r.participantId.replace(/^robot-\d+-/, ''),
+        bids: r.rounds.map(x => ({ round: x.round, cost: x.yourCost, bid: x.yourBid })),
+        totalProfit: r.profitTotal,
+        debriefSubmitted: typeof r.freeText?.S9 === 'string',
+      }))
   } finally {
     vite.kill('SIGKILL')
   }
@@ -166,10 +204,14 @@ async function main() {
   }
   const withStyle = (name, fn) => { const r = by(name); if (r) fn(r) }
 
-  check(results.length === STUDENTS, `all ${STUDENTS} robots completed a game`)
-  check(results.every(r => r.bids.length === ROUNDS),
+  // ⚠ EVERY `.every()` BELOW IS GUARDED BY A LENGTH CHECK. `[].every(...)` is TRUE, so on
+  // a cohort that produced nothing these read green — which is exactly what they did on
+  // the first run after the driver was fixed, while 0/6 robots had finished. A vacuous
+  // pass is the failure mode this file exists to catch; it must not be one of its own.
+  check(results.length === STUDENTS, `all ${STUDENTS} robots completed a game (${results.length})`)
+  check(results.length > 0 && results.every(r => r.bids.length === ROUNDS),
     `and each played all ${ROUNDS} rounds`)
-  check(results.every(r => r.debriefSubmitted),
+  check(results.length > 0 && results.every(r => r.debriefSubmitted),
     'and each wrote a debrief paragraph — a finished robot looks like a finished student')
 
   // ── The chart's features ───────────────────────────────────────────────────
@@ -193,7 +235,7 @@ async function main() {
     check(om.bids.every(b => b.bid >= Math.round(beta(b.cost, params))),
       'the `over-marker` sits above the optimal line'))
 
-  check(results.every(r => r.bids.every(b => b.bid >= 0 && b.bid <= RESERVE)),
+  check(results.length > 0 && results.every(r => r.bids.every(b => b.bid >= 0 && b.bid <= RESERVE)),
     'every bid every robot made was inside the legal band — none was refused at submit')
 
   const profits = results.map(r => r.totalProfit)
@@ -205,18 +247,18 @@ async function main() {
 
   const rep = await callFn('procurementGetReport', { _dev: { game_instance_id: GID } })
   check(rep.rows.length === STUDENTS, 'every robot is on the roster')
-  check(rep.rows.every(r => r.roundsPlayed === ROUNDS), 'each with a full game')
+  check(rep.rows.length > 0 && rep.rows.every(r => r.roundsPlayed === ROUNDS), 'each with a full game')
 
   const allBids = rep.rows.flatMap(r => r.rounds).filter(x => x.yourBid !== null)
   check(allBids.length === STUDENTS * ROUNDS,
     `the Tier-3 payload carries every bid (${allBids.length})`)
-  check(allBids.every(x => x.yourEquilibriumBid !== null),
+  check(allBids.length > 0 && allBids.every(x => x.yourEquilibriumBid !== null),
     'and every row carries the optimal bid the chart\'s line is drawn from')
 
   // ⚠ The robots' paragraphs are MARKED, so a demo instance's Tier-2 report cannot be
   // mistaken for a class's real answers.
   const paragraphs = rep.rows.map(r => r.freeText?.S9 ?? '')
-  check(paragraphs.every(p => /Robot seat/i.test(p)),
+  check(paragraphs.length > 0 && paragraphs.every(p => /Robot seat/i.test(p)),
     '⚠ every robot\'s debrief is MARKED as a robot seat in the Tier-2 report')
 
   // Score & Record over a robot cohort is a real rehearsal for the class run.

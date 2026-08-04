@@ -1,88 +1,184 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// PROCUREMENT ROBOT MODE — the browser runner. Populates an instance with N auto-driven
-// students who each play their OWN complete game THROUGH THE REAL UI, in headed, tiled
-// Chromium windows Elena can watch.
+// PROCUREMENT ROBOT MODE — the browser runner the LAUNCHER SPAWNS.
+//
+// Populates an instance with N auto-driven students who each play their OWN complete
+// game THROUGH THE REAL UI, in headed, tiled Chromium windows Elena can watch.
+//
+//   node procurement-robot-driver.mjs --instance <id> [--students 8] [--pace watch|fast]
+//                                     [--launcher http://localhost:5180] [--screen 1920x1080]
+//   dry run:
+//   node procurement-robot-driver.mjs --instance demo-1 --emulator --app http://localhost:5189
+//                                     --headless --exit-when-done
+//
+// ⚠⚠ THIS FILE IS A CLI, AND IT MUST STAY ONE. It shipped as a LIBRARY on 08-03 —
+// exports only, no `main()`, no argv — so the launcher spawned it, node loaded the module,
+// nothing ran, and it exited 0. The launcher printed "spawned robot-driver — 16 seats" and
+// then "driver exited (code 0)", which reads like success. The launcher's own guard
+// (`robotLoadErrors`) only checks the driver FILE EXISTS; it cannot tell "exists" from
+// "does anything". The Playwright harness now spawns this the way the launcher does and
+// asserts robots actually finished — see [LAUNCHER] there. Do not remove either.
 //
 // ⚠ SINGLE-PLAYER: "STUDENTS", NOT "SEATS". There is nothing to seat — no matching, no
 // attendance code, no waiting on anybody. Each robot is an independent student bidding
-// against its own server-drawn rivals, so "6 students" means six complete games and
-// there is no barrier anywhere in the run.
+// against its own server-drawn rivals, so "8 students" means eight complete games and
+// there is no barrier anywhere in the run. `--seats` is accepted as an alias because the
+// launcher spawns every driver with the same flag name; only the MEANING differs.
 //
-// ⚠⚠ WHAT THIS COHORT IS ACTUALLY FOR: generating the §12 lecture chart from the rules
-// it names. The styles (procurement-styles.mjs) are the scatter's own features — a
-// cluster on the optimal line, a row on the 45° line, a band above it and points below
-// it — so a populated instance yields a Tier-3 chart Elena can point at and describe. It
-// is not "fill the roster with plausible noise".
+// ⚠⚠ WHAT THIS COHORT IS FOR: generating the §12 lecture chart from the rules it names.
+// The styles (procurement-styles.mjs) are the scatter's own features — a cluster on the
+// optimal line, a row on the 45° line, a band above it and points below it — so a
+// populated instance yields a Tier-3 chart Elena can point at and describe.
 //
-// ⚠ READ AND ACT ARE BOTH THE UI — the standing false-green rule. Nothing is written to
-// Firestore directly and no compute function is called: every robot goes through
-// procurementBootstrap, GetQuestions, SubmitKcAnswer, SubmitFreeText and SubmitBid
-// because it types into the real controls, and it learns its own cost by READING the
-// rendered bidding screen. A robot that finished is indistinguishable from a student who
-// finished, which is what makes Score & Record over a robot cohort a real rehearsal.
+// ⚠ READ AND ACT ARE BOTH THE UI. Nothing is written to Firestore, and no compute
+// function is called: every robot types into the real controls and learns its own cost by
+// READING the rendered bidding screen. Even the auction's PARAMETERS are scraped off the
+// panel a student reads, rather than fetched — which is also what lets this run against
+// production, where the driver has no access to config.
 //
-// ⚠⚠ THE ROBOT NEVER SEES A RIVAL'S COST. It reads its own cost off its own screen and
-// the auction parameters off the same panel a student reads. No student response carries
-// a rival cost before the game ends (§4), and this driver reaches for none — it does not
-// even read the post-game reveal.
-//
-// ⚠ THE KC AND PREP ARE DRIVEN THROUGH THE SHIPPED AUTO-DRIVE, not re-implemented here.
-// Same module the launcher loads. Two copies of that sequence is how forecast's start
-// position came to be offered while doing nothing.
+// ⚠⚠ THE ROBOT NEVER SEES A RIVAL'S COST. It reads its own cost and the public parameters
+// off its own screen. No student response carries a rival cost before the game ends (§4),
+// and this driver reaches for none — it does not even open the post-game reveal.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { chromium } from 'playwright'
+import { createRequire } from 'node:module'
 import { assignStyles } from './procurement-styles.mjs'
-import { driveProcurementStudentPastKc } from './procurement-autodrive.mjs'
 
-/** Tiled window positions, so a headed run is watchable rather than a stack. */
-function tile(i, n, w = 1280, h = 900) {
-  const cols = Math.ceil(Math.sqrt(n))
-  const cw = Math.floor(w / cols)
-  const ch = Math.floor(h / Math.ceil(n / cols))
-  return { x: (i % cols) * cw, y: Math.floor(i / cols) * ch, width: cw, height: ch }
+const require = createRequire(import.meta.url)
+const { chromium } = require('playwright')
+
+// ── CLI ────────────────────────────────────────────────────────────────────────
+
+function parseArgs(argv) {
+  const a = {}
+  for (let i = 0; i < argv.length; i++) {
+    const k = argv[i]
+    if (k.startsWith('--')) a[k.slice(2)] = argv[i + 1]?.startsWith('--') || argv[i + 1] === undefined ? true : argv[++i]
+  }
+  return a
 }
 
-const testId = async (page, id) =>
-  (await page.locator(`[data-testid="${id}"]`).first().innerText()).trim()
+const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
+// ── Reading the screen ─────────────────────────────────────────────────────────
+
+const visible = async (page, sel) => (await page.locator(sel).count()) > 0
+const grab = async (page, sel) => {
+  try { return (await page.locator(sel).first().innerText()).trim() } catch { return '' }
+}
 const num = (s) => Number(String(s).replace(/[^0-9-]/g, ''))
 
 /**
- * Play ONE robot's whole game through the browser.
+ * The auction's public parameters, SCRAPED OFF THE BIDDING SCREEN.
  *
- * @param page     a Playwright page, already pointed at the student URL
- * @param style    one entry from STYLES
- * @param params   the auction's public parameters (reserve, rivalCostMax, totalBidders)
- * @param rounds   how many rounds this instance runs
- * @param label    stable key for the style's deterministic jitter
+ * ⚠ Read, not fetched — the same numbers a student reads, and the only ones available in
+ * a live run where this process has no access to the instance's config. If the panel's
+ * wording changes these regexes must change with it, which is the correct coupling: the
+ * robot is reading the screen, so it should break when the screen stops saying it.
+ *
+ * ⚠ THE PLAYER'S OWN COST RANGE IS NOT AMONG THEM, and must not be — §4 says a student is
+ * told the rival distribution only. The styles do not need it: they take the REALIZED
+ * cost, which is on screen.
  */
-export async function playOneRobot({ page, style, params, rounds, label }) {
+async function readAuctionParams(page) {
+  const panel = await grab(page, 'body')
+  const rivals = panel.match(/anywhere from\s+(\d+)\s+to\s+(\d+)/i)
+  const bidders = panel.match(/you\s*\+\s*(\d+)\s+other suppliers/i)
+  const reserve = num(await grab(page, '[data-testid="proc-reserve"]'))
+  if (!rivals || !bidders || !Number.isFinite(reserve) || reserve === 0) {
+    throw new Error('could not read the auction panel — has the bidding screen changed?')
+  }
+  return {
+    rivalCostMax: Number(rivals[2]),
+    reserve,
+    totalBidders: Number(bidders[1]) + 1,
+  }
+}
+
+// ── Window tiling, so a headed run is watchable ────────────────────────────────
+
+function gridCell(index, count, screenW, screenH, colsOverride) {
+  const n = Math.max(1, count | 0)
+  const cols = colsOverride ?? Math.ceil(Math.sqrt(n))
+  const rows = Math.ceil(n / cols)
+  const cellW = Math.floor(screenW / cols), cellH = Math.floor(screenH / rows)
+  const GUTTER = 6
+  return { x: (index % cols) * cellW, y: Math.floor(index / cols) * cellH, w: cellW - GUTTER, h: cellH - GUTTER }
+}
+
+// ── One robot's whole game, entirely through the UI ────────────────────────────
+
+/**
+ * @param page   a Playwright page already pointed at this robot's launch URL
+ * @param style  one entry from STYLES
+ * @param label  stable key for the style's deterministic jitter
+ * @param think  () => ms to pause between actions, so a watched run is followable
+ */
+export async function playOneRobot({ page, style, label, think = () => 0 }) {
+  // ⚠⚠ WAIT FOR THE FLOW TO RENDER BEFORE LOOKING AT IT. The first version went straight
+  // to `visible('proc-kc-prompt')`, which is a COUNT — it returns false on a page still
+  // bootstrapping its session. Every robot therefore skipped the KC it was sitting on and
+  // then waited 60s for a bidding screen that could not appear until the KC was answered.
+  // Six robots, six timeouts, and the cause looked like the bidding screen.
+  await page.waitForSelector(
+    '[data-testid="proc-kc-prompt"], [data-testid="proc-freetext-prompt"], ' +
+    '[data-testid="proc-bid-input"], [data-testid="proc-end-heading"]',
+    { timeout: 60_000 })
+
+  // ── The knowledge check, if this instance asks one ───────────────────────────
+  // ⚠ Driven through the UI, not through the auto-drive module. In a LIVE run this
+  // process holds no `_test` identity and no bearer token — only a launch URL — so
+  // clicking is the only honest path, and it is the one a student takes.
+  let kcAnswered = 0
+  while (await visible(page, '[data-testid="proc-kc-prompt"]')) {
+    await sleep(think())
+    const options = page.locator('[data-testid^="proc-kc-option-"]')
+    const n = await options.count()
+    // ⚠ RANDOM, deliberately. A cohort of 100% KC scores would misrepresent the class in
+    // the reports; these are demo seats, not model students.
+    await options.nth(Math.floor(Math.random() * Math.max(1, n))).click()
+    await page.locator('[data-testid="proc-kc-submit"]').click()
+    await page.waitForSelector('[data-testid="proc-kc-continue"]', { timeout: 30_000 })
+    await page.locator('[data-testid="proc-kc-continue"]').click()
+    kcAnswered++
+    await page.waitForTimeout(250)
+  }
+
+  // ── The prep paragraph (S8), between the KC and round 1 ─────────────────────
+  if (await visible(page, '[data-testid="proc-freetext-input"]')) {
+    await sleep(think())
+    await page.locator('[data-testid="proc-freetext-input"]')
+      .fill(`(Robot seat — ${style.name}. Not a student answer.)`)
+    await page.locator('[data-testid="proc-freetext-submit"]').click()
+  }
+
+  // ── The round loop ──────────────────────────────────────────────────────────
   await page.waitForSelector('[data-testid="proc-bid-input"]', { timeout: 60_000 })
+  const params = await readAuctionParams(page)
+  // "Round 1 of 8" — the horizon is public in this game (§2), so reading it is fair.
+  const totalRounds = num((await grab(page, '[data-testid="proc-round-heading"]')).split(/of/i)[1])
 
   const bids = []
-  for (let t = 1; t <= rounds; t++) {
-    // ⚠ THE COST IS READ OFF THE SCREEN, not fetched. This is what makes the run a real
-    // exercise of the bidding screen rather than of the callable behind it.
-    const cost = num(await testId(page, 'proc-cost'))
+  for (let t = 1; t <= totalRounds; t++) {
+    await sleep(think())
+    const cost = num(await grab(page, '[data-testid="proc-cost"]'))
     const bid = style.bid(cost, params, `${label}:${t}`)
-    bids.push({ cost, bid })
+    bids.push({ round: t, cost, bid })
 
     await page.locator('[data-testid="proc-bid-input"]').fill(String(bid))
     await page.locator('[data-testid="proc-bid-submit"]').click()
     await page.waitForSelector('[data-testid="proc-result-heading"]', { timeout: 30_000 })
+    await sleep(think())
     await page.locator('[data-testid="proc-result-continue"]').click()
-
-    if (t < rounds) {
-      await page.waitForSelector('[data-testid="proc-bid-input"]', { timeout: 30_000 })
-    }
+    if (t < totalRounds) await page.waitForSelector('[data-testid="proc-bid-input"]', { timeout: 30_000 })
   }
 
-  // The final results screen, then the debrief paragraph if this instance asks one.
+  // ── Results, then the debrief if this instance asks one ─────────────────────
   await page.waitForSelector('[data-testid="proc-end-heading"]', { timeout: 30_000 })
-  const totalProfit = num(await testId(page, 'proc-end-profit'))
+  const totalProfit = num(await grab(page, '[data-testid="proc-end-profit"]'))
 
   let debriefSubmitted = false
-  if (await page.locator('[data-testid="proc-end-continue"]').count() > 0) {
+  if (await visible(page, '[data-testid="proc-end-continue"]')) {
+    await sleep(think())
     await page.locator('[data-testid="proc-end-continue"]').click()
     await page.waitForSelector('[data-testid="proc-freetext-input"]', { timeout: 30_000 })
     await page.locator('[data-testid="proc-freetext-input"]')
@@ -92,41 +188,128 @@ export async function playOneRobot({ page, style, params, rounds, label }) {
     debriefSubmitted = true
   }
 
-  return { style: style.name, bids, totalProfit, debriefSubmitted }
+  return { style: style.name, kcAnswered, bids, totalProfit, debriefSubmitted, params, totalRounds }
 }
 
 /**
  * Run a whole cohort.
  *
- * @param call        async (fnName, data) => result, for the auto-drive only
- * @param studentUrl  (pid) => url
- * @param authFor     (pid) => the auth payload the callables accept
+ * ⚠ NO BARRIER. Each robot is a private game; they run concurrently because nothing any
+ * of them does can affect another.
  */
-export async function runCohort({
-  call, studentUrl, authFor, params, rounds, students, headed = false,
-}) {
+export async function runCohort({ urlFor, students, headed = false, think = () => 0, screen, cols }) {
   const styles = assignStyles(students)
-  const browser = await chromium.launch(
-    headed ? { headless: false, args: ['--window-position=0,0'] } : {})
+  const browser = await chromium.launch(headed ? { headless: false } : { headless: true })
+  const contexts = []
 
   try {
-    // ⚠ NO BARRIER. Each robot is a private game; they run concurrently because nothing
-    // any of them does can affect another.
     return await Promise.all(styles.map(async (style, i) => {
       const pid = `robot-${i + 1}-${style.name}`
-      const ctx = await browser.newContext(headed ? { viewport: tile(i, students) } : {})
+      const cell = headed ? gridCell(i, students, screen?.[0] ?? 1920, screen?.[1] ?? 1080, cols) : null
+      const ctx = await browser.newContext(cell ? { viewport: { width: cell.w, height: cell.h } } : {})
+      contexts.push(ctx)
       const page = await ctx.newPage()
+      const { name, url } = await urlFor(i, pid)
+      await page.goto(url, { waitUntil: 'domcontentloaded' })
       try {
-        // The KC and the prep, through the SHIPPED sequence.
-        await driveProcurementStudentPastKc(call, authFor(pid))
-        await page.goto(studentUrl(pid))
-        const r = await playOneRobot({ page, style, params, rounds, label: pid })
-        return { pid, ...r }
-      } finally {
-        if (!headed) await ctx.close()
+        const r = await playOneRobot({ page, style, label: pid, think })
+        console.log(`  ✓ ${name} [${style.name}] — ${r.bids.length} rounds, ${r.totalProfit} total`)
+        return { pid: name, ...r }
+      } catch (err) {
+        console.error(`  ✗ ${name} [${style.name}] — ${err.message}`)
+        return { pid: name, style: style.name, bids: [], totalProfit: 0, debriefSubmitted: false, error: String(err.message) }
       }
     }))
   } finally {
+    // ⚠ A LIVE run leaves the windows open so Elena can scroll back through what each
+    // robot did. A dry run tears down, or a wrapper waiting on the child would hang.
     if (!headed) await browser.close()
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// THE CLI — what the launcher spawns.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2))
+  const INSTANCE = args.instance
+  const COUNT = Math.max(1, Math.min(16, Number(args.students ?? args.seats) || 8))
+  const PACE = String(args.pace || 'watch')
+  const LAUNCHER = String(args.launcher || 'http://localhost:5180').replace(/\/$/, '')
+  const [SCREEN_W, SCREEN_H] = String(args.screen || '1920x1080').split('x').map(Number)
+  const COLS = args.cols ? Number(args.cols) : null
+  const HEADLESS = args.headless === true || args.headless === 'true'
+  const EMULATOR = args.emulator === true || args.emulator === 'true'
+  const APP = String(args.app || 'http://localhost:5173').replace(/\/$/, '')
+  const EXIT_WHEN_DONE = args['exit-when-done'] === true || args['exit-when-done'] === 'true'
+
+  if (!INSTANCE || INSTANCE === true) {
+    console.error('ERROR: --instance <gameInstanceId> is required.')
+    process.exit(1)
+  }
+
+  // A procurement game is one number typed per round across (by default) 8 rounds plus a
+  // short KC, so "watch" can be brisker than pricing's without becoming unfollowable.
+  const THINK = PACE === 'watch' ? { min: 500, max: 1200 } : { min: 30, max: 90 }
+  const think = () => THINK.min + Math.floor(Math.random() * (THINK.max - THINK.min))
+
+  /** DRY RUN identity: the dev-only ?_pid/_gid params. Each robot still goes through
+   *  procurementBootstrap and every student callable — only the identity SOURCE differs,
+   *  so the play path being rehearsed is the real one. */
+  const emulatorUrl = (index, pid) => ({
+    name: pid, url: `${APP}/?game=procurement&_pid=${pid}&_gid=${INSTANCE}`,
+  })
+
+  /** LIVE identity: the launcher mints a real classroom token. Nothing is reimplemented
+   *  here — this driver has no signing key and should not have one. */
+  async function mintUrl(index) {
+    const res = await fetch(`${LAUNCHER}/api/student-url`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      // NO mode:'ready' — single-player has no lifecycle to drive; the plain ?token= URL
+      // is all this family needs.
+      body: JSON.stringify({ game_instance_id: INSTANCE, index }),
+    })
+    const text = await res.text()
+    let json; try { json = JSON.parse(text) } catch { throw new Error(`launcher → ${res.status}: ${text.slice(0, 160)}`) }
+    if (json.error) throw new Error(json.error)
+    return json
+  }
+
+  if (!EMULATOR) {
+    const reachable = await fetch(`${LAUNCHER}/api/games`).then(r => r.ok).catch(() => false)
+    if (!reachable) {
+      console.error(`ERROR: the launcher is not reachable at ${LAUNCHER}. Robots mint their launch URLs through it.`)
+      process.exit(1)
+    }
+  }
+
+  console.log(`procurement robots — ${COUNT} students, pace ${PACE}, instance ${INSTANCE}`)
+  const results = await runCohort({
+    urlFor: (i, pid) => (EMULATOR ? emulatorUrl(i, pid) : mintUrl(i)),
+    students: COUNT,
+    headed: !HEADLESS,
+    think,
+    screen: [SCREEN_W, SCREEN_H],
+    cols: COLS,
+  })
+
+  const done = results.filter(r => !r.error)
+  console.log(`\n${done.length}/${results.length} robots finished their game.`)
+  if (done.length === 0) process.exitCode = 1
+
+  // Live runs keep the windows up until Elena closes them; a dry run must exit or its
+  // wrapper hangs.
+  if (!EXIT_WHEN_DONE && !HEADLESS) {
+    console.log('Windows left open — close them, or Ctrl-C here, when you are done looking.')
+    await new Promise(() => {})
+  }
+}
+
+// ⚠ RUN ONLY WHEN EXECUTED, not when imported — the dry run imports `runCohort` from
+// here. `process.argv[1]` is the spawned path; comparing against import.meta.url is the
+// standard "am I the entry point" check.
+const invokedDirectly = process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop())
+if (invokedDirectly) {
+  main().catch(err => { console.error('robot driver crashed:', err); process.exit(1) })
 }

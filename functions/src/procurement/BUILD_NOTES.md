@@ -321,6 +321,59 @@ applied to the fix itself.
 
 ---
 
+## 6f. ⚠⚠ THE ROBOT DRIVER SHIPPED AS A LIBRARY (2026-08-03)
+
+**Elena hit it, no harness did.** Launching robots printed:
+
+```
+[robots ixfRxgo7] spawned robot-driver — 16 seats, pace watch
+[robots ixfRxgo7] driver exited (code 0)
+```
+
+**Cause.** `bot/procurement-robot-driver.mjs` exported `runCohort`/`playOneRobot` and had
+**no `main()`, no argv handling**. The launcher spawns a driver as a child process
+(`node <driver> --instance … --seats … --pace … --launcher …`); node loaded the module,
+defined the exports, and exited 0. Exit 0 reads as success in the launcher's log.
+
+⚠ **The launcher's own guard could not catch this.** `robotLoadErrors` checks the driver
+FILE EXISTS. It cannot tell "exists" from "does anything" — and I registered procurement in
+`ROBOT_GAMES` in the same commit that added the (working) auto-drive entry, so the file was
+there and robot mode advertised itself.
+
+⚠ **And my own harnesses could not catch it either, because both IMPORTED the module.**
+The dry run called `runCohort` directly; Playwright's `[LAUNCHER]` section imported the
+*auto-drive*, a different module. Both were green. **Importing tests a function; only
+spawning tests an entry point.** Both harnesses now spawn the driver exactly as the
+launcher does and assert it announces itself and that every robot finished. Mutation-
+verified by putting the CLI back behind `if (false && …)`.
+
+**Fourth instance of the same shape this session** — after `emulators:exec` serving stale
+`lib`, the maskless REST `PATCH`, and every instance carrying a seed. The pattern: *the
+harness exercised something adjacent to the thing that actually runs.*
+
+### Two more of my own vacuous checks, deleted
+
+On the first run after the CLI was added, 0/6 robots finished — and these still read green:
+
+```
+✓ and each played all 6 rounds
+✓ and each wrote a debrief paragraph
+✓ every bid was inside the legal band
+```
+
+**`[].every(...)` is `true`.** With the cohort empty every `.every()` passed. All are now
+guarded by a length check. A file whose purpose is catching vacuous passes must not
+contain three of its own.
+
+### The driver reads its parameters off the screen
+
+`readAuctionParams` scrapes the reserve, rival range and bidder count from the bidding
+panel rather than fetching config — which is what lets the same driver run against
+production, where it has no config access. ⚠ It deliberately does NOT read a player cost
+range: §4 keeps that off the screen, and the styles need only the realized cost.
+
+---
+
 ## 6. `allowDropOut` does not exist
 
 It appears in an early prompt's config list but in **neither** FINAL spec. Drop Out is
