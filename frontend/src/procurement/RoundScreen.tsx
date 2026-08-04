@@ -59,7 +59,18 @@ function Fact({ label, value, testId }: { label: string; value: string; testId?:
  *
  *  ⚠ THE RIVAL COST RANGE IS PRINTED, DELIBERATELY (§1). The equilibrium markup the
  *  debrief discusses is only computable by a student who knows the top of it — hiding it
- *  would hide the lesson. */
+ *  would hide the lesson.
+ *
+ *  ⚠⚠ THE PLAYER'S OWN RANGE IS NOT PRINTED, AND MUST NOT BE (§4): "students are told the
+ *  rival distribution only; their own range is never mentioned because it is not needed
+ *  to bid well." Their own DISTRIBUTION does not enter their optimization (§5.2) — the
+ *  cost is realized before they bid, so only the realized number matters, and that is on
+ *  the screen above. Naming the range would invite reasoning about an irrelevant quantity
+ *  and would hint at the player/rival asymmetry the spec keeps quiet. The server does not
+ *  send it (clientState.ts), so this is belt and braces.
+ *
+ *  ⚠ THIS PANEL BELONGS TO THE BIDDING SCREEN ONLY. It used to render on the knowledge
+ *  check too, where it gave away S1, S2, S3, S4 and S5 — see KcScreen.tsx. */
 export function AuctionFacts({ params }: { params: ProcurementParams }) {
   const c = params.currencyLabel
   return (
@@ -70,10 +81,6 @@ export function AuctionFacts({ params }: { params: ProcurementParams }) {
         <Fact
           label="Their costs"
           value={`each drawn independently, anywhere from ${params.rivalCostMin} to ${params.rivalCostMax} ${c}`}
-        />
-        <Fact
-          label="Your cost"
-          value={`drawn from ${params.playerCostMin} to ${params.playerCostMax} ${c}, fresh each round`}
         />
         <Fact label="Reserve price" value={ecu(params.reserve, c)} testId="proc-reserve" />
         <Fact label="Award rule" value="the lowest bid wins the contract and is paid its own bid" />

@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 // than the components being left untested.
 vi.mock('../firebase', () => ({ auth: {}, db: {}, functions: {} }))
 import { EndScreen } from './EndScreen'
+import { PlaceBid } from './RoundScreen'
 import { HistoryTable } from './HistoryTable'
 import { ScatterSVG, optimalBid } from './ScatterSVG'
 import { ecu, signedEcu, bidAmount } from './format'
@@ -30,8 +31,6 @@ const PARAMS: ProcurementParams = {
   reserve: 110,
   rivalCostMin: 10,
   rivalCostMax: 110,
-  playerCostMin: 10,
-  playerCostMax: 60,
   bidIncrementUnit: 1,
   currencyLabel: 'ECU',
   decrementSchedule: [],
@@ -238,5 +237,59 @@ describe('formatting', () => {
   it('a bidder who made no bid reads as "no bid", not as zero', () => {
     expect(bidAmount(null, 'ECU')).toBe('no bid')
     expect(bidAmount(0, 'ECU')).toBe('0 ECU')
+  })
+})
+
+// ── §4: the player's own cost range is never shown ─────────────────────────────
+
+describe('⚠ §4 the student is told the RIVAL distribution only', () => {
+  // "Students are told the rival distribution only; their own range is never mentioned
+  // because it is not needed to bid well." It follows from §5.2: a bidder's own cost
+  // DISTRIBUTION does not enter their optimization, because the cost is realized before
+  // they bid. Naming it invites reasoning about an irrelevant quantity and hints at the
+  // deliberate U[10,60] vs U[10,110] asymmetry the spec keeps quiet.
+  //
+  // ⚠ The strongest guard is the TYPE: `ProcurementParams` has no playerCostMin/Max, so
+  // a screen cannot print what it cannot reach. These render checks are the second line.
+
+  it('the bidding screen prints the rival range and NOT a player range', () => {
+    const html = renderToStaticMarkup(
+      <PlaceBid roundNumber={1} cost={30} params={PARAMS} history={[]} onSubmitted={() => {}} />)
+    expect(html).toContain('10 to 110')          // the rivals' — the lesson
+    expect(html).not.toMatch(/10 to 60|between 10 and 60/)
+    // The realized cost IS shown; it is the range that is not.
+    expect(html).toContain('30 ECU')
+  })
+
+  it('the scatter takes its x-axis from the RIVAL range', () => {
+    // ⚠ THE HONEST FORM OF THIS CHECK. My first version asserted the axis showed no "60"
+    // tick — but 60 is an ordinary gradation on a 10–110 axis and carries nothing about
+    // the player's range, and at the shipped config the axis was already 10–110 because
+    // the rival max exceeds the player max. Asserting a tick's absence would have been a
+    // test that passed for the wrong reason and failed on a cosmetic tick change.
+    //
+    // What is worth pinning is the DEPENDENCE: move the rival range and the axis moves
+    // with it. The player's bounds cannot influence it — they are not on the type.
+    const wide = { ...PARAMS, rivalCostMax: 200, reserve: 200 }
+    const a = renderToStaticMarkup(<ScatterSVG params={PARAMS} history={[row()]} rivals={null} />)
+    const b = renderToStaticMarkup(<ScatterSVG params={wide} history={[row()]} rivals={null} />)
+    expect(a).not.toBe(b)
+    expect(b).toContain('>200<')
+    expect(a).not.toContain('>200<')
+  })
+
+  it('no student screen mentions a player cost range anywhere', () => {
+    const screens = [
+      renderToStaticMarkup(
+        <PlaceBid roundNumber={1} cost={30} params={PARAMS} history={[row()]} onSubmitted={() => {}} />),
+      renderToStaticMarkup(
+        <EndScreen params={PARAMS} history={[row()]} totalProfit={20}
+          totalEquilibriumProfit={33} roundsWon={1} rivalPoints={null} />),
+      renderToStaticMarkup(<HistoryTable history={[row()]} currency="ECU" totalRounds={8} />),
+    ]
+    for (const html of screens) {
+      expect(html).not.toMatch(/your cost.{0,40}(drawn from|between|range)/i)
+      expect(html).not.toMatch(/10 to 60/)
+    }
   })
 })

@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { colors, typography } from '@mygames/game-ui'
-import { procurementSubmitKcAnswer, type ProcurementKcQuestionClient, type ProcurementParams } from './api'
-import { AuctionFacts } from './RoundScreen'
+import { procurementSubmitKcAnswer, type ProcurementKcQuestionClient } from './api'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // One knowledge-check question (§10). Graded, and NOT A GATE.
@@ -16,10 +15,19 @@ import { AuctionFacts } from './RoundScreen'
 // hides a question changes this count, because it is the same derivation the DENOMINATOR
 // uses (`gradedFor`). There is no `/17` anywhere in this game and none may be added.
 //
-// THE AUCTION'S PARAMETERS ARE ON THE SCREEN, on purpose. The questions are about
-// reading an auction — the reserve, the rival range, the markup — so the facts sit below
-// the question, rendered from the same config the question was resolved against. This is
-// an open-book check of comprehension, not a memory test.
+// ⚠⚠ THERE IS NO REFERENCE PANEL HERE, AND ADDING ONE BACK WOULD BREAK THE CHECK.
+// CP3b briefly rendered `AuctionFacts` below the question as an "open book". It gave away
+// the answers: the box states "the lowest bid wins the contract and is paid its own bid"
+// (S1 and S2 verbatim), "if you win, you earn your bid minus your cost" (S5), "if you
+// lose, you earn nothing — you also pay nothing" (S3), and the reserve (S4). That is
+// essentially the whole graded set, three lines under the question asking for it.
+//
+// The KC needs no panel. It runs BEFORE play, and every v3 question is a SELF-CONTAINED
+// hypothetical carrying its own numbers — "suppose your cost is 35", "suppose five
+// suppliers bid 41, 47, 52, 66 and 71", "suppose a buyer sets a reserve of 110". None of
+// them refers to this instance's configuration, so there is nothing for a panel to
+// supply. The panel belongs on the BIDDING screen, where the numbers are live and the
+// student is making a decision with them.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const card = {
@@ -31,14 +39,12 @@ export function KcScreen({
   question,
   index,
   total,
-  params,
   onDone,
 }: {
   question: ProcurementKcQuestionClient
   index: number
   /** How many questions THIS student is asked — server-resolved, never a constant. */
   total: number
-  params: ProcurementParams
   onDone: () => void
 }) {
   const [value, setValue] = useState<string | null>(null)
@@ -165,10 +171,6 @@ export function KcScreen({
       >
         {submitting ? 'Checking…' : answered ? 'Continue' : 'Submit answer'}
       </button>
-
-      {/* The open book. Below the question so the question is read first, but on the
-          same screen so nothing has to be remembered. */}
-      <AuctionFacts params={params} />
     </div>
   )
 }

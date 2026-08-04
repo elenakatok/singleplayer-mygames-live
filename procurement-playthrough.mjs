@@ -157,7 +157,11 @@ const GET_STATE_KEYS = [
 
 const PARAMS_KEYS = [
   'format', 'rounds', 'rivalCount', 'totalBidders', 'reserve', 'rivalCostMin',
-  'rivalCostMax', 'playerCostMin', 'playerCostMax', 'bidIncrementUnit', 'currencyLabel',
+  // ⚠ NO playerCostMin/playerCostMax. §4: a student is told the RIVAL distribution only,
+  // and their own range is never mentioned. It is omitted from the PAYLOAD, not just the
+  // screens, so no future screen can render what the server never sent — and this pin is
+  // what stops it being added back "harmlessly".
+  'rivalCostMax', 'bidIncrementUnit', 'currencyLabel',
   'decrementSchedule', 'botDelayMs',
 ].sort()
 
@@ -265,10 +269,14 @@ async function main() {
     'totalBidders is derived, and the +1 is right')
   check(s0.roundsPlayed === 0 && s0.played.length === 0, 'no rounds played yet')
   check(s0.currentRound === 1, 'currentRound is 1')
+  // ⚠ Checked against the range THIS FILE WROTE (10..60), not against a payload field —
+  // §4 deliberately omits the player's own bounds from the student payload, so reading
+  // them back from `params` is exactly the thing that must not be possible.
   check(typeof s0.currentCost === 'number'
-    && s0.currentCost >= s0.params.playerCostMin
-    && s0.currentCost <= s0.params.playerCostMax,
+    && s0.currentCost >= 10 && s0.currentCost <= 60,
     'the PLAYER\'s own cost for round 1 is served, inside the player range')
+  check(s0.params.playerCostMin === undefined && s0.params.playerCostMax === undefined,
+    '⚠ §4 and the player\'s own RANGE is absent from the payload — rival distribution only')
   check(s0.currentCost <= 60,
     '§5.2 the player draws from the NARROWER range — a cost above 60 would mean the rival range was used')
   check(s0.gameOver === false, 'the game is not over')

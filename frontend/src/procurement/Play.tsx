@@ -231,7 +231,7 @@ export default function Play() {
     ...loaded.kc.map((q, i) => ({
       id: q.field,
       render: ({ onDone }: { onDone: () => void }) => (
-        <KcScreen question={q} index={i} total={loaded.kc.length} params={loaded.params} onDone={onDone} />
+        <KcScreen question={q} index={i} total={loaded.kc.length} onDone={onDone} />
       ),
     })),
 

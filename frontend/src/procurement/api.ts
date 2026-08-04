@@ -64,9 +64,9 @@ export type DecrementBand = { above: number; step: number }
  * pricing there is no endgame effect that knowing the horizon would let a student
  * exploit, and the screen says "Round k of N" freely.
  *
- * ⚠ THE RIVAL COST RANGE IS ALSO PUBLIC, and deliberately: the equilibrium markup the
- * debrief discusses is only computable by a student who knows the top of it. Hiding it
- * would hide the lesson.
+ * ⚠ THE RIVAL COST RANGE IS PUBLIC, and deliberately: the equilibrium markup the debrief
+ * discusses is only computable by a student who knows the top of it. Hiding it would hide
+ * the lesson. THE PLAYER'S OWN RANGE IS THE OPPOSITE CASE and is absent — see below.
  */
 export type ProcurementParams = {
   format: ProcurementFormat
@@ -76,8 +76,10 @@ export type ProcurementParams = {
   reserve: number
   rivalCostMin: number
   rivalCostMax: number
-  playerCostMin: number
-  playerCostMax: number
+  /** ⚠ THE PLAYER'S OWN COST RANGE IS DELIBERATELY ABSENT (§4): a student is told the
+   *  RIVAL distribution only. Their own range does not enter their optimization (§5.2) —
+   *  their cost is realized before they bid, so only the realized number matters. The
+   *  server does not send it; do not add it here, and do not derive it from the data. */
   bidIncrementUnit: number
   currencyLabel: string
   decrementSchedule: DecrementBand[]

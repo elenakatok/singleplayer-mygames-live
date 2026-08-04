@@ -203,9 +203,16 @@ async function main() {
     const kcSeen = []
     for (let i = 0; i < 2; i++) {
       kcSeen.push(await testId(page, 'proc-kc-prompt'))
-      // ⚠ The auction's parameters are on the KC screen — it is an open-book check.
-      check(await exists(page, '[data-testid="proc-reserve"]'),
-        `KC ${i + 1}: the auction's parameters are on the screen (open book)`)
+      // ⚠⚠ THE REFERENCE PANEL MUST NOT BE ON THE KC SCREEN. It states the award rule
+      // (S1, S2), the payoff rule (S3, S5) and the reserve (S4) — essentially the whole
+      // graded set, three lines under the question asking for it.
+      check(!(await exists(page, '[data-testid="proc-reserve"]')),
+        `KC ${i + 1}: ⚠ the auction reference panel is ABSENT — it gave away the answers`)
+      const kcBody = await bodyText(page)
+      check(!/lowest bid wins the contract/i.test(kcBody),
+        `KC ${i + 1}: and the award rule is not printed beside the question`)
+      check(!/10 to 60|between 10 and 60/.test(kcBody),
+        `KC ${i + 1}: ⚠ §4 no player cost range on the knowledge check either`)
       await page.locator('[data-testid^="proc-kc-option-"]').first().click()
       await page.locator('[data-testid="proc-kc-submit"]').click()
       await page.waitForSelector('[data-testid="proc-kc-continue"]')
@@ -238,6 +245,17 @@ async function main() {
       const costText = await testId(page, 'proc-cost')
       const cost = Number(costText.replace(/[^0-9]/g, ''))
       check(cost >= 10 && cost <= 60, `round ${t}: the student's own cost is rendered, in the player range`)
+
+      if (t === 1) {
+        // ⚠⚠ §4: "students are told the rival distribution only; their own range is never
+        // mentioned because it is not needed to bid well." The realized cost is shown —
+        // it is the RANGE that must not be.
+        const bidBody = await bodyText(page)
+        check(/10 to 110/.test(bidBody),
+          'the RIVAL cost range is printed — the equilibrium markup needs it (§1)')
+        check(!/10 to 60|between 10 and 60/.test(bidBody),
+          '⚠ §4 the player\'s OWN cost range is NOT printed on the bidding screen')
+      }
 
       // ⚠ THE RESERVE GATE, EXERCISED THROUGH THE UI, on round 1 only.
       if (t === 1) {

@@ -9,9 +9,12 @@ import type { ProcurementConfig } from './config'
 // be written deliberately — it cannot happen by a careless spread.
 //
 // Every field below is printed on the student's own bidding screen anyway (Part 1 §6.1,
-// Part 2 §5.1): the reserve, both cost ranges, the round count, the bid increment. The
-// rival cost range in particular IS the lesson — the equilibrium markup the debrief
+// Part 2 §5.1): the reserve, the RIVAL cost range, the round count, the bid increment.
+// The rival cost range in particular IS the lesson — the equilibrium markup the debrief
 // discusses is only computable by a student who knows it (Part 1 §1, deck slide 4).
+//
+// ⚠ THE PLAYER'S OWN RANGE IS NOT HERE. See the note beside `rivalCostMax` below — §4
+// says a student is told the rival distribution ONLY.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export type Phase = 'kc' | 'play' | 'debrief' | 'done'
@@ -43,8 +46,18 @@ export function clientParams(config: ProcurementConfig) {
     reserve: config.reserve,
     rivalCostMin: config.rivalCostDist.min,
     rivalCostMax: config.rivalCostDist.max,
-    playerCostMin: config.playerCostDist.min,
-    playerCostMax: config.playerCostDist.max,
+    // ⚠⚠ THE PLAYER'S OWN COST RANGE IS ABSENT, AND THAT IS SPEC §4, NOT A PREFERENCE:
+    // "Students are told the rival distribution only; their own range is never mentioned
+    // because it is not needed to bid well." It follows from §5.2 — a bidder's own cost
+    // DISTRIBUTION does not enter their optimization, because their cost is realized
+    // before they bid. Only the realized number matters, and they are shown that.
+    //
+    // Naming the range would invite reasoning about an irrelevant quantity ("my cost is
+    // 55, that's high for my range, so…") and would hint at the deliberate player/rival
+    // asymmetry (U[10,60] vs U[10,110]) the spec keeps quiet.
+    //
+    // ⚠ IT IS OMITTED FROM THE PAYLOAD, not merely from the screens. A field the server
+    // never sends cannot be rendered by a later screen that did not know the rule.
     bidIncrementUnit: config.bidIncrementUnit,
     currencyLabel: config.currencyLabel,
     /** Open format only — inert and harmless in a sealed instance. */

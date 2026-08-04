@@ -72,11 +72,17 @@ export function ScatterSVG({
   const [showBots, setShowBots] = useState(false)
 
   // ── Axes ──────────────────────────────────────────────────────────────────
-  // x spans every cost that can appear: the player's range and, once the bots are
-  // revealed, theirs. Fixed from CONFIG rather than from the data, so two students'
-  // charts are directly comparable and a lucky draw does not rescale the picture.
-  const xMin = Math.min(params.playerCostMin, params.rivalCostMin)
-  const xMax = Math.max(params.playerCostMax, params.rivalCostMax)
+  // ⚠ x SPANS THE RIVAL RANGE, and that is the only range this chart may know. The
+  // player's own bounds are not sent (§4 — a student is told the rival distribution
+  // only), and deriving an axis from them would put the number back on the screen as a
+  // tick label. The rival range contains the player's by construction, so nothing is
+  // clipped; the student's points simply occupy part of the axis, which reveals only
+  // where their own draws happened to fall.
+  //
+  // Fixed from CONFIG rather than from the data, so two students' charts are directly
+  // comparable and a lucky draw does not rescale the picture.
+  const xMin = params.rivalCostMin
+  const xMax = params.rivalCostMax
   const yMin = 0
   const yMax = Math.max(params.reserve, xMax)
 
