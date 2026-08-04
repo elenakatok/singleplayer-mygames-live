@@ -199,15 +199,41 @@ export async function playOneRobot({ page, style, label, think = () => 0 }) {
  */
 export async function runCohort({ urlFor, students, headed = false, think = () => 0, screen, cols }) {
   const styles = assignStyles(students)
-  const browser = await chromium.launch(headed ? { headless: false } : { headless: true })
-  const contexts = []
+
+  // ⚠⚠ ONE BROWSER PER ROBOT WHEN HEADED, NOT ONE BROWSER WITH N CONTEXTS.
+  //
+  // Window POSITION is an OS-level property of a browser process, set through Chromium's
+  // `--window-position` launch flag. A `viewport` on a context sizes the PAGE inside a
+  // window; it cannot move the window. The first version of this file computed `gridCell`
+  // correctly and then passed only `{ width, height }` as a viewport — so every window
+  // opened at Chromium's default position, stacked exactly on top of the last, and the
+  // tiling arithmetic ran with its result discarded.
+  //
+  // Every other driver in this fleet (forecast, pricing, newsvendor) launches per robot
+  // with `--window-position` + `--window-size` for exactly this reason. This now matches
+  // them. `viewport: null` is required too: without it Playwright overrides the window
+  // size with its own default and the cells stop matching the grid.
+  //
+  // HEADLESS keeps ONE browser and N contexts — cheaper, and there is no window to place.
+  const perRobot = headed
+  const shared = perRobot ? null : await chromium.launch({ headless: true })
+  const browsers = []
 
   try {
     return await Promise.all(styles.map(async (style, i) => {
       const pid = `robot-${i + 1}-${style.name}`
-      const cell = headed ? gridCell(i, students, screen?.[0] ?? 1920, screen?.[1] ?? 1080, cols) : null
-      const ctx = await browser.newContext(cell ? { viewport: { width: cell.w, height: cell.h } } : {})
-      contexts.push(ctx)
+      let ctx
+      if (perRobot) {
+        const cell = gridCell(i, students, screen?.[0] ?? 1920, screen?.[1] ?? 1080, cols)
+        const b = await chromium.launch({
+          headless: false,
+          args: [`--window-position=${cell.x},${cell.y}`, `--window-size=${cell.w},${cell.h}`],
+        })
+        browsers.push(b)
+        ctx = await b.newContext({ viewport: null })
+      } else {
+        ctx = await shared.newContext()
+      }
       const page = await ctx.newPage()
       const { name, url } = await urlFor(i, pid)
       await page.goto(url, { waitUntil: 'domcontentloaded' })
@@ -223,7 +249,7 @@ export async function runCohort({ urlFor, students, headed = false, think = () =
   } finally {
     // ⚠ A LIVE run leaves the windows open so Elena can scroll back through what each
     // robot did. A dry run tears down, or a wrapper waiting on the child would hang.
-    if (!headed) await browser.close()
+    if (shared) await shared.close()
   }
 }
 

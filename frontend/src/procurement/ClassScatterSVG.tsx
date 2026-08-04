@@ -178,14 +178,25 @@ export function ClassScatterSVG({ report }: { report: ProcurementReport }) {
         {students.map((p, i) => dot(p, i, 'student'))}
       </svg>
 
-      {/* ── The legend. ⚠ COMPLETE: every mark on the chart appears here, including both
-          lines. A legend that covers only the point series leaves the reader to guess what
-          the green line is, which is the one thing the chart is arguing. ─────────── */}
+      {/* ── The legend ─────────────────────────────────────────────────────────
+          ⚠ COMPLETE: every mark on the chart is here, including BOTH lines. A legend
+          covering only the dot series leaves the reader to guess what the green line is,
+          which is the one thing the chart is arguing.
+
+          ⚠ IT MUST WRAP INSIDE THE MODAL. The first version used a `minmax(210px, 1fr)`
+          auto-fit grid, which at the modal's width laid out three columns and pushed the
+          longest label ("Bid = cost (no markup, earns nothing)") off the right edge,
+          clipped mid-phrase and overlapping the entry beside it. A grid forces every
+          column to one width whether the labels fit or not.
+
+          A wrapping FLEX row is the right primitive here: items keep their natural width,
+          break to the next line when they run out of room, and each entry stays whole.
+          `minWidth: 0` + `overflowWrap` let a long label break rather than push. */}
       <div
         data-testid="proc-class-scatter-legend"
         style={{
-          display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
-          gap: '0.35rem 1.25rem', marginTop: '0.75rem',
+          display: 'flex', flexWrap: 'wrap', gap: '0.4rem 1.5rem',
+          marginTop: '0.75rem', maxWidth: '100%',
           fontSize: '0.8rem', color: colors.text,
         }}
       >
@@ -214,7 +225,10 @@ function Key({ kind, color, label, small }: {
   kind: 'dot' | 'line' | 'dash'; color: string; label: string; small?: boolean
 }) {
   return (
-    <span style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+    <span style={{
+      display: 'flex', alignItems: 'center', gap: '0.45rem',
+      minWidth: 0, overflowWrap: 'anywhere',
+    }}>
       <svg width="20" height="12" aria-hidden="true" style={{ flexShrink: 0 }}>
         {kind === 'dot'
           ? <circle cx="10" cy="6" r={small ? 3 : 4.5} fill={color} />
