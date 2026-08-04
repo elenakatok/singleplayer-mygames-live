@@ -9,6 +9,7 @@ import {
 } from './rounds'
 import { clientParams, phaseOf } from './clientState'
 import { ensureOpenRound } from './openRound'
+import { ensureOpenAuction } from './openAuctionStore'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // procurementGetState (student) — WHERE AM I? The student's whole position in one call:
@@ -54,8 +55,8 @@ export const procurementGetState = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, as
   // not appear in the return below.
   const { config, seed } = await loadInstance(db, gameInstanceId)
 
-  const participantRef = db
-    .collection(INSTANCES_COLLECTION).doc(gameInstanceId)
+  const instanceRef = db.collection(INSTANCES_COLLECTION).doc(gameInstanceId)
+  const participantRef = instanceRef
     .collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
   const snap = await participantRef.get()
   const pData = snap.data() ?? {}
@@ -70,9 +71,20 @@ export const procurementGetState = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, as
     : null
   // ⚠ WRITES on a read path, deliberately — see the header. The round has to be opened
   // before the student can be shown anything about it.
-  const currentCost = currentRound === null
+  //
+  // ⚠⚠ THE OPEN FORMAT OPENS MORE THAN A COST. Its auction needs the BOT COSTS and the
+  // opening auction state as well, and all three must be written by ONE transaction or a
+  // reload between them would leave a round half-open. `ensureOpenAuction` is that
+  // transaction; the sealed path keeps the narrower one it already had.
+  const opened = currentRound === null
     ? null
-    : await ensureOpenRound(db, participantRef, currentRound, seed, participantId, config)
+    : config.format === 'open_descending'
+      ? await ensureOpenAuction(db, participantRef, instanceRef, currentRound, seed, participantId, config)
+      : {
+        cost: await ensureOpenRound(db, participantRef, currentRound, seed, participantId, config),
+        auction: null,
+      }
+  const currentCost = opened?.cost ?? null
 
   // ── The §9 scatter's bot series ────────────────────────────────────────────
   //
@@ -105,6 +117,17 @@ export const procurementGetState = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, as
     /** The round to play next, and the cost drawn for it. Both null when there is none. */
     currentRound,
     currentCost,
+    /**
+     * ⚠ OPEN FORMAT ONLY — the LIVE AUCTION, exactly as committed (open §4.6). Null in a
+     * sealed instance and null once the game is over.
+     *
+     * The screen renders this and nothing else: the standing bid here IS the standing bid
+     * on the server, because nothing advances without a commit. It is a whitelist
+     * (openView.ts) — bids and bidder labels only, never a cost and never the `stopped`
+     * list, which is derived from costs and would give each rival's away to within one
+     * step.
+     */
+    auction: opened?.auction ?? null,
     /** ⚠ null until `finished_at` is stamped. See above — this is the gate. */
     revealRivalPoints,
     /**

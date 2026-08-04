@@ -374,6 +374,150 @@ range: §4 keeps that off the screen, and the styles need only the realized cost
 
 ---
 
+## 6g. Checkpoint 4a — the open format's playable loop (2026-08-04)
+
+§9 steps 1–5 only. Exit-price capture, the Tier-3 scatter, §5.2's round result, §5.3's
+final results and every report are CP4b and are deliberately **not** built.
+
+### The execution model, and what it cost
+
+Open §4.6 (new, 2026-08-04) rejects precomputing the cascade at round open and animating
+it client-side. **One bot bid = one server commit**, and `procurementAdvance` re-derives
+the decision from stored state and checks `nextBotAtMs` itself.
+
+⚠ **The CP3-era `openAuction.ts` was the rejected shape** and had to be rewritten, not
+extended. Its `settle()` ran the whole cascade to quiescence inside `openAuction()` and
+`playerBid()` — a client consuming it would necessarily have animated a result the server
+already held, which is the a60cf51 blocker in a new costume. The pure module now exposes
+`advanceOne` (one commit, timing-gated), and `settle` is reduced to "mark, schedule or
+terminate" with no loop. The ONE place a cascade still runs to quiescence in a single call
+is `playerDropOut`, because §4.4's table says so in those words — and it is safe there for
+a reason rather than by exception: the player is out, so nobody can bid against a price
+they cannot see.
+
+### ⚠⚠ The RNG key is `(participant, round, DECISION INDEX)` — and the first control missed it
+
+Bot response ordering is a new RNG consumer, and it is re-entered from storage on every
+callable invocation. A stream keyed only by (participant, round) is recreated at position
+0 on every decision, so **every decision in a round draws the same value** — under a seed
+the same bot wins every ordering race and the cascade reads exactly as mechanical as §4.3
+exists to avoid. `OpenState.decisions` is durable so the key can include it.
+
+⚠ **My first negative control for this passed under the mutation** — BUILD_NOTES §3's
+specimen collection gains a fifth entry, and it is the sharpest one yet. The control
+asserted "more than one distinct bidder appears in the cascade". Under the mutation the
+draw is constant, so `pick` selects a constant *index* of the willing list — but the
+willing list's membership still changes as the holder changes, **so the bidder still
+alternates and the test still passed**. It asserted a property of the stream using a
+measurement that cannot see the stream.
+
+The replacement is two controls, both verified to fail against the mutation:
+
+- **(a)** an `rngAt` spy asserting the requested indices are `0,1,2,…` — precise,
+  deterministic, and it also pins the positional convention (one draw per decision).
+- **(b)** the behavioural one: over a long cascade with four always-willing bots, every bot
+  gets a turn. Under a constant draw the choice cycles between exactly TWO bidders forever
+  and the other two never bid — which is what a player would actually see.
+
+### Storage — three recorded facts, no recipes
+
+| What | Where | Why there |
+|---|---|---|
+| player's cost | `participants/{pid}.open_round` | as CP3b (BUILD_NOTES §6e) |
+| **bot costs** | `truth/bots_{pid}.r{n}` | **rules-denied**; §4's own escape clause |
+| auction state | `participants/{pid}.open_auction` | rules-denied; carries `stopped` |
+
+**Bot costs must exist from round open, which the sealed format never required** — every
+bot decision, from the first, is a function of its cost. §4 anticipates it: "if drawn
+earlier for any reason, they live in the rules-denied `truth` subcollection". The doc id is
+`bots_{pid}` rather than the bare participant id so a participant called `main` cannot
+overwrite the seed doc. Three rules tests assert the path by NAME rather than trusting the
+`{doc}` wildcard, because the id is derived from the one string a student definitely knows.
+
+⚠ **The auction state is opened LAZILY, on arrival — the costs are not.** The transaction
+that resolves round *t* draws round *t+1*'s player cost and bot costs (facts, and drawing
+them a commit early is what makes the round advance atomic), but NOT its auction state:
+`nextBotAtMs` is a wall-clock fact, and a round opened while the student was still reading
+the previous result would have its first bot bid already overdue and fire the instant they
+arrived — the opposite of §3's pacing.
+
+### The leak boundary is `stopped`, not a cost
+
+`OpenState` contains no cost at all. The dangerous field is `stopped`: a list of bot ids
+derived from their costs, so "bot3 stopped at a standing of 48" says its cost is above 46.
+Shipped every step it gives each rival's cost away to within one step. `openView.ts` is a
+field-by-field whitelist; what crosses is the **count** §4.3 requires.
+
+⚠ **A value scan would be unsound here and is not used** — a bot cost is a small integer
+that frequently coincides with a legitimate bid on the same screen, so "no field equals 47"
+would pass by luck or fail on a correct payload. The control is a recursive key-set pin,
+mutation-verified by replacing the whitelist with a spread (both leak checks fail).
+
+⚠ **The classroom-shaped harness case here is NOT the sealed one.** §13's is "no seed, NO
+`truth/main`". The open format ALWAYS has truth. §15's control is **no seed, truth PRESENT,
+payload asserted cost-free**, and it cross-checks the active-bidder count against the bot
+costs read with owner credentials — a second source, not the server's arithmetic played
+back.
+
+### `botDelayMs` is gone
+
+Open §3 replaced the scalar pair with `delaySchedule`, read through the **same band lookup**
+as `decrementSchedule` (`bandAt` in `auction/schedule.ts`). Both schedules plus
+`delayJitterMs` are editable in Settings, because open §2/§10 name three levers for tuning
+the first live run — shorter delays, a coarser top band, a lower reserve — and require all
+three between rounds. A deploy is not a lever.
+
+⚠ The Settings editor refuses a malformed schedule locally AND the server rejects it by
+name. `parseDecrementSchedule` is a *defensive reader* for half-written docs: it substitutes
+the shipped default, which is right on the read path and wrong on a save, where an
+instructor who mistyped one band would be told "saved" and get the shipped schedule.
+
+### Where the refusals were, and what happens now
+
+| Was | Now |
+|---|---|
+| `submitBid.ts` threw `failed-precondition` "This instance runs the open-bid format, which does not use sealed submissions" | **Routes.** An open instance goes to `openSubmitBid`, which commits one bid into the live auction. A player's bid is a player's bid under either mechanism. |
+| `Play.tsx` rendered a "This instance uses the open-bid format / has not been built yet" notice | **Renders the real loop.** `params.format` selects the screen pair. |
+| `resolveRound.ts` — a declared, throwing stub reserved for the open format | **Deleted.** The format needed TWO callables (`procurementAdvance`, `procurementDropOut`) plus the shared bid path, so one "resolve" verb never fitted. ⚠ The old function stays DEPLOYED and harmless until somebody deletes it; nothing calls it. |
+
+The one-mechanism-per-instance guarantee did not weaken — it moved. `procurementAdvance`
+and `procurementDropOut` refuse a sealed instance, which harness §9 now asserts in place of
+the check it used to make.
+
+### Departures from the FINAL spec — none
+
+Everything below is scope, not divergence, but is recorded because a reader will look for it:
+
+- **No exit-price capture on the round record.** §9 step 6 is CP4b. `playerExit()` exists
+  and is unit-tested; nothing calls it. `open_history` IS stored, so CP4b can derive an exit
+  price for any round played before then. ⚠ `parseStoredRounds` round-trips `open_history`
+  even though nothing reads it — `rounds` is rewritten as a whole array on every submit, so
+  a dropped field would be deleted from every earlier round.
+- **`eq_bid`/`eq_won`/`eq_profit` are null/false/0 on every open round**, and that is the
+  shape rather than a stub: β is the *sealed* first-price equilibrium and there is no
+  closed form for this mechanism. §7's exit-price scatter is the open format's benchmark.
+  Consequence: `totalEquilibriumProfit` is 0 for an open instance, and the report's
+  benchmark column will read 0 until CP4b replaces it.
+- **The round-end and end-of-loop screens are deliberately spare** and are NOT §5.2/§5.3.
+  The gap message, the counterfactual and the replay are CP4b. `EndScreen` is explicitly
+  NOT reused: its scatter draws β, which is the wrong benchmark for this mechanism, and
+  drawing it would assert a line these rounds were never played against.
+
+### Two things raised for Elena at this checkpoint
+
+1. **"Still bidding" is read as "could make a FURTHER bid"** — a bot holding the low bid
+   that cannot legally go lower is NOT counted, even though it is winning. BUILD_NOTES §2
+   promised to raise this at CP4. Under the reference trace the two readings agree at every
+   step, so nothing in §8 distinguishes them; they differ only when the holder is priced out
+   by its own bid. Say the word and it becomes "still in the auction" — one line.
+2. **`§8.3` case 1 ends by Drop Out in the harness.** §4.4's second row is a WAIT, not a
+   resolution, so a round in which the player stops bidding never resolves on its own. That
+   is the spec, and it is right, but it means a student who simply stops has an unfinished
+   round rather than a played one — the same status a sealed abandoner has (Part 1 §6.3).
+   Worth confirming that is intended before CP4b writes it into participation.
+
+---
+
 ## 7. Which hosting targets a frontend change needs — the standing rule
 
 Read off `frontend/vite.config.ts` and `firebase.json`, not off convention.

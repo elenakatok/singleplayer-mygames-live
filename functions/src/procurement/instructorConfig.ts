@@ -4,10 +4,11 @@ import { FieldValue } from 'firebase-admin/firestore'
 import { extractInstructorGameId } from '@mygames/game-server'
 import {
   PROCUREMENT_CORS_ORIGINS, INSTANCES_COLLECTION, CONFIG_DOC, TRUTH_DOC,
-  loadProcurementConfig, loadProcurementSeed, parseDecrementSchedule,
+  loadProcurementConfig, loadProcurementSeed, parseDecrementSchedule, parseDelaySchedule,
   type CostDist,
   isFormat, defaultReserve,
   HARD_MIN_ROUNDS, HARD_MAX_ROUNDS, HARD_MIN_RIVALS, HARD_MAX_RIVALS,
+  HARD_MAX_DELAY_JITTER_MS,
 } from './config'
 import { KC_POOL_IDS, defaultVisibleFor, poolForFormat, gradedFor } from './questions'
 import { hasAnySubmission } from './instance'
@@ -207,16 +208,37 @@ export const procurementUpdateConfig = onCall({ cors: PROCUREMENT_CORS_ORIGINS }
   }
 
   // ── open-format pacing ──────────────────────────────────────────────────────
-  if ('decrementSchedule' in patch) {
-    configPatch.decrementSchedule = parseDecrementSchedule(patch.decrementSchedule)
+  //
+  // ⚠⚠ BOTH SCHEDULES ARE EDITABLE HERE BECAUSE TUNING THEM MUST NOT COST A DEPLOY. Open
+  // §2 and §10 name exactly three levers for the pacing of the first live run — shorter
+  // delays in the coarse bands, a coarser TOP BAND (20 above 80, cutting Phase 1 from ten
+  // steps to seven), or a lower reserve — and say all three must be reachable "between
+  // rounds, while the feel is fresh". The reserve is already above; these are the other two.
+  //
+  // ⚠ A REJECTED SCHEDULE IS NOT SILENTLY DEFAULTED HERE. `parseDecrementSchedule` is a
+  // DEFENSIVE READER for half-written docs — it substitutes the shipped default when it
+  // dislikes the input, which is right on the read path and wrong on a save, where an
+  // instructor who mistyped one band would be told "saved" and get the shipped schedule
+  // back. Same distinction the cost ranges make above.
+  const bandsIn = (raw: unknown, key: string, parse: (r: unknown) => unknown[]): unknown[] | null => {
+    if (!Array.isArray(raw) || raw.length === 0) { rejected.push(key); return null }
+    const parsed = parse(raw)
+    // The parser drops bands it cannot read; if any went missing, the instructor's input
+    // was not what would be stored, so refuse the whole save rather than half of it.
+    if (parsed.length !== raw.length) { rejected.push(key); return null }
+    return parsed
   }
-  if ('botDelayMs' in patch) {
-    const v = patch.botDelayMs
-    if (Array.isArray(v) && v.length === 2 && num(v[0]) && num(v[1]) && v[0] >= 0 && v[1] >= v[0]) {
-      configPatch.botDelayMs = [v[0], v[1]]
-    } else {
-      rejected.push('botDelayMs')
-    }
+  if ('decrementSchedule' in patch) {
+    const v = bandsIn(patch.decrementSchedule, 'decrementSchedule', parseDecrementSchedule)
+    if (v) configPatch.decrementSchedule = v
+  }
+  if ('delaySchedule' in patch) {
+    const v = bandsIn(patch.delaySchedule, 'delaySchedule', parseDelaySchedule)
+    if (v) configPatch.delaySchedule = v
+  }
+  if ('delayJitterMs' in patch) {
+    const v = intIn(patch.delayJitterMs, 0, HARD_MAX_DELAY_JITTER_MS)
+    if (v === null) rejected.push('delayJitterMs'); else configPatch.delayJitterMs = v
   }
 
   // ── labels + question switches ──────────────────────────────────────────────

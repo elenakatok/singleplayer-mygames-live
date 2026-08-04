@@ -140,6 +140,43 @@ describe('procurement_ rules — truth/ is denied to every client', () => {
         .collection('procurement_game_instances').doc(IID)
         .collection('truth').doc('main').set({ seed: 'mine' }))
   })
+
+  // ⚠⚠ THE OPEN FORMAT PUTS SOMETHING ELSE IN HERE, AND IT IS THE GAME ITSELF.
+  //
+  // Bot costs must exist from ROUND OPEN in the open format — every bot decision, from the
+  // first, is a function of its cost — which the sealed format never required, since there
+  // rival costs are drawn at resolution and simply do not exist before the bid. Spec §4
+  // anticipates exactly this: "if drawn earlier for any reason, they live in the
+  // rules-denied `truth` subcollection".
+  //
+  // The rule is `match /truth/{doc}`, so it already covers any doc id — but the id is
+  // DERIVED FROM THE PARTICIPANT'S OWN ID (`bots_{pid}`), which is the one string a student
+  // definitely knows. A student who guessed the path and got their round's bot costs would
+  // know every rival's stopping point before bidding, which is the whole auction. Asserted
+  // by NAME rather than left to the wildcard, and asserted for the student's OWN doc rather
+  // than a stranger's, because that is the reachable case.
+  const botsDoc = `bots_${STU_A}`
+
+  it('⚠⚠ a student cannot read their OWN round\'s bot costs', async () => {
+    await assertFails(
+      student(STU_A, IID)
+        .collection('procurement_game_instances').doc(IID)
+        .collection('truth').doc(botsDoc).get())
+  })
+
+  it('nor an unauthenticated client', async () => {
+    await assertFails(
+      testEnv.unauthenticatedContext().firestore()
+        .collection('procurement_game_instances').doc(IID)
+        .collection('truth').doc(botsDoc).get())
+  })
+
+  it('and nobody can write bot costs either', async () => {
+    await assertFails(
+      student(STU_A, IID)
+        .collection('procurement_game_instances').doc(IID)
+        .collection('truth').doc(botsDoc).set({ r1: [1, 1, 1, 1] }))
+  })
 })
 
 describe('procurement_ rules — participants are denied outright', () => {

@@ -5,6 +5,7 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 import { PageShell } from '../shared/PageShell'
 import { SequenceRunner, loopScreen, type SequenceScreen } from '../shared/sequence'
 import { PlaceBid, RoundResult } from './RoundScreen'
+import { OpenBidScreen, OpenRoundEnd, OpenAllRoundsDone } from './OpenBidScreen'
 import { KcScreen } from './KcScreen'
 import { FreeTextScreen } from './FreeTextScreen'
 import { EndScreen } from './EndScreen'
@@ -13,6 +14,7 @@ import {
   procurementBootstrap, procurementGetState, procurementGetQuestions, STUDENT_CLASSROOM_URL,
   type ProcurementParams, type ProcurementPlayedRow, type ProcurementRoundResult,
   type ProcurementKcQuestionClient, type ProcurementRivalPoint,
+  type ProcurementAuction, type ProcurementOpenTurn,
 } from './api'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -32,10 +34,20 @@ import {
 // the score is computed server-side out of `gradedFor()` at scoring time. There is no
 // `/17` in this file and there must never be one.
 //
-// ⚠ THE TWO FORMATS SHARE THIS ENTRY POINT. `state.params.format` selects the bidding
-// screen — sealed today, open at CP4 — and nothing else about the flow differs. The open
-// format has no screen yet and says so rather than rendering the sealed one, which would
-// resolve a different mechanism than the instance is configured for.
+// ⚠⚠ THE TWO FORMATS SHARE THIS ENTRY POINT, AND SHARE EVERYTHING EXCEPT THE ROUND LOOP.
+// KC, prep, debrief, resume and scoring are identical; `state.params.format` selects which
+// pair of screens the loop is built from.
+//
+// The CP3-era refusal that used to live here — a "This instance uses the open-bid format
+// … nothing you do here is recorded" notice — is GONE, replaced by the real screens. It
+// existed so an open instance could never be resolved through the sealed mechanism, and
+// that guarantee now comes from the server: `procurementSubmitBid` routes by format and
+// `procurementAdvance`/`procurementDropOut` refuse a sealed instance outright.
+//
+// ⚠ THE OPEN LOOP RE-READS `getState` BETWEEN ROUNDS. Each round's auction is opened
+// lazily by the server when the student arrives (openAuctionStore.ts), because
+// `nextBotAtMs` is a wall-clock fact — a round opened while the student was still reading
+// the previous result would have its first bot bid already overdue.
 //
 // RESUME: every step's completion is a fact stored on the SERVER — KC answers, the two
 // free-text answers, the rounds array. `resume.ts` turns those into an index; nothing is
@@ -56,7 +68,6 @@ type Loaded = {
 type Screen =
   | { name: 'loading' }
   | { name: 'error'; message: string }
-  | { name: 'unsupported-format' }
   | { name: 'flow' }
   | { name: 'done' }
 
@@ -91,6 +102,10 @@ export default function Play() {
   // because the state call that seeded this page was made before `finished_at` existed
   // and the server correctly refused to send it.
   const [rivalPoints, setRivalPoints] = useState<ProcurementRivalPoint[] | null>(null)
+  // ⚠ OPEN FORMAT ONLY. The auction the student is looking at, as the SERVER committed it.
+  // Null while the next round's is being fetched — the screen says so rather than showing
+  // a stale price from the round just finished.
+  const [auction, setAuction] = useState<ProcurementAuction | null>(null)
 
   useEffect(() => {
     if (session.kind !== 'ready') return
@@ -137,10 +152,9 @@ export default function Play() {
         })
         setCost(state.currentCost)
         setRivalPoints(state.revealRivalPoints)
+        setAuction(state.auction)
 
-        if (state.params.format !== 'sealed_first_price') {
-          setScreen({ name: 'unsupported-format' })
-        } else if (startIndex >= total) {
+        if (startIndex >= total) {
           setScreen({ name: 'done' })
         } else {
           setScreen({ name: 'flow' })
@@ -190,25 +204,25 @@ export default function Play() {
     )
   }
 
-  // ⚠ Refuses rather than falling back to the sealed screen. An open instance resolved
-  // through the sealed mechanism would produce rounds whose numbers mean something other
-  // than what the instance says they mean — what the `format` lock exists to prevent.
-  if (screen.name === 'unsupported-format') {
-    return (
-      <PageShell>
-        <Notice title="This instance uses the open-bid format">
-          <p>The open-bid auction has not been built yet. Nothing you do here is recorded.</p>
-          <p>Please tell your instructor — the instance needs to be set to the sealed-bid format.</p>
-        </Notice>
-      </PageShell>
-    )
-  }
-
   if (loaded === null) {
     return <PageShell><p style={{ fontFamily: typography.fontFamily }}>Loading…</p></PageShell>
   }
 
-  const results = (onContinue?: () => void) => (
+  const isOpen = loaded.params.format === 'open_descending'
+
+  // ⚠ THE OPEN FORMAT DOES NOT REUSE `EndScreen`. Its scatter plots bid against cost with
+  // the first-price optimal line β — the wrong benchmark for this mechanism entirely
+  // (open §7 replaces it with the exit-price scatter, which is CP4b). Drawing it here
+  // would assert a line these rounds were never played against.
+  const results = (onContinue?: () => void) => isOpen ? (
+    <OpenAllRoundsDone
+      params={loaded.params}
+      roundsPlayed={history.length}
+      roundsWon={totals.wins}
+      totalProfit={totals.profit}
+      onContinue={onContinue}
+    />
+  ) : (
     <EndScreen
       params={loaded.params}
       history={history}
@@ -219,6 +233,64 @@ export default function Play() {
       onContinue={onContinue}
     />
   )
+
+  /** Everything a turn's response says about where the student now stands. */
+  const applyTurn = (turn: ProcurementOpenTurn) => {
+    setHistory(turn.history)
+    setTotals({ profit: turn.totalProfit, benchmark: 0, wins: turn.roundsWon })
+  }
+
+  // ── THE OPEN LOOP (open §4.6, §5.1) ────────────────────────────────────────
+  const openLoop = loopScreen<ProcurementOpenTurn>({
+    id: 'procurement-open-rounds',
+    startIteration: loaded.startIteration,
+    ask: ({ iteration, onResult }) => (
+      // ⚠ Null means the next round's auction is still being opened. Showing the previous
+      // round's price here would be exactly the "server holds a price the screen has not
+      // reached" state §4.6 rejects — in miniature, and at the worst moment.
+      (auction === null || cost === null)
+        ? <p style={{ fontFamily: typography.fontFamily }}>Opening the next auction…</p>
+        : (
+          <OpenBidScreen
+            // ⚠ Keyed by round: the screen owns the live auction state, and it must be
+            // discarded rather than reconciled when the round changes.
+            key={auction.round}
+            params={loaded.params}
+            roundNumber={iteration + 1}
+            cost={cost}
+            auction={auction}
+            totalProfit={totals.profit}
+            onRoundEnd={turn => {
+              applyTurn(turn)
+              setAuction(turn.auction)
+              onResult(turn, turn.gameOver)
+            }}
+          />
+        )
+    ),
+    display: ({ result, done, onContinue }) => (
+      <OpenRoundEnd
+        params={loaded.params}
+        outcome={result.roundOutcome!}
+        done={done}
+        onContinue={() => {
+          if (done) { onContinue(); return }
+          // ⚠ CLEAR FIRST, THEN FETCH. The next round's auction is opened by the SERVER
+          // when this call arrives, so its `nextBotAtMs` starts from the moment the
+          // student actually gets there rather than from when the last round ended.
+          setAuction(null)
+          setCost(null)
+          onContinue()
+          void procurementGetState()
+            .then(s => { setCost(s.currentCost); setAuction(s.auction) })
+            .catch(() => setScreen({
+              name: 'error',
+              message: 'We could not open the next auction. Please reload the page.',
+            }))
+        }}
+      />
+    ),
+  })
 
   // The terminal view: everything is done, so the results screen stands alone with no
   // Continue. A returning student lands here.
@@ -247,8 +319,11 @@ export default function Play() {
       ),
     }] : []),
 
-    // ── The round loop: bid → reveal, until the SERVER says done ───────────────
-    loopScreen<ProcurementRoundResult>({
+    // ── The round loop. ⚠ ONE OR THE OTHER, chosen by the instance's format: an open
+    //    instance resolved through the sealed mechanism would produce rounds whose
+    //    numbers mean something other than what the instance says they mean, which is
+    //    what the `format` lock exists to prevent. The server refuses it independently.
+    isOpen ? openLoop : loopScreen<ProcurementRoundResult>({
       id: 'procurement-rounds',
       startIteration: loaded.startIteration,
       ask: ({ iteration, onResult }) => (

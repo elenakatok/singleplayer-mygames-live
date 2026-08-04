@@ -11,6 +11,7 @@ import {
   roundsWon, type StoredRound,
 } from './rounds'
 import { phaseOf } from './clientState'
+import { openSubmitBid } from './openPlay'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // procurementSubmitBid (student) — ONE SEALED ROUND: the family's COMPUTE STEP.
@@ -66,6 +67,35 @@ export const procurementSubmitBid = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, a
 
   const { participantId, gameInstanceId } = await extractStudentOnCallIds(data, isEmulator, authHeader)
 
+  const db = admin.firestore()
+  const { config, seed } = await loadInstance(db, gameInstanceId)
+
+  // ⚠⚠ THE OPEN FORMAT IS ROUTED, NOT REFUSED — replacing the CP3-era refusal that lived
+  // here ("This instance runs the open-bid format, which does not use sealed
+  // submissions.") and threw `failed-precondition`.
+  //
+  // A player's bid is a player's bid under either mechanism, so it keeps one callable and
+  // one client entry point. What differs is everything AFTER it: the sealed path below
+  // draws the rivals and resolves the round in this one transaction, while the open path
+  // commits one bid into a live auction that may run for another dozen commits (§4.6).
+  //
+  // ⚠ THE ROUND NUMBER IS NOT PART OF THE OPEN CONTRACT. Sealed needs it for
+  // submit-and-lock idempotency — a resubmit for a stored round must not redraw. The open
+  // format's round is whatever the server's own auction state says it is, and a bid
+  // carries a `sequence` instead, which is a claim about the PRICE rather than the round.
+  if (config.format === 'open_descending') {
+    const amount = data.bid
+    if (typeof amount !== 'number' || !Number.isFinite(amount)) {
+      throw new HttpsError('invalid-argument', 'Enter a whole number of ECU.')
+    }
+    const seq = data.sequence
+    return openSubmitBid(
+      request as never,
+      amount,
+      typeof seq === 'number' && Number.isInteger(seq) ? seq : null,
+    )
+  }
+
   // Which round the client believes it is playing (1-based). Required, and checked
   // against the server's own count below — the client's number is a claim to verify,
   // never the source of truth. It is what makes a retry idempotent instead of a second
@@ -73,18 +103,6 @@ export const procurementSubmitBid = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, a
   const roundNumber = data.round
   if (typeof roundNumber !== 'number' || !Number.isInteger(roundNumber) || roundNumber < 1) {
     throw new HttpsError('invalid-argument', 'round must be a positive integer.')
-  }
-
-  const db = admin.firestore()
-  const { config, seed } = await loadInstance(db, gameInstanceId)
-
-  // ⚠ The open format does not resolve through this callable at all (Part 2 §4) — it is
-  // an unbounded exchange, and `procurementResolveRound` owns it. Refusing here rather
-  // than resolving a sealed round in an open instance keeps one mechanism per instance,
-  // which is the whole point of the `format` lock (instance.ts).
-  if (config.format !== 'sealed_first_price') {
-    throw new HttpsError('failed-precondition',
-      'This instance runs the open-bid format, which does not use sealed submissions.')
   }
 
   // Bid validation needs the instance's reserve, so it happens after the config load —

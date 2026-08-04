@@ -184,11 +184,12 @@ export { forecastGetConfig, forecastUpdateConfig } from './forecast/instructorCo
 
 // ── Procurement Auction (game_id: procurement) ────────────────────────────────
 //
-// SPAWN — the shell only. Instructor surfaces, the knowledge-check machinery, the
-// roster, scoring and the gradebook push are real; the BIDDING ROUND IS NOT BUILT.
-// procurementSubmitBid and procurementResolveRound are declared, deployable stubs that
-// throw `unimplemented` (see their headers for why they ship now: IAM invoker bindings
-// are per-function and persist, so declaring the full set means binding once).
+// ⚠⚠ `procurementResolveRound` IS GONE (CP4a). It was a declared, throwing stub reserved
+// for the open format. The open format turned out to need TWO callables rather than one —
+// `procurementAdvance` (commit one bot bid) and `procurementDropOut` — while the player's
+// own bid routes through `procurementSubmitBid` like the sealed format's, so a single
+// "resolve" verb never fitted. The old function stays DEPLOYED and harmless until
+// somebody deletes it; nothing calls it.
 //
 // ⚠ ONE GAME, TWO FORMATS, ONE game_id. `format` (sealed_first_price | open_descending)
 // is INSTANCE CONFIG — never a second game_id and never a second set of callables. Same
@@ -208,8 +209,13 @@ export const procurementInstructorSession = makeSinglePlayerInstructorSession({
 
 // Student.
 export { procurementGetState } from './procurement/getState'
-export { procurementSubmitBid } from './procurement/submitBid'          // ⚠ stub
-export { procurementResolveRound } from './procurement/resolveRound'    // ⚠ stub (open format)
+// ⚠ ONE bid callable for BOTH formats. Sealed resolves the whole round in its
+// transaction; open commits one bid into a live auction (procurement/openPlay.ts).
+export { procurementSubmitBid } from './procurement/submitBid'
+// ⚠ OPEN FORMAT ONLY. `procurementAdvance` is the client's tick — it commits AT MOST ONE
+// bot bid and checks the due time itself, so the client controls only WHEN to ask
+// (open §4.6). `procurementDropOut` exists here and only here (open §4.5).
+export { procurementAdvance, procurementDropOut } from './procurement/openPlay'
 export { procurementGetQuestions } from './procurement/getQuestions'
 export { procurementSubmitKcAnswer } from './procurement/submitKcAnswer'
 // ⚠ ONE callable for BOTH open-response paragraphs (prep and debrief), routed by the

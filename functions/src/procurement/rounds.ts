@@ -92,6 +92,55 @@ export interface StoredRound {
   /** Profit under β against these rivals. Summed across rounds this is "a perfect
    *  player would have earned X from your draws" (§9). */
   eq_profit: number
+  /**
+   * OPEN FORMAT ONLY — every bid and drop-out of the round, in order.
+   *
+   * ⚠ ABSENT ON EVERY SEALED ROUND, and that is the shape rather than a gap: a sealed
+   * round has one simultaneous bid per bidder and nothing to replay. Open §4.6 lists
+   * "the round is replayable from its record" as a property that falls out of
+   * commit-per-step, and §5.2 needs it.
+   *
+   * ⚠⚠ IT IS PARSED AND CARRIED THROUGH `parseStoredRounds` EVEN THOUGH NOTHING READS IT
+   * YET. `rounds` is rewritten as a WHOLE ARRAY on every submit (see submitBid.ts), so a
+   * field the parser dropped would be silently deleted from every earlier round the next
+   * time the student played one. Round-tripping it is not optimism about CP4b; it is what
+   * stops this build destroying its own data.
+   *
+   * ⚠ NO EXIT PRICE HERE. Exit-price capture is §9 step 6 (CP4b) and is deliberately not
+   * built — see BUILD_NOTES. The history below is what CP4b will derive it from for any
+   * round played before then.
+   */
+  open_history?: OpenEventRecord[]
+}
+
+/** One event of an open round, as stored. snake_case to match the rest of the record. */
+export interface OpenEventRecord {
+  kind: 'bid' | 'dropOut'
+  bidder_id: string
+  /** Absent on a drop-out. */
+  amount?: number
+  is_player: boolean
+}
+
+/** Defensive read of an open round's history. ⚠ ALL-OR-NOTHING: a partially-parsed
+ *  history would be a replay that silently skipped a bid, which is worse than none. */
+export function parseOpenHistory(raw: unknown): OpenEventRecord[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: OpenEventRecord[] = []
+  for (const el of raw) {
+    if (typeof el !== 'object' || el === null) return undefined
+    const e = el as Record<string, unknown>
+    if (e.kind !== 'bid' && e.kind !== 'dropOut') return undefined
+    if (typeof e.bidder_id !== 'string') return undefined
+    const isPlayer = e.is_player === true
+    if (e.kind === 'dropOut') {
+      out.push({ kind: 'dropOut', bidder_id: e.bidder_id, is_player: isPlayer })
+      continue
+    }
+    if (typeof e.amount !== 'number' || !Number.isFinite(e.amount)) return undefined
+    out.push({ kind: 'bid', bidder_id: e.bidder_id, amount: e.amount, is_player: isPlayer })
+  }
+  return out
 }
 
 /** One resolved round, AS SENT TO THE STUDENT (camelCase, client style). Derived only.
@@ -161,6 +210,12 @@ export function parseStoredRounds(raw: unknown): StoredRound[] {
       eq_bid: num(r.eq_bid) ? r.eq_bid : null,
       eq_won: r.eq_won === true,
       eq_profit: num(r.eq_profit) ? r.eq_profit : 0,
+      // ⚠ Round-tripped, never dropped — see the field's note. `undefined` on a sealed
+      // round, and Firestore is told to ignore undefined properties (index.ts), so an
+      // absent history stays absent rather than becoming a null.
+      ...(parseOpenHistory(r.open_history) !== undefined
+        ? { open_history: parseOpenHistory(r.open_history) }
+        : {}),
     })
   }
   return out

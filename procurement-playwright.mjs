@@ -94,10 +94,17 @@ let seq = 0
 /** ⚠ ONE WRITE, EVERY FIELD — a REST PATCH with no updateMask REPLACES the document, so
  *  a second "just add the KC keys" call silently deletes `rounds` and `reserve` and the
  *  instance falls back to shipped defaults. Learned the hard way on 08-03. */
-async function makeInstance({ rounds, reserve, seed, kcVisible }) {
+async function makeInstance({
+  rounds, reserve, seed, kcVisible,
+  format = 'sealed_first_price',
+  // ⚠ OPEN-FORMAT PACING. The [OPEN] section sets a SHORT but NON-ZERO delay: zero would
+  // make the client's tick indistinguishable from a synchronous loop, and the tick is the
+  // one piece of this screen that static render tests cannot reach.
+  delayMs = null, delayJitterMs = null,
+}) {
   const gid = `pwproc-${++seq}-${Date.now()}`
   await putDoc(`procurement_game_instances/${gid}/config/main`, {
-    format: strVal('sealed_first_price'),
+    format: strVal(format),
     rounds: intVal(rounds),
     rivalCount: intVal(4),
     reserve: intVal(reserve),
@@ -107,8 +114,14 @@ async function makeInstance({ rounds, reserve, seed, kcVisible }) {
     currencyLabel: strVal('ECU'),
     kcEnabled: boolVal(kcVisible.length > 0),
     kcVisible: arrVal(kcVisible.map(strVal)),
+    ...(delayMs === null ? {} : {
+      delaySchedule: arrVal([mapVal({ above: intVal(0), delayMs: intVal(delayMs) })]),
+    }),
+    ...(delayJitterMs === null ? {} : { delayJitterMs: intVal(delayJitterMs) }),
   })
-  await putDoc(`procurement_game_instances/${gid}/truth/main`, { seed: strVal(seed) })
+  if (seed !== null) {
+    await putDoc(`procurement_game_instances/${gid}/truth/main`, { seed: strVal(seed) })
+  }
   return gid
 }
 
@@ -623,6 +636,111 @@ async function main() {
       '⚠ [launcher] and its prep answer is MARKED as a demo seat in Elena\'s report')
 
     await page.close(); await rp.close(); await irp.close(); await irpB.close(); await lp.close()
+
+    // ═════════════════════════════════════════════════════════════════════════
+    section('[OPEN]  The open-bid auction, driven by the browser\'s own tick')
+
+    // ⚠⚠ THIS SECTION EXISTS FOR ONE THING THE OTHER TESTS CANNOT REACH: THE TICK.
+    // `renderToStaticMarkup` does not run effects, and the emulator harness calls
+    // `procurementAdvance` itself — so in both of those the CLIENT'S TIMER is untested.
+    // If it never fires, the auction sits at the reserve forever and the game is
+    // unplayable, and nothing green anywhere else would say so. Here the browser is left
+    // alone and the price has to fall by itself.
+    //
+    // ⚠ A REAL, SHORT DELAY (120ms), not zero. Zero would let a synchronous loop pass —
+    // the harness must observe the client WAITING and then asking.
+    const gidO = await makeInstance({
+      rounds: 2, reserve: RESERVE, seed: null, kcVisible: [],
+      format: 'open_descending', delayMs: 120, delayJitterMs: 0,
+    })
+    const pidO = 'pw-open'
+    const op = await browser.newPage()
+    await op.goto(studentUrl(gidO, pidO))
+
+    // With no KC the flow opens straight on the auction.
+    await op.waitForSelector('[data-testid="proc-open-standing"]', { timeout: 30_000 })
+    check(true, '[open] the flow opens on the LIVE BIDDING SCREEN, not on a "not built" notice')
+
+    const opened = Number(await testId(op, 'proc-open-standing'))
+    check(opened === RESERVE, `[open] and it opens at the reserve (${opened})`)
+
+    // ⚠ THE ASSERTION THE WHOLE SECTION IS FOR: nothing is touched, and the price falls.
+    await op.waitForFunction(
+      (r) => {
+        const el = document.querySelector('[data-testid="proc-open-standing"]')
+        return el !== null && Number(el.textContent) < r
+      },
+      RESERVE, { timeout: 20_000 },
+    )
+    check(true, '⚠⚠ [open] the price falls WITHOUT the harness touching anything — the client tick fires')
+
+    // Let the cascade run itself out. "Nobody else will go lower" is the halt.
+    await op.waitForSelector('[data-testid="proc-open-waiting"]', { timeout: 30_000 })
+    const halted = Number(await testId(op, 'proc-open-standing'))
+    check(halted < RESERVE, `[open] the cascade halts on its own at ${halted}`)
+    check(/not winning/i.test(await testId(op, 'proc-open-winning')),
+      '[open] and the student is told they are not winning')
+
+    // ⚠ AND IT STAYS HALTED. §4.4: no clock, no timeout, no auto-resolve.
+    const beforeIdle = await testId(op, 'proc-open-standing')
+    await op.waitForTimeout(2_000)
+    check(await testId(op, 'proc-open-standing') === beforeIdle,
+      '⚠ [open] an idle round does not move, and does not resolve — there is no clock (§4.4)')
+    check(await exists(op, '[data-testid="proc-open-dropout"]'),
+      '[open] Bid and Drop Out are still live after the wait')
+
+    // ⚠ THE BID BOX IS PRE-FILLED WITH THE MINIMUM LEGAL BID, and the button names it.
+    const minShown = await testId(op, 'proc-open-min')
+    const boxValue = await op.locator('[data-testid="proc-open-bid-input"]').inputValue()
+    check(minShown.startsWith(`${boxValue} `),
+      `[open] the box is pre-filled with the minimum next bid (${boxValue} / "${minShown}")`)
+    check((await testId(op, 'proc-open-bid-min')).includes(boxValue),
+      '[open] and the one-click button names the same number')
+
+    // ⚠ AN ILLEGAL BID IS REFUSED IN THE UI, with a reason, and the round survives it.
+    await op.fill('[data-testid="proc-open-bid-input"]', String(halted))
+    await op.click('[data-testid="proc-open-bid"]')
+    await op.waitForSelector('[data-testid="proc-open-error"]', { timeout: 15_000 })
+    check(/must bid at least|price moved/i.test(await testId(op, 'proc-open-error')),
+      '[open] an illegal bid is refused with a visible reason')
+
+    // Now play the round out with the one-click button until it ends.
+    for (let i = 0; i < 40; i++) {
+      if (await exists(op, '[data-testid="proc-open-continue"]')) break
+      if (await exists(op, '[data-testid="proc-open-bid-min"]')
+        && await op.locator('[data-testid="proc-open-bid-min"]').isEnabled()) {
+        await op.click('[data-testid="proc-open-bid-min"]')
+      }
+      await op.waitForTimeout(400)
+    }
+    check(await exists(op, '[data-testid="proc-open-continue"]'),
+      '⚠ [open] bidding the minimum repeatedly ENDS the round — the duel terminates')
+    const finalPrice = await testId(op, 'proc-open-final-price')
+    check(/\d+ ECU/.test(finalPrice), `[open] and the final price is shown (${finalPrice})`)
+
+    // ⚠ THE NEXT ROUND OPENS FRESH, AT THE RESERVE — the lazily-opened auction arriving
+    // when the student does, rather than one already half-overdue.
+    await op.click('[data-testid="proc-open-continue"]')
+    await op.waitForSelector('[data-testid="proc-open-standing"]', { timeout: 30_000 })
+    check(Number(await testId(op, 'proc-open-standing')) === RESERVE,
+      '[open] round 2 opens fresh at the reserve')
+
+    // Drop out of round 2 — the format's own action, and the end of the game.
+    await op.click('[data-testid="proc-open-dropout"]')
+    await op.waitForSelector('[data-testid="proc-open-continue"]', { timeout: 30_000 })
+    check(/dropped out/i.test(await bodyText(op)),
+      '[open] Drop Out ends the round and is described as a decision, not an absence')
+    await op.click('[data-testid="proc-open-continue"]')
+    await op.waitForSelector('[data-testid="proc-open-total"]', { timeout: 30_000 })
+    check(/That is all 2 auctions/.test(await bodyText(op)),
+      '[open] and two rounds finish the game')
+
+    const openRep = await callFn('procurementGetReport', { _dev: { game_instance_id: gidO } })
+    const openRow = openRep.rows.find(r => r.participantId === pidO)
+    check(openRow?.roundsPlayed === 2,
+      '[open] the server has both rounds on record — including the Drop Out one')
+
+    await op.close()
   } finally {
     await browser.close()
     vite.kill('SIGKILL')

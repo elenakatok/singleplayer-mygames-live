@@ -3,7 +3,9 @@
 //
 // Authorities: `Procurement_Auction_Specification_v3_sealed_FINAL.md` §3 (Part 1) and
 // `Procurement_Auction_Specification_v2_open_FINAL.md` §3 (Part 2). Part 1 is the
-// parent document; Part 2 adds `decrementSchedule` and `botDelayMs` and nothing else.
+// parent document; Part 2 adds `decrementSchedule`, `delaySchedule` and `delayJitterMs`
+// and nothing else. ⚠ `botDelayMs` is GONE — open §3 (2026-08-04) replaced the scalar
+// pair with a band schedule, for the reason recorded beside DEFAULT_DELAY_SCHEDULE.
 //
 // ⚠⚠ ONE GAME, TWO FORMATS, ONE game_id (Part 1 §14.1). `format` is INSTANCE CONFIG,
 // never a second game_id and never a second set of callables — the Pricing/PMG
@@ -30,6 +32,8 @@
 // specs imply; if it is wrong the fix is to move the key into truth/ before any
 // instance exists, which is cheap now and expensive after 11/01.
 // ═══════════════════════════════════════════════════════════════════════════════
+
+import type { DecrementBand, DelayBand } from './auction/schedule'
 
 /** game_id — lowercase, never displayed. Drives the collection prefix + fn names. */
 export const PROCUREMENT_GAME_ID = 'procurement'
@@ -116,8 +120,12 @@ export const DEFAULT_PLAYER_COST_DIST: CostDist =
  */
 export const defaultReserve = (rivalCostDist: CostDist): number => rivalCostDist.max
 
-/** Open format only (Part 2 §3). A MINIMUM step per price band, not a fixed step. */
-export interface DecrementBand { above: number; step: number }
+/** Open format only (Part 2 §3). A MINIMUM step per price band, not a fixed step.
+ *  ⚠ The band TYPES have one author — `auction/schedule.ts`, which also owns the single
+ *  band-lookup both schedules read through. Re-exported here so config consumers do not
+ *  have to know that, and so a second, subtly different `{ above, step }` cannot appear. */
+export type { DecrementBand, DelayBand }
+
 export const DEFAULT_DECREMENT_SCHEDULE: DecrementBand[] = [
   { above: 80, step: 10 },
   { above: 50, step: 5 },
@@ -125,9 +133,31 @@ export const DEFAULT_DECREMENT_SCHEDULE: DecrementBand[] = [
   { above: 0, step: 1 },
 ]
 
-/** Open format only (Part 2 §3). Randomized per bot decision. UX only, never strategic.
- *  ⚠ Tune from the first live run. */
-export const DEFAULT_BOT_DELAY_MS: [number, number] = [1000, 2000]
+/**
+ * Open format only (Part 2 §3). ⚠⚠ THIS REPLACES v2's `botDelayMs` SCALAR PAIR, and the
+ * replacement is the point rather than a refactor: open §2's pacing arithmetic shows a
+ * single uniform delay cannot serve both phases — fast enough to keep the ten-step bot
+ * cascade from dragging is too fast for a human to decide and click in the endgame duel.
+ * Phase 1 lives almost entirely in the coarse bands and Phase 2 always in the fine ones,
+ * so band-based pacing separates them with no special-casing at all.
+ *
+ * ⚠ TUNE FROM THE FIRST LIVE RUN. It is instance config precisely so that costs a
+ * settings edit, not a deploy (open §2, §9 step 5).
+ */
+export const DEFAULT_DELAY_SCHEDULE: DelayBand[] = [
+  { above: 80, delayMs: 800 },
+  { above: 50, delayMs: 1200 },
+  { above: 30, delayMs: 2500 },
+  { above: 0, delayMs: 3000 },
+]
+
+/** Open format only (Part 2 §3). Randomized ± per bot decision so the rhythm is not
+ *  metronomic. ⚠ UX ONLY, NEVER STRATEGIC — it must not reach a bot's decision. */
+export const DEFAULT_DELAY_JITTER_MS = 250
+
+/** A jitter wider than this is refused: at some point the "random" wait stops reading as
+ *  a person thinking and starts reading as a broken page. Wide enough to be a choice. */
+export const HARD_MAX_DELAY_JITTER_MS = 5_000
 
 // ── Labels + question switches ─────────────────────────────────────────────────
 
@@ -157,8 +187,10 @@ export interface ProcurementConfig {
   bidIncrementUnit: number
   /** Open format only. Inert in a sealed instance, never removed from the shape. */
   decrementSchedule: DecrementBand[]
-  /** Open format only. */
-  botDelayMs: [number, number]
+  /** Open format only. ⚠ Replaces v2's `botDelayMs` scalar pair — see the default above. */
+  delaySchedule: DelayBand[]
+  /** Open format only. ± ms around the scheduled delay. UX only, never strategic. */
+  delayJitterMs: number
   currencyLabel: string
   /**
    * Is the reserve still FOLLOWING the top of the rival cost range?
@@ -199,7 +231,8 @@ export const DEFAULT_CONFIG: ProcurementConfig = {
   playerCostDist: DEFAULT_PLAYER_COST_DIST,
   bidIncrementUnit: DEFAULT_BID_INCREMENT_UNIT,
   decrementSchedule: DEFAULT_DECREMENT_SCHEDULE,
-  botDelayMs: DEFAULT_BOT_DELAY_MS,
+  delaySchedule: DEFAULT_DELAY_SCHEDULE,
+  delayJitterMs: DEFAULT_DELAY_JITTER_MS,
   currencyLabel: DEFAULT_CURRENCY_LABEL,
   reserveAuto: true,
   kcEnabled: DEFAULT_KC_ENABLED,
@@ -240,29 +273,55 @@ export function parseCostDist(raw: unknown, fallback: CostDist): CostDist {
   return { distribution: 'uniform', min, max, integer: bool(d.integer, fallback.integer) }
 }
 
-/** The decrement schedule, read defensively and SORTED DESCENDING BY BAND.
- *  Order is load-bearing — the lookup takes the first band whose `above` the current
- *  price exceeds — so it is normalized here rather than trusted from the doc. */
-export function parseDecrementSchedule(raw: unknown): DecrementBand[] {
-  if (!Array.isArray(raw)) return DEFAULT_DECREMENT_SCHEDULE
-  const out: DecrementBand[] = []
+/**
+ * A band schedule, read defensively and SORTED DESCENDING BY BAND.
+ *
+ * ⚠ ORDER IS LOAD-BEARING — `bandAt` takes the FIRST band whose `above` the current price
+ * exceeds — so it is normalized here rather than trusted from the doc. An instructor who
+ * types the bands bottom-up gets the schedule they meant rather than a silently inverted
+ * one, and the two schedules cannot disagree about it because they share this parser.
+ *
+ * ⚠ A schedule that parses to NOTHING falls back to the shipped default in full, never to
+ * an empty array: `bandAt` throws on an empty schedule, and a config edit must not be able
+ * to make an instance unplayable.
+ */
+function parseBands<T extends { above: number }>(
+  raw: unknown,
+  fallback: T[],
+  readValue: (b: Record<string, unknown>) => Partial<T> | null,
+): T[] {
+  if (!Array.isArray(raw)) return fallback
+  const out: T[] = []
   for (const el of raw) {
     if (typeof el !== 'object' || el === null) continue
     const b = el as Record<string, unknown>
-    if (typeof b.above !== 'number' || !Number.isFinite(b.above)) continue
-    if (typeof b.step !== 'number' || !Number.isInteger(b.step) || b.step < 1) continue
-    out.push({ above: b.above, step: b.step })
+    if (typeof b.above !== 'number' || !Number.isFinite(b.above) || b.above < 0) continue
+    const value = readValue(b)
+    if (value === null) continue
+    out.push({ above: b.above, ...value } as T)
   }
-  if (out.length === 0) return DEFAULT_DECREMENT_SCHEDULE
+  if (out.length === 0) return fallback
   return out.sort((a, b) => b.above - a.above)
 }
 
-function parseBotDelay(raw: unknown): [number, number] {
-  if (!Array.isArray(raw) || raw.length !== 2) return DEFAULT_BOT_DELAY_MS
-  const [lo, hi] = raw
-  if (typeof lo !== 'number' || typeof hi !== 'number') return DEFAULT_BOT_DELAY_MS
-  if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo < 0 || hi < lo) return DEFAULT_BOT_DELAY_MS
-  return [lo, hi]
+export function parseDecrementSchedule(raw: unknown): DecrementBand[] {
+  return parseBands<DecrementBand>(raw, DEFAULT_DECREMENT_SCHEDULE, b =>
+    // ⚠ A step of 0 is refused, not clamped. It would make `maxLegalBid` return the
+    // standing price itself, so a bot would "undercut" without moving and the cascade
+    // would never terminate — the case `settle`'s loop guard exists to shout about.
+    typeof b.step === 'number' && Number.isInteger(b.step) && b.step >= 1
+      ? { step: b.step }
+      : null)
+}
+
+/** The DELAY schedule (open §3) — same shape, same parser, same lookup as the decrement
+ *  schedule. ⚠ A delay of 0 is legal: an instructor testing pacing may want the cascade
+ *  to run flat out, and nothing breaks if it does. */
+export function parseDelaySchedule(raw: unknown): DelayBand[] {
+  return parseBands<DelayBand>(raw, DEFAULT_DELAY_SCHEDULE, b =>
+    typeof b.delayMs === 'number' && Number.isFinite(b.delayMs) && b.delayMs >= 0
+      ? { delayMs: Math.round(b.delayMs) }
+      : null)
 }
 
 /**
@@ -315,7 +374,8 @@ export function loadProcurementConfig(
     playerCostDist,
     bidIncrementUnit: int(d.bidIncrementUnit, DEFAULT_BID_INCREMENT_UNIT, 1, 1000),
     decrementSchedule: parseDecrementSchedule(d.decrementSchedule),
-    botDelayMs: parseBotDelay(d.botDelayMs),
+    delaySchedule: parseDelaySchedule(d.delaySchedule),
+    delayJitterMs: int(d.delayJitterMs, DEFAULT_DELAY_JITTER_MS, 0, HARD_MAX_DELAY_JITTER_MS),
     currencyLabel: str(d.currencyLabel, DEFAULT_CURRENCY_LABEL),
     // ⚠ Defaults TRUE, so an instance written before this field existed behaves as it
     // always did: its reserve equals the rival max and follows it.

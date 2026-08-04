@@ -60,8 +60,21 @@ export function clientParams(config: ProcurementConfig) {
     // never sends cannot be rendered by a later screen that did not know the rule.
     bidIncrementUnit: config.bidIncrementUnit,
     currencyLabel: config.currencyLabel,
-    /** Open format only — inert and harmless in a sealed instance. */
+    /**
+     * Open format only — inert and harmless in a sealed instance.
+     *
+     * ⚠ THE SCREEN NEEDS BOTH SCHEDULES, AND NEITHER IS SECRET. The decrement schedule is
+     * printed as "bids must fall by at least N" and pre-fills the bid box (open §5.1); the
+     * delay schedule tells the client HOW LONG TO WAIT before asking whether a bot is due.
+     * The client's timing is advisory in any case — `advanceOne` re-checks `nextBotAtMs`
+     * server-side (§4.6) — so a client that ignored the delays would gain a bid it was
+     * going to get anyway, one moment early.
+     *
+     * ⚠ `botDelayMs` IS GONE (open §3, 2026-08-04). The scalar pair could not serve both
+     * phases of the auction; see DEFAULT_DELAY_SCHEDULE in config.ts.
+     */
     decrementSchedule: config.decrementSchedule,
-    botDelayMs: config.botDelayMs,
+    delaySchedule: config.delaySchedule,
+    delayJitterMs: config.delayJitterMs,
   }
 }

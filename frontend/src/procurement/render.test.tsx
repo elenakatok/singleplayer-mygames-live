@@ -34,7 +34,8 @@ const PARAMS: ProcurementParams = {
   bidIncrementUnit: 1,
   currencyLabel: 'ECU',
   decrementSchedule: [],
-  botDelayMs: [1000, 2000],
+  delaySchedule: [],
+  delayJitterMs: 250,
 }
 
 const row = (over: Partial<ProcurementPlayedRow> = {}): ProcurementPlayedRow => ({

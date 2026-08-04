@@ -40,6 +40,74 @@ const label = { display: 'block', fontSize: '0.8rem', fontWeight: 600, marginBot
 const field = { marginBottom: '1rem', maxWidth: '22rem' }
 const input = { width: '100%', padding: '0.35rem 0.5rem', fontSize: '0.9rem' }
 
+/** `[{above:80,step:10},…]` ⇄ `"80:10, 50:5"`. One line is faster to retune between
+ *  rounds than four pairs of number boxes, and — unlike fixed boxes — it lets the BAND
+ *  BOUNDARIES move, which is the "coarser top band" lever open §10 asks for by name. */
+const bandsToText = (bands: Record<string, number>[], valueKey: string) =>
+  bands.map(b => `${b.above}:${b[valueKey]}`).join(', ')
+
+function parseBandText(text: string, valueKey: string): Record<string, number>[] | null {
+  const parts = text.split(',').map(p => p.trim()).filter(p => p !== '')
+  if (parts.length === 0) return null
+  const out: Record<string, number>[] = []
+  for (const p of parts) {
+    const m = /^(\d+)\s*:\s*(\d+)$/.exec(p)
+    if (!m) return null
+    out.push({ above: Number(m[1]), [valueKey]: Number(m[2]) })
+  }
+  return out
+}
+
+/**
+ * One band schedule, edited as text.
+ *
+ * ⚠ IT REFUSES LOCALLY RATHER THAN POSTING SOMETHING THE SERVER WILL SILENTLY REPAIR.
+ * `parseDecrementSchedule` on the server is a DEFENSIVE READER for half-written docs — it
+ * substitutes the shipped default when it dislikes the input — so a mistyped band posted
+ * blind would come back as "saved" with the shipped schedule in place of the instructor's.
+ * The server's update path rejects by name for the same reason; this is the courtesy layer.
+ */
+function BandField({
+  id, testId, label: labelText, help, valueKey, bands, busy, onSave,
+}: {
+  id: string
+  testId: string
+  label: string
+  help: string
+  valueKey: string
+  bands: Record<string, number>[]
+  busy: boolean
+  onSave: (bands: Record<string, number>[]) => void
+}) {
+  const stored = bandsToText(bands, valueKey)
+  const [text, setText] = useState(stored)
+  const [bad, setBad] = useState(false)
+  // Re-sync when a save lands (or another field's save reloads the config).
+  const [lastStored, setLastStored] = useState(stored)
+  if (lastStored !== stored) { setLastStored(stored); setText(stored); setBad(false) }
+
+  return (
+    <div style={{ ...field, maxWidth: '30rem' }}>
+      <label style={label} htmlFor={id}>{labelText}</label>
+      <input id={id} data-testid={testId} style={input} value={text} disabled={busy}
+        onChange={e => { setText(e.target.value); setBad(false) }}
+        onBlur={() => {
+          if (text.trim() === stored.trim()) return
+          const parsed = parseBandText(text, valueKey)
+          if (parsed === null) { setBad(true); return }
+          onSave(parsed)
+        }} />
+      {bad && (
+        <p data-testid={`${testId}-bad`} style={{ fontSize: '0.75rem', color: colors.warnBannerText }}>
+          ⚠ Not saved. Write whole-number <code>above:value</code> pairs separated by
+          commas, for example <code>{stored}</code>.
+        </p>
+      )}
+      <p style={{ fontSize: '0.75rem', color: colors.textSecondary }}>{help}</p>
+    </div>
+  )
+}
+
 export default function Settings() {
   const session = useInstructorSession(procurementInstructorSession)
   const navigate = useNavigate()
@@ -252,6 +320,62 @@ export default function Settings() {
                 price in the open one. Defaults to the top of the rival cost range
                 ({c.rivalCostDist.max}). Lowering it prices some suppliers out — that is
                 the entry decision from the lecture, and it is intentional.
+              </p>
+            </div>
+          </section>
+
+          {/* ── open-bid pacing (open §3) ──────────────────────────────────── */}
+          <section style={{ marginBottom: '2rem' }}>
+            <h2 style={{ fontSize: '0.95rem' }}>Open-bid pacing</h2>
+            {/* ⚠⚠ THESE EXIST HERE BECAUSE TUNING THEM MUST NOT COST A DEPLOY. Open §2 and
+                §10 name three levers for the first live run — shorter delays in the coarse
+                bands, a COARSER TOP BAND (20 above 80, cutting the opening cascade from ten
+                steps to seven), or a lower reserve — and require all three to be reachable
+                between rounds while the feel is fresh. The reserve is above; these are the
+                other two. */}
+            <p style={{ fontSize: '0.8rem', color: colors.textSecondary, marginTop: 0 }}>
+              Both are <strong>schedules read against the current price</strong>, written as
+              {' '}<code>above:value</code> pairs. A band applies while the price is
+              <em> strictly above</em> its threshold, so <code>80:10</code> means "a step of
+              10 at any price over 80" — at exactly 80 the next band takes over.
+              {c.format !== 'open_descending' && (
+                <> <strong>This instance is sealed-bid, so these are inert.</strong></>
+              )}
+            </p>
+
+            <BandField
+              id="proc-decrement"
+              testId="proc-set-decrement"
+              label={`Decrement schedule — the minimum a bid must fall (${c.currencyLabel})`}
+              valueKey="step"
+              bands={c.decrementSchedule as unknown as Record<string, number>[]}
+              busy={busy}
+              help="How far each bid must undercut the standing price. Bots always move exactly this far; students may jump further. Coarser bands at the top make the opening cascade shorter."
+              onSave={v => void save({ decrementSchedule: v as never })}
+            />
+
+            <BandField
+              id="proc-delay"
+              testId="proc-set-delay"
+              label="Delay schedule — how long a bot waits before acting (ms)"
+              valueKey="delayMs"
+              bands={c.delaySchedule as unknown as Record<string, number>[]}
+              busy={busy}
+              help="Fast in the coarse bands, slow in the fine ones, so pacing follows tension automatically. It applies to a bot's answer to a student's bid as well — an instant reply reads as a machine."
+              onSave={v => void save({ delaySchedule: v as never })}
+            />
+
+            <div style={field}>
+              <label style={label} htmlFor="proc-jitter">Delay jitter (± ms)</label>
+              <input id="proc-jitter" data-testid="proc-set-jitter" type="number" style={input}
+                defaultValue={c.delayJitterMs} disabled={busy}
+                onBlur={e => {
+                  const v = Number(e.target.value)
+                  if (v !== c.delayJitterMs) void save({ delayJitterMs: v })
+                }} />
+              <p style={{ fontSize: '0.75rem', color: colors.textSecondary }}>
+                Randomised either way around each delay so the rhythm is not metronomic.
+                Presentation only — it never reaches a bot's decision.
               </p>
             </div>
           </section>

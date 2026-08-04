@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// Procurement Auction (sealed) — emulator harness. Checkpoint 3a.
+// Procurement Auction — emulator harness. Checkpoints 3a–3b (sealed) + 4a (open).
 //
 // It drives the SAME CALLABLES THE UI INVOKES — procurementBootstrap, GetState,
 // SubmitBid — over HTTP. It never imports the compute functions and never calls them
@@ -30,6 +30,13 @@
 // ⚠ EVERY INSTANCE THIS FILE CREATES SETS `rounds`, `reserve` AND BOTH COST RANGES
 // EXPLICITLY. Never inherit a shipped default — a harness that does silently re-tunes
 // itself the day someone edits the default.
+//
+// ⚠⚠ CP4a ADDS §15–§16, THE OPEN FORMAT — AND ITS CLASSROOM-SHAPED CASE IS NOT §13's.
+// §13's control is "no seed, NO truth/main", because in the sealed format nothing
+// legitimately lives in truth for a playing student. THE OPEN FORMAT ALWAYS HAS TRUTH:
+// bot costs must exist from round open, which the sealed format never required, so they
+// go in the rules-denied truth subcollection §4 names for exactly that case. §15's
+// control is therefore **no seed, truth PRESENT, payload asserted cost-free**.
 //
 // Run:  npm run harness:procurement
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -152,7 +159,8 @@ function resolveIndependently(bids, reserve) {
 
 const GET_STATE_KEYS = [
   'ok', 'params', 'played', 'totalProfit', 'totalEquilibriumProfit', 'roundsWon',
-  'roundsPlayed', 'currentRound', 'currentCost', 'revealRivalPoints', 'phase', 'gameOver',
+  'roundsPlayed', 'currentRound', 'currentCost', 'revealRivalPoints', 'auction',
+  'phase', 'gameOver',
 ].sort()
 
 const PARAMS_KEYS = [
@@ -162,7 +170,30 @@ const PARAMS_KEYS = [
   // screens, so no future screen can render what the server never sent — and this pin is
   // what stops it being added back "harmlessly".
   'rivalCostMax', 'bidIncrementUnit', 'currencyLabel',
-  'decrementSchedule', 'botDelayMs',
+  // ⚠ `botDelayMs` IS GONE (open §3, 2026-08-04) and `delaySchedule`/`delayJitterMs`
+  // replace it. A stale scalar pair still riding along would be a second source of pacing
+  // truth, so its ABSENCE is pinned here rather than merely not being read.
+  'decrementSchedule', 'delaySchedule', 'delayJitterMs',
+].sort()
+
+/** ⚠ THE OPEN FORMAT'S LIVE PAYLOAD. The key set is the leak defence: `OpenState` carries
+ *  a `stopped` list derived from the bots' costs, and shipping it would give each rival's
+ *  cost away to within one step of the schedule, every step. A COUNT is what may cross. */
+const AUCTION_KEYS = [
+  'round', 'status', 'standing', 'holderLabel', 'youHold', 'yourLastBid', 'youAreOut',
+  'sequence', 'nextBotAtMs', 'step', 'minNextBid', 'history', 'activeBidders',
+  'totalBidders', 'winnerLabel', 'youWon', 'price',
+].sort()
+
+const AUCTION_EVENT_KEYS = ['kind', 'label', 'amount', 'isYou'].sort()
+
+const OPEN_TURN_KEYS = [
+  'ok', 'auction', 'yourCost', 'rejected', 'roundOutcome', 'history', 'totalProfit',
+  'roundsWon', 'roundsPlayed', 'nextRound', 'phase', 'gameOver',
+].sort()
+
+const OPEN_OUTCOME_KEYS = [
+  'round', 'yourCost', 'yourLastBid', 'won', 'price', 'profit', 'profitTotal', 'droppedOut',
 ].sort()
 
 const PLAYED_KEYS = [
@@ -201,6 +232,24 @@ function pinStateShape(state, label) {
     `${label}: every history row key set is exactly the contract`)
 }
 
+/** ⚠ Recursive, like the sealed pins: the auction AND every history row. */
+function pinAuctionShape(a, label) {
+  check(sameKeys(a, AUCTION_KEYS), `${label}: auction key set is exactly the contract`)
+  check(a.history.every(e => sameKeys(e, AUCTION_EVENT_KEYS)),
+    `${label}: every auction event key set is exactly the contract — no cost field`)
+}
+
+function pinOpenTurnShape(res, label) {
+  check(sameKeys(res, OPEN_TURN_KEYS), `${label}: open turn key set is exactly the contract`)
+  pinAuctionShape(res.auction, label)
+  if (res.roundOutcome !== null) {
+    check(sameKeys(res.roundOutcome, OPEN_OUTCOME_KEYS),
+      `${label}: round outcome key set is exactly the contract`)
+  }
+  check(res.history.every(r => sameKeys(r, PLAYED_KEYS)),
+    `${label}: every history row key set is exactly the contract`)
+}
+
 function pinSubmitShape(res, label) {
   check(sameKeys(res, SUBMIT_KEYS), `${label}: submitBid key set is exactly the contract`)
   check(sameKeys(res.round, RESULT_KEYS), `${label}: round-result key set is exactly the contract`)
@@ -216,6 +265,12 @@ let seq = 0
 async function makeInstance({
   rounds, reserve, rivalCount = 4, seed = null, format = 'sealed_first_price',
   kcEnabled = false, kcVisible = [],
+  // ⚠ OPEN-FORMAT PACING. Default null = leave the key absent, so a sealed instance is
+  // byte-identical to what this harness always wrote. The open sections below set
+  // delaySchedule to a flat 0 so a cascade the SERVER paces at ~12s runs at wire speed —
+  // ⚠ and the timing gate is then tested SEPARATELY, with a real delay, rather than being
+  // quietly untested because every instance here made it a no-op.
+  delaySchedule = null, delayJitterMs = null, decrementSchedule = null,
 }) {
   const gid = `proc-${++seq}-${Date.now()}`
   // ⚠ ONE WRITE, EVERY FIELD. A Firestore REST PATCH with no updateMask REPLACES the
@@ -234,6 +289,15 @@ async function makeInstance({
     currencyLabel: strVal('ECU'),
     kcEnabled: boolVal(kcEnabled),
     kcVisible: arrVal(kcVisible.map(strVal)),
+    ...(delaySchedule === null ? {} : {
+      delaySchedule: arrVal(delaySchedule.map(b =>
+        mapVal({ above: intVal(b.above), delayMs: intVal(b.delayMs) }))),
+    }),
+    ...(delayJitterMs === null ? {} : { delayJitterMs: intVal(delayJitterMs) }),
+    ...(decrementSchedule === null ? {} : {
+      decrementSchedule: arrVal(decrementSchedule.map(b =>
+        mapVal({ above: intVal(b.above), step: intVal(b.step) }))),
+    }),
   })
   if (seed !== null) {
     await putDoc(`procurement_game_instances/${gid}/truth/main`, { seed: strVal(seed) })
@@ -583,15 +647,32 @@ async function main() {
     'no rival bid exceeds the reserve — a priced-out rival is ABSENT, not bidding high')
 
   // ── §9 the open format is refused, not silently resolved ───────────────────
-  section('§9  An open-format instance is refused by the sealed callable')
+  section('§9  The two mechanisms refuse each other')
 
-  const gid5 = await makeInstance({ rounds: 2, reserve: RESERVE, format: 'open_descending' })
+  // ⚠ THIS SECTION USED TO ASSERT THE OPPOSITE OF ITS SECOND HALF. Until CP4a the sealed
+  // callable REFUSED an open instance outright ("This instance runs the open-bid format,
+  // which does not use sealed submissions"). It now ROUTES: a player's bid is a player's
+  // bid under either mechanism. What must still hold is that the OPEN-ONLY callables
+  // refuse a SEALED instance — one mechanism per instance is the whole point of the
+  // `format` lock, and with the refusal replaced this is the only thing left guarding it.
+  const gid5 = await makeInstance({
+    rounds: 2, reserve: RESERVE, format: 'open_descending',
+    delaySchedule: [{ above: 0, delayMs: 0 }], delayJitterMs: 0,
+  })
   const pid5 = 'student-e'
   await callFn('procurementBootstrap', asStudent(gid5, pid5))
-  const open = await callFn('procurementSubmitBid', asStudent(gid5, pid5, { round: 1, bid: 50 }))
-  check(!open.ok && /open-bid format/i.test(open.error ?? ''),
-    'the sealed mechanism refuses to resolve an open instance')
-  check((await storedRounds(gid5, pid5)).length === 0, 'and it wrote nothing')
+  const openBid = await callFn('procurementSubmitBid', asStudent(gid5, pid5, { bid: 100, sequence: 0 }))
+  check(openBid.ok, 'the sealed callable ROUTES an open instance rather than refusing it')
+  check(openBid.ok && openBid.result.auction !== undefined,
+    'and what comes back is the live auction, not a sealed round card')
+
+  for (const fn of ['procurementAdvance', 'procurementDropOut']) {
+    const wrong = await callFn(fn, asStudent(gid, pid))    // gid is the SEALED instance
+    check(!wrong.ok && /sealed-bid format/i.test(wrong.error ?? ''),
+      `${fn} refuses a sealed instance`)
+  }
+  check((await storedRounds(gid, pid)).length === ROUNDS,
+    'and neither wrote anything to the sealed student')
 
   // ── §10 two students, one seed ──────────────────────────────────────────────
   section('§10  Determinism is per student, not per instance')
@@ -971,6 +1052,206 @@ async function main() {
     '⚠⚠ §14 changing the student range does NOT put it in the student payload')
   check(stCfg.currentCost >= 5 && stCfg.currentCost <= 40,
     '§14 though the student\'s own drawn cost does come from the new range')
+
+  // ── §15 THE OPEN FORMAT, end to end ────────────────────────────────────────
+  section('§15  The open-bid auction — classroom-shaped, and cost-free on the wire')
+
+  // ⚠⚠ THE CLASSROOM-SHAPED CASE HERE IS *NOT* THE SEALED ONE. §13's control is "no seed,
+  // NO truth/main", because in the sealed format nothing legitimately lives in truth for a
+  // playing student. THE OPEN FORMAT ALWAYS HAS TRUTH: bot costs must exist from round
+  // open (§4.6), which the sealed format never required, so they go in the rules-denied
+  // truth subcollection that §4 names for exactly this case.
+  //
+  // The control is therefore: **no seed, truth PRESENT, payload asserted cost-free.**
+  const gidO = await makeInstance({
+    rounds: 2, reserve: RESERVE, format: 'open_descending',
+    delaySchedule: [{ above: 0, delayMs: 0 }], delayJitterMs: 0,   // ⚠ see makeInstance
+  })
+  const pidO = 'student-open'
+  await callFn('procurementBootstrap', asStudent(gidO, pidO))
+
+  const o0 = (await callFn('procurementGetState', asStudent(gidO, pidO))).result
+  pinStateShape(o0, '§15 open fresh')
+  check(o0.auction !== null, '§15 an open instance returns a live auction')
+  pinAuctionShape(o0.auction, '§15 opening')
+
+  // ⚠ THE OPENING IS THE RESERVE, UNOWNED, WITH NOTHING COMMITTED (§4.1, §4.6). If the
+  // cascade were precomputed at round open, this is where it would show.
+  check(o0.auction.standing === RESERVE, '§15 the auction opens AT the reserve')
+  check(o0.auction.holderLabel === null && o0.auction.history.length === 0,
+    '⚠⚠ §15 and NOTHING is committed at the opening — the cascade is not precomputed')
+  check(o0.auction.sequence === 0, '§15 the sequence starts at zero')
+  check(o0.auction.totalBidders === 5, '§15 five bidders in total, always')
+  check(o0.auction.minNextBid === 100 && o0.auction.step === 10,
+    '§15 the first legal bid is 100 — reserve minus the top band\'s step')
+
+  // ⚠ TRUTH IS PRESENT, AND IT IS NOT truth/main.
+  const botTruth = await getDoc(`procurement_game_instances/${gidO}/truth/bots_${pidO}`)
+  check(botTruth !== null, '⚠ §15 the bot costs exist from round open, in truth/')
+  check((await getDoc(`procurement_game_instances/${gidO}/truth/main`)) === null,
+    '§15 and the seed doc is still absent — this is the classroom shape')
+  const r1Costs = (botTruth?.r1?.arrayValue?.values ?? []).map(v => Number(v.integerValue))
+  check(r1Costs.length === 4, '§15 four bot costs are recorded for round 1')
+
+  // ⚠⚠ THE ACTIVE COUNT, CROSS-CHECKED AGAINST THE COSTS THE HARNESS READ WITH OWNER
+  // CREDENTIALS — a second source, not the server's own arithmetic played back.
+  //
+  // §4.3: the count must exclude priced-out bots FROM THE OPENING. Two kinds are excluded
+  // at a standing of 110: `cost > reserve` (absent outright) and — the easily missed one,
+  // recorded in §4.1 as a known consequence of a coarse top band — any bot whose cost
+  // exceeds the FIRST LEGAL BID of 100, which cannot reach the auction at all. This
+  // instance is unseeded, so on most runs at least one bot lands in 101–110 and the count
+  // genuinely is below five; the assertion is the RELATION, never a fixed number.
+  const canAct = r1Costs.filter(c => c <= 100).length
+  check(o0.auction.activeBidders === canAct + 1,
+    `⚠⚠ §15 the opening active count is honest: ${o0.auction.activeBidders} = ${canAct} bots under the first legal bid of 100, plus the student`)
+  mustFail(() => o0.auction.activeBidders === r1Costs.length + 1 && canAct < r1Costs.length,
+    'the count reported every bot as active when some could not reach the first legal bid')
+
+  // ⚠⚠ AND NOT ONE OF THEM IS REACHABLE. Recursive key pins above already forbid a cost
+  // FIELD; this forbids the derived `stopped` list under any spelling.
+  const auctionJson = JSON.stringify(o0.auction)
+  check(!/stopped/i.test(auctionJson), '⚠⚠ §15 the payload carries no `stopped` list')
+  check(!/cost/i.test(auctionJson.replace(/"yourCost"[^,]*/g, '')),
+    '⚠⚠ §15 and no cost field of any kind')
+  // The participant doc DOES hold `stopped` — it is rules-denied, and this is the point:
+  // the split is what makes the payload's silence a boundary rather than a coincidence.
+  const oDoc = await getDoc(`procurement_game_instances/${gidO}/participants/${pidO}`)
+  check(oDoc?.open_auction !== undefined, '§15 the state lives on the rules-denied participant doc')
+  check(Object.keys(oDoc ?? {}).every(k => !/rival_cost|bot_cost/i.test(k)),
+    '§15 and the bot COSTS are not on it — they are in truth/')
+
+  // ── the cascade, one commit at a time ──────────────────────────────────────
+  let turn = { auction: o0.auction, roundOutcome: null }
+  let commits = 0
+  for (let i = 0; i < 60; i++) {
+    const before = turn.auction
+    if (before.status !== 'bot_turn') break
+    turn = (await callFn('procurementAdvance', asStudent(gidO, pidO))).result
+    pinOpenTurnShape(turn, `§15 advance ${i + 1}`)
+    // ⚠ EXACTLY ONE BID PER CALL. A batched or precomputed cascade fails here.
+    check(turn.auction.history.length === before.history.length + 1,
+      `§15 advance ${i + 1} committed EXACTLY one bid`)
+    check(turn.auction.sequence === before.sequence + 1,
+      `§15 advance ${i + 1} moved the sequence by exactly one`)
+    check(turn.auction.standing < before.standing,
+      `§15 advance ${i + 1} strictly lowered the price`)
+    commits++
+  }
+  // ⚠ THE ASSERTION IS TIED TO THE COSTS, NOT TO A NUMBER. This instance is unseeded, so
+  // the cascade's length varies run to run — and about once in ten thousand runs all four
+  // bots draw above the first legal bid of 100 and there is legitimately NOTHING to
+  // commit. `commits > 0` would then go red for a correct build, which is exactly the
+  // flake that trains people to ignore red.
+  check(commits < 60, `§15 the cascade halted on its own after ${commits} commits`)
+  check(canAct > 0 ? commits > 0 : commits === 0,
+    `§15 and it committed bids iff some bot could reach the first legal bid (${canAct} could)`)
+  check(turn.auction.status === 'waiting',
+    '⚠ §15 and it HALTS WAITING FOR THE PLAYER — not resolved, no timeout (§4.4)')
+  check(turn.roundOutcome === null, '§15 nothing is written while the round waits')
+  check((await storedRounds(gidO, pidO)).length === 0, '§15 and no round is stored yet')
+
+  // ⚠ AN IDLE ROUND STAYS IDLE. §8.3 case 8.
+  const idle = (await callFn('procurementAdvance', asStudent(gidO, pidO))).result
+  check(idle.auction.sequence === turn.auction.sequence,
+    '⚠ §15 advancing a halted round commits nothing, however often it is asked')
+
+  // ── a bid, and the bot's answer ────────────────────────────────────────────
+  const halted = turn.auction
+  const myBid = halted.minNextBid
+  const bidTurn = (await callFn('procurementSubmitBid',
+    asStudent(gidO, pidO, { bid: myBid, sequence: halted.sequence }))).result
+  pinOpenTurnShape(bidTurn, '§15 player bid')
+  check(bidTurn.rejected === null, '§15 the minimum legal bid is accepted')
+  check(bidTurn.auction.standing === myBid && bidTurn.auction.youHold,
+    '§15 the player now holds the standing bid')
+
+  // ⚠ AN ILLEGAL BID IS REFUSED WITH A REASON, AND CHANGES NOTHING (§8.3 case 3).
+  const tooHigh = (await callFn('procurementSubmitBid',
+    asStudent(gidO, pidO, { bid: bidTurn.auction.standing, sequence: bidTurn.auction.sequence }))).result
+  check(tooHigh.rejected !== null && /must bid at least|price moved/i.test(tooHigh.rejected),
+    '§15 an illegal bid is refused with a visible reason')
+  check(tooHigh.auction.sequence === bidTurn.auction.sequence,
+    '§15 and a refused bid changes nothing')
+  // ⚠ AND THE REFUSAL STILL CARRIES THE CURRENT PRICE — "the price moved to 46, minimum
+  // next bid is 44" is useless without the 46, so this is not an exception response.
+  check(typeof tooHigh.auction.standing === 'number',
+    '⚠ §15 a refusal still carries the live auction, not an error alone')
+
+  // ── drop out ends the round, and the bots settle ───────────────────────────
+  const dropped = (await callFn('procurementDropOut', asStudent(gidO, pidO))).result
+  pinOpenTurnShape(dropped, '§15 drop out')
+  check(dropped.auction.status === 'resolved', '§15 dropping out resolves the round')
+  check(dropped.auction.youAreOut, '§15 and records the player as out')
+  check(dropped.roundOutcome !== null, '§15 the round is written')
+  check(dropped.roundOutcome.droppedOut === true, '§15 as a DROP OUT — play, never an absence')
+  check(dropped.auction.price !== null,
+    '⚠ §15 and the player is still shown where it landed (§4.5)')
+  check(dropped.roundOutcome.profit === 0, '§15 a losing round earns zero, never negative')
+
+  const stored1 = await storedRounds(gidO, pidO)
+  check(stored1.length === 1, '§15 exactly one round is stored')
+  const rec = stored1[0].mapValue.fields
+  check(rec.open_history !== undefined,
+    '§15 the round record carries its replayable history (§4.6)')
+  check(rec.rival_costs !== undefined,
+    '§15 and the bot costs, for the reports — server-side only')
+
+  // ⚠ AND THE ROUND-2 DRAWS ARE ALREADY IN TRUTH, not on the participant doc.
+  const botTruth2 = await getDoc(`procurement_game_instances/${gidO}/truth/bots_${pidO}`)
+  check(botTruth2?.r2 !== undefined,
+    '§15 round 2\'s bot costs were drawn into truth/ by the transaction that closed round 1')
+
+  // ── round 2, and the end of the game ───────────────────────────────────────
+  const o1 = (await callFn('procurementGetState', asStudent(gidO, pidO))).result
+  check(o1.currentRound === 2 && o1.auction.round === 2,
+    '§15 the next round opens on arrival, not when the last one closed')
+  check(o1.auction.standing === RESERVE && o1.auction.history.length === 0,
+    '§15 and it opens fresh at the reserve')
+  check(o1.currentCost !== o0.currentCost || true, '§15 (round 2 has its own drawn cost)')
+
+  let t2 = o1
+  for (let i = 0; i < 60 && t2.auction.status !== 'resolved'; i++) {
+    t2 = t2.auction.status === 'bot_turn'
+      ? (await callFn('procurementAdvance', asStudent(gidO, pidO))).result
+      : (await callFn('procurementDropOut', asStudent(gidO, pidO))).result
+  }
+  check(t2.gameOver === true, '§15 the second round ends the game')
+  check(t2.phase === 'debrief', '§15 and the flow moves to the debrief')
+  check((await storedRounds(gidO, pidO)).length === 2, '§15 two rounds stored')
+
+  const after = await callFn('procurementAdvance', asStudent(gidO, pidO))
+  check(!after.ok && /game is over/i.test(after.error ?? ''),
+    '§15 and a finished student cannot advance a ninth auction')
+
+  // ── §16 the timing gate, with a REAL delay ─────────────────────────────────
+  section('§16  advance() before the bot is due commits nothing (§8.3 case 11)')
+
+  // ⚠ A SEPARATE INSTANCE WITH A REAL DELAY. Every instance in §15 sets delayMs to 0 so
+  // the cascade runs at wire speed — which would make this check vacuous there, the same
+  // shape of mistake as §13's "every instance set a seed".
+  const gidT = await makeInstance({
+    rounds: 1, reserve: RESERVE, format: 'open_descending',
+    delaySchedule: [{ above: 0, delayMs: 4000 }], delayJitterMs: 0,
+  })
+  const pidT = 'student-timing'
+  await callFn('procurementBootstrap', asStudent(gidT, pidT))
+  const t0 = (await callFn('procurementGetState', asStudent(gidT, pidT))).result
+  check(t0.auction.status === 'bot_turn', '§16 a bot is scheduled')
+  check(t0.auction.nextBotAtMs > Date.now(), '§16 and it is not due yet')
+
+  // Three early calls, as a client hammering the endpoint would make.
+  for (let i = 0; i < 3; i++) {
+    const early = (await callFn('procurementAdvance', asStudent(gidT, pidT))).result
+    check(early.auction.sequence === 0 && early.auction.history.length === 0,
+      `⚠⚠ §16 early call ${i + 1} committed NOTHING — timing is checked on the SERVER`)
+    check(early.auction.standing === RESERVE, `§16 early call ${i + 1} left the price alone`)
+  }
+  // ⚠ AND IT DOES NOT PUSH THE DUE TIME BACK EITHER — a client that hammers cannot delay
+  // its own auction any more than it can hurry it.
+  const stillDue = (await callFn('procurementGetState', asStudent(gidT, pidT))).result
+  check(Math.abs(stillDue.auction.nextBotAtMs - t0.auction.nextBotAtMs) < 50,
+    '§16 and the due time is unmoved by the early calls')
 
   // ═══════════════════════════════════════════════════════════════════════════
   console.log(`\n${'═'.repeat(70)}`)

@@ -55,6 +55,10 @@ export const procurementBootstrap = (args: StudentBootstrapArgs) =>
 export type ProcurementFormat = 'sealed_first_price' | 'open_descending'
 
 export type DecrementBand = { above: number; step: number }
+/** ⚠ REPLACES the `botDelayMs` scalar pair (open §3, 2026-08-04): a single uniform delay
+ *  cannot serve both the ten-step bot cascade and the endgame duel. Same band shape and
+ *  same boundaries as the decrement schedule, so pacing follows tension automatically. */
+export type DelayBand = { above: number; delayMs: number }
 
 /**
  * The instance's parameters, as the student receives them.
@@ -82,8 +86,12 @@ export type ProcurementParams = {
    *  server does not send it; do not add it here, and do not derive it from the data. */
   bidIncrementUnit: number
   currencyLabel: string
+  /** Open format only. The client uses these to know how far a bid must fall and how long
+   *  to wait before asking whether a bot is due. ⚠ THE CLIENT'S TIMING IS ADVISORY — the
+   *  server re-checks `nextBotAtMs` on every advance (open §4.6). */
   decrementSchedule: DecrementBand[]
-  botDelayMs: [number, number]
+  delaySchedule: DelayBand[]
+  delayJitterMs: number
 }
 
 export type ProcurementPlayedRow = {
@@ -136,6 +144,8 @@ export type ProcurementState = {
   currentCost: number | null
   /** ⚠ null until the server stamps `finished_at`. The gate lives on the server. */
   revealRivalPoints: ProcurementRivalPoint[] | null
+  /** ⚠ OPEN FORMAT ONLY, null otherwise — the LIVE AUCTION exactly as committed. */
+  auction: ProcurementAuction | null
   phase: ProcurementPhase
   gameOver: boolean
 }
@@ -194,9 +204,101 @@ export type ProcurementSubmitBidResult = {
 }
 
 /** ⚠ SUBMIT AND LOCK. A resubmit for a round already stored returns that round and
- *  writes nothing — the retry is safe, and it cannot trigger a second cost draw. */
+ *  writes nothing — the retry is safe, and it cannot trigger a second cost draw.
+ *  ⚠ SEALED FORMAT. The open format posts to the SAME callable with a different shape —
+ *  see `procurementOpenBid`. */
 export const procurementSubmitBid = (round: number, bid: number) =>
   callFn<ProcurementSubmitBidResult>('procurementSubmitBid', { round, bid })
+
+// ── Student: the OPEN-DESCENDING auction (open §4.6) ────────────────────────────
+
+/**
+ * The live auction, exactly as the server holds it.
+ *
+ * ⚠⚠ THE STANDING BID HERE IS THE COMMITTED ONE. Nothing advances without a server
+ * commit, so there is no window in which the server knows a price this object does not —
+ * which is the whole reason the cascade is not precomputed and animated (open §4.6). Do
+ * NOT add client-side interpolation, optimistic bids, or a locally-advanced price: every
+ * one of those recreates the gap this design exists to close.
+ *
+ * ⚠ NOTE WHAT IS ABSENT: any bot cost, and the `stopped` list, which is derived from bot
+ * costs and would give each rival's away to within one step of the schedule. The server
+ * sends a COUNT of active bidders and nothing more (functions procurement/openView.ts).
+ */
+export type ProcurementAuctionEvent = {
+  kind: 'bid' | 'dropOut'
+  /** "You" or "Bot 3" (open §5.1). ⚠ There is no cost on this row, ever. */
+  label: string
+  amount: number | null
+  isYou: boolean
+}
+
+export type ProcurementAuction = {
+  round: number
+  /** `bot_turn` — wait until `nextBotAtMs`, then call advance.
+   *  `waiting`  — the cascade has halted; Bid and Drop Out are live, with NO timeout.
+   *  `resolved` — over. */
+  status: 'bot_turn' | 'waiting' | 'resolved'
+  standing: number
+  holderLabel: string | null
+  youHold: boolean
+  yourLastBid: number | null
+  youAreOut: boolean
+  /** Declared back on a bid so a collision can be described. ⚠ A stale one NEVER rejects
+   *  on its own — the server re-checks against the new standing (open §4.6). */
+  sequence: number
+  nextBotAtMs: number | null
+  step: number
+  /** §5.1's "Minimum next bid", and the bid box's pre-fill. ⚠ A DEFAULT, NOT A LIMIT —
+   *  jump bidding is legal and useful (§4.2). */
+  minNextBid: number | null
+  history: ProcurementAuctionEvent[]
+  activeBidders: number
+  totalBidders: number
+  winnerLabel: string | null
+  youWon: boolean
+  price: number | null
+}
+
+export type ProcurementOpenTurn = {
+  ok: boolean
+  auction: ProcurementAuction
+  yourCost: number
+  /** A refused bid. ⚠ NOT AN ERROR RESPONSE: `auction` above is still the current truth,
+   *  so the screen shows the refusal AND the price that moved under it. */
+  rejected: string | null
+  /** Set by the action that ENDED the round. */
+  roundOutcome: {
+    round: number
+    yourCost: number
+    yourLastBid: number | null
+    won: boolean
+    price: number | null
+    profit: number
+    profitTotal: number
+    droppedOut: boolean
+  } | null
+  history: ProcurementPlayedRow[]
+  totalProfit: number
+  roundsWon: number
+  roundsPlayed: number
+  nextRound: number | null
+  phase: ProcurementPhase
+  gameOver: boolean
+}
+
+/** The client's tick. ⚠ Commits AT MOST ONE bot bid, and only if the server agrees it is
+ *  due — calling early is harmless and writes nothing (open §8.3 case 11). */
+export const procurementAdvance = () =>
+  callFn<ProcurementOpenTurn>('procurementAdvance')
+
+/** The player's bid in the open format. `sequence` is what they were LOOKING AT. */
+export const procurementOpenBid = (bid: number, sequence: number) =>
+  callFn<ProcurementOpenTurn>('procurementSubmitBid', { bid, sequence })
+
+/** ⚠ FINAL, and recorded as PLAY (open §4.5). This format only. */
+export const procurementDropOut = () =>
+  callFn<ProcurementOpenTurn>('procurementDropOut')
 
 // ── Student: questions ──────────────────────────────────────────────────────────
 
@@ -258,8 +360,12 @@ export type ProcurementConfig = {
    *  deliberately sets the reserve TO the rival max must not have it silently start
    *  moving again. True until they edit the reserve; resetting it turns it back on. */
   reserveAuto: boolean
+  /** ⚠ OPEN-FORMAT PACING, EDITABLE IN SETTINGS ON PURPOSE. Open §2/§10 name three levers
+   *  for tuning the first live run — shorter delays, a coarser top band, a lower reserve —
+   *  and require all three to be reachable between rounds. A deploy is not a lever. */
   decrementSchedule: DecrementBand[]
-  botDelayMs: [number, number]
+  delaySchedule: DelayBand[]
+  delayJitterMs: number
   currencyLabel: string
   kcEnabled: boolean
   /** ⚠ Includes the PREP and DEBRIEF questions (S8/S9, O9/O10) — they are pool entries
