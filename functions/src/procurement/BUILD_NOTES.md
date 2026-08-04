@@ -374,6 +374,52 @@ range: §4 keeps that off the screen, and the styles need only the realized cost
 
 ---
 
+## 7. Which hosting targets a frontend change needs — the standing rule
+
+Read off `frontend/vite.config.ts` and `firebase.json`, not off convention.
+
+**How the build is actually configured.** `vite.config.ts` sets no `rollupOptions`,
+`manualChunks` or lazy boundaries, so it is a DEFAULT SINGLE-ENTRY build: one
+`dist/assets/index-<hash>.js` containing ALL SEVEN games, because `App.tsx` imports every
+game's Play/Dashboard/Settings/Reports statically. And in `firebase.json` all seven
+hosting targets — pennies, poll, pd, pricing, newsvendor, forecast, procurement — declare
+the SAME `"public": "frontend/dist"`.
+
+So one `npm run build` produces one artifact that is the deployable for every target, and
+`--only hosting:<target>` publishes that artifact to ONE site. The rest keep serving
+whatever they were last given.
+
+**Which targets NEED redeploying = the ones whose BEHAVIOUR changed.** Decide from the
+changed paths:
+
+| Changed | Redeploy |
+|---|---|
+| only `frontend/src/<game>/…` | that game's target |
+| `frontend/src/shared/…`, `App.tsx`, `hostRouting.ts`, `firebase.ts`, `main.tsx`, `index.css` | **all seven** |
+| a `@mygames/game-ui` bump | **all seven** |
+
+⚠ **THE TRAP: cross-game imports make the path rule insufficient.** `git diff --name-only`
+tells you which game's folder changed, not who imports it. Today the tree contains exactly
+ONE cross-game import — `procurement/api.ts` imports `isAuthError`,
+`instructorErrorMessage`, `CLASSROOM_URL` and `STUDENT_CLASSROOM_URL` from
+`../forecast/api`. So a change to `forecast/api.ts` changes PROCUREMENT's behaviour too.
+Before concluding "one target", grep for importers of the module you touched:
+
+```
+grep -rn "<ModuleName>" frontend/src | grep -v "^frontend/src/<game>/"
+```
+
+⚠ **Corollary — the sites drift, and that is expected.** Because there is one bundle, any
+target you do not redeploy keeps an OLDER `index-<hash>.js`. That is harmless while its own
+code paths are unchanged, but "all seven serve the same file" is only true immediately
+after deploying all seven. Do not treat a hash mismatch between sites as a fault.
+
+**Worked example (08-03).** The class-chart legend fix touched only
+`frontend/src/procurement/ClassScatterSVG.tsx`, whose sole importer is
+`procurement/Reports.tsx`. One target: `hosting:procurement`.
+
+---
+
 ## 6. `allowDropOut` does not exist
 
 It appears in an early prompt's config list but in **neither** FINAL spec. Drop Out is
