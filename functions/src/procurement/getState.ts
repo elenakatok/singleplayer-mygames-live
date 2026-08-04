@@ -8,7 +8,7 @@ import {
   toRevealPoints,
 } from './rounds'
 import { clientParams, phaseOf } from './clientState'
-import { drawPlayerCost } from './round'
+import { ensureOpenRound } from './openRound'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // procurementGetState (student) — WHERE AM I? The student's whole position in one call:
@@ -25,14 +25,15 @@ import { drawPlayerCost } from './round'
 //
 // ⚠⚠ IT DOES RETURN ONE DRAWN NUMBER: THE PLAYER'S OWN COST FOR THE CURRENT ROUND.
 // That is required — the bidding screen prints it before the student bids (§4, §6.1) —
-// and it is safe for a reason that is worth stating rather than assuming: the player's
-// cost comes off a SEPARATELY KEYED stream (round.ts), so holding it reveals nothing
-// about the rivals' stream, and it is drawn for the CURRENT round only. Round t+1's cost
-// is not computed here and is not reachable until round t is stored.
+// and it is safe for a reason worth stating rather than assuming: the player's cost is
+// their own, and it is opened for the CURRENT round only. Round t+1's cost does not exist
+// until round t resolves.
 //
-// It is derived, never stored: `drawPlayerCost` is pure in (seed, participantId, round),
-// so a reload returns the same number without a written flag — and a student who reloads
-// cannot re-roll into a friendlier cost.
+// ⚠⚠ IT IS RECORDED, NOT DERIVED, AND THIS READ PATH WRITES IT (§4: "drawn and written
+// when the round opens"). `ensureOpenRound` draws once, stores it, and returns the stored
+// value ever after. CP3a derived it instead and shipped a production bug: with no seed —
+// the normal classroom case — `makeRng` falls back to `Math.random` and ignores its key,
+// so the screen showed one cost and the round resolved against another. See openRound.ts.
 //
 // `clientParams` is the whitelist that enforces the first, and it enforces it by
 // signature — it takes a ProcurementConfig and cannot reach the seed at all
@@ -53,10 +54,10 @@ export const procurementGetState = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, as
   // not appear in the return below.
   const { config, seed } = await loadInstance(db, gameInstanceId)
 
-  const snap = await db
+  const participantRef = db
     .collection(INSTANCES_COLLECTION).doc(gameInstanceId)
     .collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
-    .get()
+  const snap = await participantRef.get()
   const pData = snap.data() ?? {}
 
   const stored = parseStoredRounds(pData.rounds)
@@ -67,9 +68,11 @@ export const procurementGetState = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, as
   const currentRound = phase === 'play' && stored.length < config.rounds
     ? stored.length + 1
     : null
+  // ⚠ WRITES on a read path, deliberately — see the header. The round has to be opened
+  // before the student can be shown anything about it.
   const currentCost = currentRound === null
     ? null
-    : drawPlayerCost(seed, participantId, currentRound, config)
+    : await ensureOpenRound(db, participantRef, currentRound, seed, participantId, config)
 
   // ── The §9 scatter's bot series ────────────────────────────────────────────
   //

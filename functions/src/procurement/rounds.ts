@@ -263,6 +263,46 @@ export function toClientResult(
   }
 }
 
+/**
+ * THE OPEN ROUND — the round the student is on, and the cost drawn for it.
+ *
+ * ⚠⚠ THE PLAYER'S COST IS RECORDED, NOT RECOMPUTED (spec §4: "drawn and written when the
+ * round opens"). This is the fix for the 08-03 production blocker and it is the whole
+ * point of this type, so it is worth stating why rather than leaving it to look like
+ * caching.
+ *
+ * CP3a derived the cost instead — a pure function of (seed, participantId, round) — and
+ * noted it as "(derived, never stored)". That is exact ONLY when a seed is set.
+ * `makeRng(null, key)` returns `Math.random` and IGNORES THE KEY, and a classroom-created
+ * instance has no truth doc, so in production the cost was re-drawn on every single read:
+ * the bidding screen showed one number and the round resolved against another. A student
+ * could win a contract at a loss they had no way to see coming.
+ *
+ * Recording it removes the failure mode rather than making the derivation reliable again.
+ * There is no recipe left to go wrong — with or without a seed, the number the student was
+ * shown IS the number stored, and resolution reads it.
+ *
+ * ⚠ THE PLAYER'S OWN COST ONLY. This does NOT pull rival data forward: rival costs are
+ * still drawn at RESOLUTION, inside the transaction that accepts the bid (§4). This is
+ * the student's own number and they are looking at it on screen; a rival's is neither.
+ */
+export interface OpenRound {
+  /** 1-based. The round this cost belongs to — a cost without its round number is a
+   *  cost that could be applied to the wrong one. */
+  round: number
+  cost: number
+}
+
+/** Defensive read of the open round. Anything malformed reads as ABSENT, so the caller
+ *  opens the round afresh rather than resolving against a half-written number. */
+export function parseOpenRound(raw: unknown): OpenRound | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.round !== 'number' || !Number.isInteger(r.round) || r.round < 1) return null
+  if (typeof r.cost !== 'number' || !Number.isFinite(r.cost)) return null
+  return { round: r.round, cost: r.cost }
+}
+
 /** One rival's (cost, bid) pair, for the §9 scatter's bot series. */
 export interface ClientRivalPoint {
   round: number

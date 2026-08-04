@@ -5,6 +5,7 @@ import { extractStudentOnCallIds } from '@mygames/game-server'
 import { PROCUREMENT_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION } from './config'
 import { loadInstance } from './instance'
 import { drawPlayerCost, resolveRound, validateBid } from './round'
+import { openCostFor, nextOpenRoundPatch } from './openRound'
 import {
   parseStoredRounds, toClientHistory, toClientResult, totalProfit, totalEquilibriumProfit,
   roundsWon, type StoredRound,
@@ -37,10 +38,13 @@ import { phaseOf } from './clientState'
 // draw and quietly hand the student friendlier rivals. Enforced inside the transaction,
 // so two racing submits for the same round cannot both write.
 //
-// ⚠ THE PLAYER'S OWN COST IS NOT TAKEN FROM THE REQUEST. It is re-derived server-side
-// from (seed, participantId, round) — the same pure call `procurementGetState` made to
-// print it on the bidding screen. A client that sent a friendlier cost would be ignored,
-// and there is no field for it to send one in.
+// ⚠⚠ THE PLAYER'S OWN COST IS READ FROM THE RECORD, NOT RECOMPUTED, AND NOT TAKEN FROM
+// THE REQUEST. `openCostFor` returns the number written when the round was opened — the
+// very number the bidding screen printed. THIS IS THE ASSERTION THE 08-03 PRODUCTION BUG
+// WOULD HAVE FAILED: CP3a re-derived it here, and with no seed (the normal classroom
+// case) `makeRng` falls back to `Math.random` and ignores its key, so the round resolved
+// against a cost the student had never seen. There is no field for a client to send a
+// cost in, and now no second derivation to disagree with the first.
 //
 // ⚠ VALIDATION AT SUBMIT, WITH A VISIBLE REASON (Part 1 §6.2, §13.5): whole numbers at
 // or below the reserve. BELOW ONE'S OWN COST IS ALLOWED — see validateBid, that is §6.2
@@ -103,7 +107,12 @@ export const procurementSubmitBid = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, a
 
     // ── Already played: return it, write nothing, DRAW NOTHING. ────────────────
     if (roundNumber <= stored.length) {
-      return { all: stored.slice(0, roundNumber), full: stored, phase: phaseOf(pData) }
+      return {
+        all: stored.slice(0, roundNumber), full: stored, phase: phaseOf(pData),
+        // ⚠ Whatever is currently open — a resubmit must not open, advance or redraw
+        // anything. It reports the state, it does not change it.
+        nextCost: openCostFor(pData, stored.length + 1),
+      }
     }
 
     // ── Past the end: every round has been played. ─────────────────────────────
@@ -118,10 +127,15 @@ export const procurementSubmitBid = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, a
     }
 
     // ── The compute step (Part 1 §4, §5, §7) ───────────────────────────────────
-    // The player's cost first — pure in (seed, participantId, round), so this is the
-    // very number the bidding screen printed. THEN the rivals, from their own stream,
-    // with the bid already in hand.
-    const playerCost = drawPlayerCost(seed, participantId, roundNumber, config)
+    // The player's cost comes from the RECORD. Only if none was ever written — a student
+    // who reached submit without the bidding screen ever loading — is one drawn, once,
+    // here inside this transaction. A bid is still a bid; refusing it would strand a
+    // student whose first getState failed.
+    const playerCost = openCostFor(pData, roundNumber)
+      ?? drawPlayerCost(seed, participantId, roundNumber, config)
+
+    // ⚠ THEN the rivals, from their own stream, with the bid already in hand. Recording
+    // the player's own cost early does NOT pull this forward — see openRound.ts.
     const res = resolveRound(seed, participantId, roundNumber, config, playerCost, bid)
 
     const record: StoredRound = {
@@ -146,6 +160,11 @@ export const procurementSubmitBid = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, a
     const all = [...stored, record]
     const finished = all.length >= config.rounds
 
+    // Open the next round HERE, so its cost is written by the same commit that stored
+    // this one and the response can return the very number that was written.
+    const nextPatch = nextOpenRoundPatch(
+      finished ? null : roundNumber + 1, seed, participantId, config)
+
     const patch: Record<string, unknown> = {
       participant_id: participantId,
       game_instance_id: gameInstanceId,
@@ -161,24 +180,32 @@ export const procurementSubmitBid = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, a
       profit_total: totalProfit(all),
       rounds_won: roundsWon(all),
       phase: finished ? 'debrief' : 'play',
+      // ⚠ OPEN THE NEXT ROUND IN THE SAME TRANSACTION that resolved this one. The advance
+      // is then atomic: there is no instant at which this round is stored and the next
+      // has no recorded cost, so nothing downstream has to cope with a half-advanced
+      // student. `{}` when the game is over — a finished student gets no ninth cost.
+      ...nextPatch,
     }
     if (finished) patch.finished_at = FieldValue.serverTimestamp()
 
     tx.set(participantRef, patch, { merge: true })
 
-    return { all, full: all, phase: finished ? ('debrief' as const) : ('play' as const) }
+    return {
+      all, full: all,
+      phase: finished ? ('debrief' as const) : ('play' as const),
+      // The cost just written for the next round, so the response carries the SAME
+      // number the next getState will return.
+      nextCost: 'open_round' in nextPatch ? nextPatch.open_round.cost : null,
+    }
   })
 
-  // The NEXT round's own cost, so the loop does not need a second round trip to start.
-  // ⚠ Same derivation and same guard as `procurementGetState` — the player's own stream,
-  // the next round only. Null once the game is over, so a finished student is never
-  // handed a ninth draw.
+  // The NEXT round and the cost RECORDED for it by the transaction above, so the loop
+  // starts without a second round trip — and so the number here is the same one the next
+  // `getState` will read back, because both come from the same written record.
   const nextRound = result.phase === 'play' && result.full.length < config.rounds
     ? result.full.length + 1
     : null
-  const nextCost = nextRound === null
-    ? null
-    : drawPlayerCost(seed, participantId, nextRound, config)
+  const nextCost = nextRound === null ? null : result.nextCost
 
   return {
     ok: true as const,

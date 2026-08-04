@@ -325,6 +325,18 @@ async function main() {
     check(midState.revealRivalPoints === null,
       `§9 round ${t}: the rival-cost reveal is null while a bid is still outstanding`)
 
+    // ⚠⚠ SHOWN == STORED, pinned against the doc itself. The cost the student is being
+    // shown right now must be the one RECORDED for this round — not a number recomputed
+    // for this request. This is the 08-03 production blocker's assertion, and it runs on
+    // the seeded path too so the property is defended everywhere, not only where it broke.
+    const openStored = beforeDoc.open_round?.mapValue?.fields
+    check(openStored !== undefined && Number(openStored.round.integerValue) === t,
+      `§4 round ${t}: the round is OPEN in the record before the bid`)
+    check(openStored !== undefined && Number(openStored.cost.integerValue) === midState.currentCost,
+      `⚠ §4 round ${t}: the cost on screen IS the cost in the record (${midState.currentCost})`)
+    check(Object.keys(openStored ?? {}).every(k => !/rival|bot/i.test(k)),
+      `§4 round ${t}: and the open round carries the student's own number only`)
+
     // A markup that is neither the equilibrium nor a round number, so a check that
     // accidentally compares the bid to β cannot pass by coincidence.
     const bid = Math.min(RESERVE, cost + 7 + (t % 3))
@@ -791,6 +803,66 @@ async function main() {
     '§12 Tier 1a carries the roster figures')
   check(rep.gradedTotal === 2,
     '⚠ §12 the report header\'s denominator is the SAME gradedFor() the grader uses')
+
+  // ── §13 THE CLASSROOM-SHAPED INSTANCE — no seed, no truth doc ──────────────
+  section('§13  A classroom-shaped instance: NO seed, NO truth/main')
+
+  // ⚠⚠ THIS IS THE CONFIGURATION PRODUCTION ACTUALLY USES, and until 08-03 nothing in
+  // this file exercised it. Every other instance here sets a seed, so 361 checks were
+  // green about a shape no real instance has — the third finding of that form this
+  // session, after `emulators:exec` serving a stale lib and a maskless REST PATCH.
+  //
+  // An instance created from the classroom has a config doc and NOTHING ELSE. No seed
+  // means `makeRng` falls back to `Math.random`, which IGNORES ITS KEY — so anything
+  // DERIVED rather than RECORDED silently stops being stable. The player's own cost was
+  // derived, and a student was shown one cost and resolved against another.
+  const gidC = await makeInstance({ rounds: 3, reserve: RESERVE })   // ⚠ no seed argument
+  const pidC = 'student-classroom'
+  await callFn('procurementBootstrap', asStudent(gidC, pidC))
+
+  check((await getDoc(`procurement_game_instances/${gidC}/truth/main`)) === null,
+    '§13 the instance genuinely has no truth doc — this is the classroom shape')
+
+  // ⚠ THE ASSERTION THE BUG WOULD HAVE FAILED. Repeated reads, one student, one round.
+  const costs = []
+  for (let k = 0; k < 6; k++) {
+    costs.push((await callFn('procurementGetState', asStudent(gidC, pidC))).result.currentCost)
+  }
+  check(new Set(costs).size === 1,
+    `⚠⚠ §13 the SAME student on the SAME round gets ONE cost across repeated reads (saw: ${[...new Set(costs)].join(', ')})`)
+
+  // ⚠ AND THE ONE THAT MATTERS: the number on the screen is the number the round
+  // resolves against. Six seeds' worth of rounds, because a single round could match by
+  // coincidence — the player cost is one integer out of 51, so a broken build passes
+  // this about 2% of the time per round.
+  let mismatches = 0
+  for (let t = 1; t <= 3; t++) {
+    const shown = (await callFn('procurementGetState', asStudent(gidC, pidC))).result.currentCost
+    const bid = Math.min(RESERVE, shown + 8)
+    const res = (await callFn('procurementSubmitBid', asStudent(gidC, pidC, { round: t, bid }))).result
+    if (res.round.yourCost !== shown) mismatches++
+    check(res.round.yourCost === shown,
+      `⚠⚠ §13 round ${t}: the round resolved against the cost the student was SHOWN (${shown} vs ${res.round.yourCost})`)
+    // And the profit follows from those two numbers, not from a third one nobody saw.
+    check(res.round.profit === (res.round.won ? bid - shown : 0),
+      `§13 round ${t}: and the profit is computed from that same cost`)
+  }
+  check(mismatches === 0, '§13 no round resolved against an unseen cost')
+
+  // The cost must also survive a reload BETWEEN rounds, with no seed to re-derive from.
+  const gidC2 = await makeInstance({ rounds: 2, reserve: RESERVE })
+  await callFn('procurementBootstrap', asStudent(gidC2, 'reloader'))
+  const beforeReload = (await callFn('procurementGetState', asStudent(gidC2, 'reloader'))).result.currentCost
+  const afterReload = (await callFn('procurementGetState', asStudent(gidC2, 'reloader'))).result.currentCost
+  check(beforeReload === afterReload,
+    '§13 a reload returns the same cost — a student cannot re-roll into a friendlier draw')
+
+  // ⚠ AND THE RIVALS ARE STILL NOT PRE-DRAWN. Storing the player's own cost early must
+  // not drag any rival data forward with it.
+  const openDoc = await getDoc(`procurement_game_instances/${gidC2}/participants/reloader`)
+  const rivalish = Object.keys(openDoc ?? {}).filter(k => /rival|bot|seed/i.test(k))
+  check(rivalish.length === 0,
+    '⚠ §13 and the doc holds NO rival/bot/seed field — only the student\'s own number')
 
   // ═══════════════════════════════════════════════════════════════════════════
   console.log(`\n${'═'.repeat(70)}`)

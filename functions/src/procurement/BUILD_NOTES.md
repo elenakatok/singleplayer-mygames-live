@@ -260,6 +260,67 @@ Playwright harness imports that exact module rather than reproducing its steps.
 
 ---
 
+## 6e. ⚠⚠ THE PRODUCTION BLOCKER — a derived value is not a recorded one (2026-08-03)
+
+**Found in production, on the first real playthrough.** A student was shown one cost and
+the round resolved against another: shown 33, resolved 58; shown 20, resolved 57. They
+could win a contract at a loss no visible number predicted.
+
+**Cause.** `makeRng(null, key)` returns `Math.random` and **ignores the key**. A
+classroom-created instance has no `truth/main`, so `loadProcurementSeed` returns null. CP3a
+computed the player's cost on demand from `(seed, participantId, round)` and described it as
+"once-only by construction" — true only when a seed is set. Unseeded, every read redrew it.
+
+**Fix (Elena, 08-03): stop deriving, start recording.** The cost is drawn once when the
+round opens, written (`open_round: { round, cost, opened_at }`), and read everywhere after —
+bidding screen, resolution, round result, history, reports. `openRound.ts` owns it, and it
+is transactional so two tabs cannot each draw.
+
+⚠ **The rejected fix is worth recording too.** My first instinct was a persisted per-instance
+seed. Correct instinct, **wrong layer** — it makes the recipe reliable again when the problem
+is that a fact was being recomputed instead of recorded. (A `gameInstanceId` fallback would
+also have been a §4 leak: `hash32` is in the repo and a student knows their own ids.)
+
+⚠ **§4 is untouched.** Rival costs are still drawn at RESOLUTION, inside the transaction
+that accepts the bid. All 8 §4 checks pass unchanged, and §4 now additionally pins that the
+cost on screen IS the cost in the record — on the seeded path too, so the property is
+defended everywhere rather than only where it broke.
+
+### Is `makeRng`-on-null still reachable, and does it matter?
+
+**Yes, at all four sites** (player cost, rival costs, tie break, counterfactual) whenever an
+instance has no seed — the normal case. **It no longer matters, because every one of those
+draws now has its OUTCOME written by the transaction that made it**: `rival_costs`,
+`rival_bids`, the winner, the profit and the `eq_*` fields are all recorded on the round.
+Nothing is read twice. An unseeded instance is simply *genuinely random*, which is what an
+unseeded instance is supposed to be.
+
+One residual sharp edge, named so nobody re-derives it: **under a null seed the
+"separately keyed streams" property is vacuous** — player, rivals, tie and counterfactual all
+share one `Math.random`. Nothing depends on it today (each result is recorded), but the
+positional-draw convention in `rng.ts` guarantees nothing at all without a seed. Any future
+value that is *derived rather than recorded* will break exactly the way this one did.
+
+### The harness gap — the real lesson, and the third of this shape
+
+Every instance the harness created set a seed. **396 checks were green about a configuration
+production never uses.** Third finding of this form this session:
+
+| # | Trap | The harness believed |
+|---|---|---|
+| 1 | `emulators:exec` serves `functions/lib` | it was testing the source it had just edited |
+| 2 | REST `PATCH` with no `updateMask` REPLACES the doc | it had seeded a 1-round instance |
+| 3 | **every instance set a seed** | **it was testing the classroom's instance shape** |
+
+(And a fourth, same family: `startVite` accepting a server it did not start.)
+
+**Standing case added: §13, a classroom-shaped instance — no seed, no `truth/main`.** It
+asserts one cost across repeated reads, and resolution matching what was shown.
+**Verified to FAIL before the fix (8 failures) and pass after** — the mutation discipline
+applied to the fix itself.
+
+---
+
 ## 6. `allowDropOut` does not exist
 
 It appears in an early prompt's config list but in **neither** FINAL spec. Drop Out is
