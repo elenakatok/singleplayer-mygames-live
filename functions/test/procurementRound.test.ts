@@ -417,3 +417,190 @@ describe('§6.2 validateBid — a VISIBLE gate, not a silent filter', () => {
     expect(validateBid(5, c)).toEqual({ ok: true, bid: 5 })
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠⚠ BLANK SEED — THE ONLY CONFIGURATION A CLASSROOM INSTANCE EVER HAS.
+//
+// An instance created from the classroom has a config doc and no `truth/main`, so
+// `loadProcurementSeed` returns null and `makeRng(null, key)` returns `Math.random` —
+// IGNORING ITS KEY. Every case above this line passes a seed string, so until 08-03 the
+// unit suite said nothing at all about the configuration production actually runs. That
+// gap is where the stored-cost blocker (a60cf51) lived: the cost was derived on demand,
+// which is stable ONLY when a seed is set, and the screen and the resolution disagreed.
+//
+// ⚠ THE ASSERTIONS HERE ARE ABOUT PROPERTIES, NOT VALUES. Without a seed there is no
+// expected number to compare against, so what must hold is: draws land in range and are
+// integers; repeated draws are INDEPENDENT rather than a repeated constant; a resolve
+// yields exactly one winner and that winner is a legal bidder; and a nominated bidder
+// still takes every tie. A test that pinned a value here would either be impossible or
+// be secretly testing `Math.random`.
+//
+// ⚠ EVERY PROBABILISTIC ASSERTION IS RUN MANY TIMES. "Two draws differ" is a coin flip
+// wearing a test's clothes (BUILD_NOTES §3); "200 draws are not all identical" fails on a
+// broken build with certainty and on a working one with probability ~0.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('⚠ blank seed — the player cost draw', () => {
+  const C = cfg()
+
+  it('every draw is an INTEGER inside the player range', () => {
+    for (let i = 0; i < 2000; i++) {
+      const v = drawPlayerCost(null, `p${i % 7}`, (i % 8) + 1, C)
+      expect(Number.isInteger(v)).toBe(true)
+      expect(v).toBeGreaterThanOrEqual(C.playerCostDist.min)
+      expect(v).toBeLessThanOrEqual(C.playerCostDist.max)
+    }
+  })
+
+  it('draws are INDEPENDENT, not a constant the blank-seed path quietly returns', () => {
+    // ⚠ THE FORECAST-SHAPED FAILURE THIS GUARDS: a draw helper that ignores its key can
+    // just as easily ignore its randomness. 200 draws collapsing to one value is the
+    // symptom, and it would look like health — a stable number — from every other angle.
+    const seen = new Set<number>()
+    for (let i = 0; i < 200; i++) seen.add(drawPlayerCost(null, 'p', 1, C))
+    expect(seen.size).toBeGreaterThan(1)
+    // The player range holds 51 values; 200 draws hitting fewer than 10 of them means
+    // something is pinning the stream, not that the class got unlucky.
+    expect(seen.size).toBeGreaterThan(10)
+  })
+
+  it('⚠ is NOT stable for one (participant, round) — which is why the cost is RECORDED', () => {
+    // This is the blocker, stated as a property. Under a seed these calls agree; blank,
+    // they do not, and anything that DERIVES the cost twice will disagree with itself.
+    // `openRound.ts` exists because of exactly this. Asserted so nobody "restores purity"
+    // and reintroduces a60cf51.
+    const seen = new Set<number>()
+    for (let i = 0; i < 200; i++) seen.add(drawPlayerCost(null, 'same-student', 3, C))
+    expect(seen.size).toBeGreaterThan(1)
+  })
+
+  it('two participants do not receive identical sequences', () => {
+    const seq = (p: string) =>
+      Array.from({ length: 8 }, (_, r) => drawPlayerCost(null, p, r + 1, C)).join(',')
+    const seqs = new Set(['a', 'b', 'c', 'd', 'e', 'f'].map(seq))
+    expect(seqs.size).toBe(6)
+  })
+})
+
+describe('⚠ blank seed — the rival cost draws', () => {
+  const C = cfg()
+  const eq = equilibriumSettingsFor(C)
+
+  it('draws one cost per rival, every one an integer in the RIVAL range', () => {
+    for (let i = 0; i < 300; i++) {
+      const r = resolveRound(null, 'p', 1, C, 30, 45)
+      expect(r.rivalCosts).toHaveLength(C.rivalCount)
+      for (const c of r.rivalCosts) {
+        expect(Number.isInteger(c)).toBe(true)
+        expect(c).toBeGreaterThanOrEqual(C.rivalCostDist.min)
+        expect(c).toBeLessThanOrEqual(C.rivalCostDist.max)
+      }
+    }
+  })
+
+  it('every rival bid is β at its own drawn cost, or null above the reserve', () => {
+    for (let i = 0; i < 300; i++) {
+      const r = resolveRound(null, 'p', 1, C, 30, 45)
+      r.rivalBids.forEach((bid, k) => expect(bid).toBe(equilibriumBid(r.rivalCosts[k], eq)))
+    }
+  })
+
+  it('rival vectors are independent round to round', () => {
+    const seen = new Set(
+      Array.from({ length: 60 }, () =>
+        resolveRound(null, 'p', 1, C, 30, 45).rivalCosts.join(',')))
+    expect(seen.size).toBeGreaterThan(50)
+  })
+})
+
+describe('⚠ blank seed — the resolver', () => {
+  const C = cfg()
+
+  it('yields EXACTLY ONE winner, and it is a legal bidder', () => {
+    const legal = new Set([PLAYER_ID, ...Array.from({ length: C.rivalCount }, (_, i) => rivalId(i))])
+    for (let i = 0; i < 500; i++) {
+      const r = resolveRound(null, 'p', 1, C, 30, 45)
+      // Defaults admit every bid, so there is always an award.
+      expect(r.winnerId).not.toBeNull()
+      expect(legal.has(r.winnerId!)).toBe(true)
+      expect(r.price).not.toBeNull()
+    }
+  })
+
+  it('the price is the lowest bid on the table, and the payoff follows from it', () => {
+    for (let i = 0; i < 500; i++) {
+      const cost = 30
+      const bid = 45
+      const r = resolveRound(null, 'p', 1, C, cost, bid)
+      const all = [bid, ...r.rivalBids.filter((b): b is number => b !== null)]
+      expect(r.price).toBe(Math.min(...all))
+      expect(r.playerWon).toBe(r.price === bid)
+      expect(r.playerProfit).toBe(r.playerWon ? bid - cost : 0)
+    }
+  })
+
+  it('a losing round never pays, and a winning one never pays someone else\'s bid', () => {
+    for (let i = 0; i < 300; i++) {
+      const r = resolveRound(null, 'p', 1, C, 30, 45)
+      if (!r.playerWon) expect(r.playerProfit).toBe(0)
+      else expect(r.price).toBe(45)
+    }
+  })
+})
+
+describe('⚠ blank seed — ties and tieBreakPreference', () => {
+  const C = cfg()
+
+  it('the player takes EVERY tie they are in — across ties that actually occur', () => {
+    // ⚠ THE SCENARIO MUST CONTAIN THE CONDITION (BUILD_NOTES §3). Ties are ~3% of rounds,
+    // so this searches for real ones and asserts the count it found — a run that produced
+    // no tie would otherwise pass while testing nothing.
+    let ties = 0
+    for (let i = 0; i < 4000 && ties < 40; i++) {
+      // Bidding at the reserve maximises the chance of meeting a rival's bid exactly.
+      const r = resolveRound(null, 'p', 1, C, 30, 45)
+      if (!r.tie) continue
+      ties++
+      // Whenever the player is IN the tie, the nomination hands it to them.
+      if (r.playerBid === r.price) {
+        expect(r.playerWon).toBe(true)
+        expect(r.tiedAndLost).toBe(false)
+      }
+      // And a tie always resolves to exactly one legal winner.
+      expect(r.winnerId).not.toBeNull()
+    }
+    expect(ties).toBeGreaterThan(0)
+  })
+
+  it('a bot-vs-bot tie resolves to ONE rival, and not always the same one', () => {
+    // Every rival draws the same cost, so all four bid β(30) and tie every time. The
+    // player bids above them and loses. With no seed the pick is `Math.random` — the
+    // property is that it lands on a legal bidder and varies.
+    const W = cfg({ rivalCostDist: { distribution: 'uniform', min: 30, max: 30, integer: true } })
+    const winners = new Set<string | null>()
+    for (let i = 0; i < 300; i++) {
+      const r = resolveRound(null, 'p', 1, W, 55, 110)
+      expect(r.tie).toBe(true)
+      expect(r.playerWon).toBe(false)
+      expect(r.tiedAndLost).toBe(false)   // the player was not in the tie, just outbid
+      expect(r.winnerId).not.toBe(PLAYER_ID)
+      winners.add(r.winnerId)
+    }
+    expect(winners.size).toBeGreaterThan(1)
+    for (const w of winners) {
+      expect([0, 1, 2, 3].map(rivalId)).toContain(w)
+    }
+  })
+
+  it('⚠ the counterfactual still resolves under a blank seed', () => {
+    // β is a pure function of the cost and public parameters, so it must not vary with
+    // the seed at all — the one number on this path that IS fixed without one.
+    const eq = equilibriumSettingsFor(C)
+    for (let i = 0; i < 200; i++) {
+      const r = resolveRound(null, 'p', 1, C, 34, 45)
+      expect(r.equilibriumBid).toBe(equilibriumBid(34, eq))
+      expect(r.equilibriumProfit).toBe(
+        r.equilibriumWouldHaveWon ? r.equilibriumBid! - 34 : 0)
+    }
+  })
+})

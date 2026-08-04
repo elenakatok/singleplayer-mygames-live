@@ -253,6 +253,11 @@ export type ProcurementConfig = {
   rivalCostDist: { distribution: 'uniform'; min: number; max: number; integer: boolean }
   playerCostDist: { distribution: 'uniform'; min: number; max: number; integer: boolean }
   bidIncrementUnit: number
+  /** Is the reserve still FOLLOWING the top of the rival cost range? ⚠ RECORDED by the
+   *  server, never inferred from `reserve === rivalCostDist.max` — an instructor who
+   *  deliberately sets the reserve TO the rival max must not have it silently start
+   *  moving again. True until they edit the reserve; resetting it turns it back on. */
+  reserveAuto: boolean
   decrementSchedule: DecrementBand[]
   botDelayMs: [number, number]
   currencyLabel: string

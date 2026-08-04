@@ -886,6 +886,92 @@ async function main() {
   check(rivalish.length === 0,
     '⚠ §13 and the doc holds NO rival/bot/seed field — only the student\'s own number')
 
+  // ── §14 the cost ranges, and the reserve's follow rule ─────────────────────
+  section('§14  Cost-range settings, and the reserve following the rival max')
+
+  const gidCfg = await makeInstance({ rounds: 2, reserve: RESERVE })
+  const cfgOf = async () => (await callFn('procurementGetConfig', asInstructor(gidCfg))).result.config
+  // ⚠ Returns the WHOLE call, not `.result` — a rejected field may or may not come back
+  // as a successful call, and reading `.result.rejected` off a failed one throws an
+  // opaque TypeError that hides the actual server message.
+  const setCfg = async (patch) => {
+    const r = await callFn('procurementUpdateConfig', asInstructor(gidCfg, { config: patch }))
+    return r.ok ? { ok: true, ...r.result } : { ok: false, rejected: [], error: r.error }
+  }
+
+  const cfg0 = await cfgOf()
+  check(cfg0.reserveAuto === true, '§14 a fresh instance has the reserve FOLLOWING the rival max')
+
+  // ⚠⚠ THE RULE THIS SECTION EXISTS FOR. Raising the rival max must carry the reserve
+  // with it — otherwise the instance silently becomes a lowered-reserve game with bots
+  // above the old reserve absent from the auction (§3.1). Legal, but never by accident.
+  await setCfg({ rivalCostDist: { distribution: 'uniform', min: 10, max: 130, integer: true } })
+  const cfg1 = await cfgOf()
+  check(cfg1.rivalCostDist.max === 130, '§14 the rival max is raised to 130')
+  check(cfg1.reserve === 130, '⚠⚠ §14 and the reserve FOLLOWED it — no accidental lowered-reserve game')
+
+  // Once the instructor pins it, it must stop following.
+  await setCfg({ reserve: 100 })
+  const cfg2 = await cfgOf()
+  check(cfg2.reserve === 100 && cfg2.reserveAuto === false,
+    '§14 setting the reserve PINS it and records that it is pinned')
+
+  await setCfg({ rivalCostDist: { distribution: 'uniform', min: 10, max: 150, integer: true } })
+  const cfg3 = await cfgOf()
+  check(cfg3.rivalCostDist.max === 150 && cfg3.reserve === 100,
+    '⚠⚠ §14 and a later range change does NOT move a pinned reserve')
+
+  mustFail(() => cfg3.reserve === 150,
+    'the pinned reserve followed the rival max anyway (it must not)')
+
+  // ⚠ THE CASE A DERIVED FLAG WOULD GET WRONG. Pin the reserve to exactly the rival max —
+  // indistinguishable from "never touched" if you infer the flag from the two numbers.
+  await setCfg({ reserve: 150 })
+  await setCfg({ rivalCostDist: { distribution: 'uniform', min: 10, max: 170, integer: true } })
+  const cfg4 = await cfgOf()
+  check(cfg4.reserve === 150,
+    '⚠⚠ §14 a reserve pinned AT the rival max stays pinned — the flag is recorded, not inferred')
+
+  // Reset turns following back on.
+  await setCfg({ reserve: null })
+  const cfg5 = await cfgOf()
+  check(cfg5.reserveAuto === true && cfg5.reserve === cfg5.rivalCostDist.max,
+    '§14 clearing the reserve makes it follow again')
+
+  // ── validation ─────────────────────────────────────────────────────────────
+  const before = await cfgOf()
+  // ⚠ A patch whose ONLY field is rejected FAILS the call rather than returning a
+  // rejected list — there is nothing left to save, so `invalid-argument` naming the field
+  // is the right answer and the Settings page surfaces it. Either shape counts as "named
+  // and refused"; what must NOT happen is a silent substitution of the default.
+  const named = (r, field) =>
+    (r.rejected ?? []).includes(field) || new RegExp(field).test(r.error ?? '')
+  const bad = await setCfg({ rivalCostDist: { distribution: 'uniform', min: 60, max: 20, integer: true } })
+  check(named(bad, 'rivalCostDist'),
+    '§14 min above max is REJECTED BY NAME, not silently replaced with the default')
+  check((await cfgOf()).rivalCostDist.max === before.rivalCostDist.max,
+    '§14 and the stored range is unchanged')
+
+  const neg = await setCfg({ playerCostDist: { distribution: 'uniform', min: -5, max: 60, integer: true } })
+  check(named(neg, 'playerCostDist'), '§14 a negative minimum is rejected')
+
+  const frac = await setCfg({ playerCostDist: { distribution: 'uniform', min: 10, max: 60.5, integer: true } })
+  check(named(frac, 'playerCostDist'), '§14 a fractional bound is rejected — costs are whole ECU')
+
+  const ok = await setCfg({ playerCostDist: { distribution: 'uniform', min: 5, max: 40, integer: true } })
+  check(ok.ok && !(ok.rejected ?? []).includes('playerCostDist'),
+    '§14 a legal student range is accepted')
+  check((await cfgOf()).playerCostDist.max === 40, '§14 and stored')
+
+  // ⚠ AND IT STILL DOES NOT REACH A STUDENT (§4).
+  const pidCfg = 'range-student'
+  await callFn('procurementBootstrap', asStudent(gidCfg, pidCfg))
+  const stCfg = (await callFn('procurementGetState', asStudent(gidCfg, pidCfg))).result
+  check(stCfg.params.playerCostMin === undefined && stCfg.params.playerCostMax === undefined,
+    '⚠⚠ §14 changing the student range does NOT put it in the student payload')
+  check(stCfg.currentCost >= 5 && stCfg.currentCost <= 40,
+    '§14 though the student\'s own drawn cost does come from the new range')
+
   // ═══════════════════════════════════════════════════════════════════════════
   console.log(`\n${'═'.repeat(70)}`)
   console.log(`  ${passed} passed, ${failed} failed`)

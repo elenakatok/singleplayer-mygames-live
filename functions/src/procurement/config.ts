@@ -160,6 +160,25 @@ export interface ProcurementConfig {
   /** Open format only. */
   botDelayMs: [number, number]
   currencyLabel: string
+  /**
+   * Is the reserve still FOLLOWING the top of the rival cost range?
+   *
+   * ⚠⚠ RECORDED, NOT DERIVED. The tempting shortcut is "the reserve is following iff
+   * `reserve === rivalCostDist.max`" — but an instructor who deliberately sets the reserve
+   * TO the rival max is indistinguishable from one who never touched it, and their setting
+   * would silently start moving the next time the range changed. Same lesson as the
+   * player's cost and `winner_id` (BUILD_NOTES 6e): record the fact.
+   *
+   * True until the instructor edits the reserve; false from then on. Resetting the reserve
+   * (sending null) turns it back on.
+   *
+   * Why it matters: `reserve` defaults to the rival max, and a rival whose cost exceeds
+   * the reserve makes NO BID (§3.1). So raising the rival max from 110 to 130 with a
+   * fixed reserve turns the instance into a lowered-reserve game with bots absent from
+   * the auction — legal (§3.1 teaches it), but never something that should happen by
+   * accident.
+   */
+  reserveAuto: boolean
   kcEnabled: boolean
   /**
    * ⚠ THE KC IS ONE MERGED POOL WITH PER-QUESTION VISIBILITY (Part 1 §10 / KC v3).
@@ -182,6 +201,7 @@ export const DEFAULT_CONFIG: ProcurementConfig = {
   decrementSchedule: DEFAULT_DECREMENT_SCHEDULE,
   botDelayMs: DEFAULT_BOT_DELAY_MS,
   currencyLabel: DEFAULT_CURRENCY_LABEL,
+  reserveAuto: true,
   kcEnabled: DEFAULT_KC_ENABLED,
   kcVisible: [],
 }
@@ -297,6 +317,9 @@ export function loadProcurementConfig(
     decrementSchedule: parseDecrementSchedule(d.decrementSchedule),
     botDelayMs: parseBotDelay(d.botDelayMs),
     currencyLabel: str(d.currencyLabel, DEFAULT_CURRENCY_LABEL),
+    // ⚠ Defaults TRUE, so an instance written before this field existed behaves as it
+    // always did: its reserve equals the rival max and follows it.
+    reserveAuto: bool(d.reserveAuto, true),
     kcEnabled: bool(d.kcEnabled, DEFAULT_KC_ENABLED),
     kcVisible: parseKcVisible(d.kcVisible, knownKcIds, () => defaultVisible(format)),
   }

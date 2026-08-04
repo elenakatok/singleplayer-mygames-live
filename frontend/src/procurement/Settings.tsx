@@ -148,6 +148,98 @@ export default function Settings() {
               </p>
             </div>
 
+            {/* ── the two cost ranges (§3) ──────────────────────────────────
+                ⚠ THE ASYMMETRY IS THE DESIGN, not an oversight: rivals draw U[10,110],
+                the student U[10,60] (§5.2). It is what lifts the student's win rate to
+                ~39%, and it is why the help text below calls the student range a
+                DIFFICULTY DIAL rather than an economic parameter. */}
+            <div style={field}>
+              <label style={label}>Rival cost range ({c.currencyLabel})</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input id="proc-rival-min" data-testid="proc-set-rival-cost-min" type="number" style={input}
+                  defaultValue={c.rivalCostDist.min} disabled={busy}
+                  onBlur={e => {
+                    const min = Number(e.target.value)
+                    if (min !== c.rivalCostDist.min) {
+                      void save({ rivalCostDist: { ...c.rivalCostDist, min } })
+                    }
+                  }} />
+                <span style={{ color: colors.textSecondary }}>to</span>
+                <input id="proc-rival-max" data-testid="proc-set-rival-cost-max" type="number" style={input}
+                  defaultValue={c.rivalCostDist.max} disabled={busy}
+                  onBlur={e => {
+                    const max = Number(e.target.value)
+                    if (max !== c.rivalCostDist.max) {
+                      void save({ rivalCostDist: { ...c.rivalCostDist, max } })
+                    }
+                  }} />
+              </div>
+              <p style={{ fontSize: '0.75rem', color: colors.textSecondary }}>
+                What each simulated rival's cost is drawn from, independently, every round.
+                ⚠ This is the ONE range students are told (§4), and it is the number the
+                optimal bid is computed against — changing the top of it moves the
+                benchmark line on every chart.
+              </p>
+              {c.reserveAuto ? (
+                <p data-testid="proc-set-reserve-follows" style={{ fontSize: '0.75rem', color: colors.textSecondary }}>
+                  The reserve is following this maximum ({c.rivalCostDist.max}). It stops
+                  following as soon as you set a reserve yourself.
+                </p>
+              ) : (
+                <p data-testid="proc-set-reserve-pinned" style={{ fontSize: '0.75rem', color: colors.warnBannerText }}>
+                  ⚠ The reserve is pinned at {c.reserve} and will NOT follow this maximum.
+                  {c.reserve < c.rivalCostDist.max && ' Rivals whose cost exceeds it make no bid at all.'}
+                  {' '}Clear the reserve field and save to make it follow again.
+                </p>
+              )}
+            </div>
+
+            <div style={field}>
+              <label style={label}>Student cost range ({c.currencyLabel})</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input id="proc-player-min" data-testid="proc-set-player-cost-min" type="number" style={input}
+                  defaultValue={c.playerCostDist.min} disabled={busy}
+                  onBlur={e => {
+                    const min = Number(e.target.value)
+                    if (min !== c.playerCostDist.min) {
+                      void save({ playerCostDist: { ...c.playerCostDist, min } })
+                    }
+                  }} />
+                <span style={{ color: colors.textSecondary }}>to</span>
+                <input id="proc-player-max" data-testid="proc-set-player-cost-max" type="number" style={input}
+                  defaultValue={c.playerCostDist.max} disabled={busy}
+                  onBlur={e => {
+                    const max = Number(e.target.value)
+                    if (max !== c.playerCostDist.max) {
+                      void save({ playerCostDist: { ...c.playerCostDist, max } })
+                    }
+                  }} />
+              </div>
+              {/* ⚠ WHAT THIS ACTUALLY DOES, said plainly — it is easy to mistake for an
+                  economic parameter and it is not one. */}
+              <p style={{ fontSize: '0.75rem', color: colors.textSecondary }}>
+                What each student's own cost is drawn from. <strong>This is a difficulty
+                dial: it changes how often students win, not how they should bid.</strong>
+                {' '}A narrower, lower range than the rivals' is what gives the student an
+                edge — at the shipped 10–60 against rivals' 10–110 they win about 39% of
+                rounds. It does <strong>not</strong> change the optimal bid, because that
+                is computed against the RIVALS' range (§5.2): a bidder's own distribution
+                does not enter their optimisation once their cost is drawn.
+              </p>
+              <p style={{ fontSize: '0.75rem', color: colors.textSecondary }}>
+                ⚠ Students are never shown this range (§4) — only their own realized cost
+                and the rivals' range.
+              </p>
+              {c.playerCostDist.max > c.rivalCostDist.max && (
+                <p data-testid="proc-set-player-above-rival" style={{ fontSize: '0.75rem', color: colors.warnBannerText }}>
+                  ⚠ The student range now reaches above the rivals'. That is legal, and it
+                  makes the game HARDER than the rivals face — students will often draw
+                  costs no rival can draw. Costs above the reserve leave no bid worth
+                  making at all.
+                </p>
+              )}
+            </div>
+
             <div style={field}>
               <label style={label} htmlFor="proc-reserve">Reserve ({c.currencyLabel})</label>
               <input id="proc-reserve" data-testid="proc-set-reserve" type="number" style={input}

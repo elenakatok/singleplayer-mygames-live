@@ -4,10 +4,10 @@ import { FieldValue } from 'firebase-admin/firestore'
 import { extractInstructorGameId } from '@mygames/game-server'
 import {
   PROCUREMENT_CORS_ORIGINS, INSTANCES_COLLECTION, CONFIG_DOC, TRUTH_DOC,
-  loadProcurementConfig, loadProcurementSeed, parseCostDist, parseDecrementSchedule,
+  loadProcurementConfig, loadProcurementSeed, parseDecrementSchedule,
+  type CostDist,
   isFormat, defaultReserve,
   HARD_MIN_ROUNDS, HARD_MAX_ROUNDS, HARD_MIN_RIVALS, HARD_MAX_RIVALS,
-  DEFAULT_RIVAL_COST_DIST, DEFAULT_PLAYER_COST_DIST,
 } from './config'
 import { KC_POOL_IDS, defaultVisibleFor, poolForFormat, gradedFor } from './questions'
 import { hasAnySubmission } from './instance'
@@ -106,16 +106,21 @@ export const procurementUpdateConfig = onCall({ cors: PROCUREMENT_CORS_ORIGINS }
   const configPatch: Record<string, unknown> = {}
   const rejected: string[] = []
 
+  // ⚠ ONE READ of the config as it stands, used by the format lock AND the reserve's
+  // follow rule. Both need to know what was there before the patch; loading it twice
+  // would let the two see different states inside one save.
+  const existing = loadProcurementConfig(
+    (await instanceRef.collection('config').doc(CONFIG_DOC).get()).data(),
+    KC_POOL_IDS, defaultVisibleFor,
+  )
+
   // ── format — the locked one ─────────────────────────────────────────────────
   if ('format' in patch) {
     if (!isFormat(patch.format)) {
       throw new HttpsError('invalid-argument',
         'format must be sealed_first_price or open_descending.')
     }
-    const current = loadProcurementConfig(
-      (await instanceRef.collection('config').doc(CONFIG_DOC).get()).data(), KC_POOL_IDS, defaultVisibleFor,
-    )
-    if (patch.format !== current.format) {
+    if (patch.format !== existing.format) {
       if (await hasAnySubmission(db, gameInstanceId)) {
         throw new HttpsError('failed-precondition',
           'The bidding format cannot be changed once a student has played a round — ' +
@@ -139,28 +144,66 @@ export const procurementUpdateConfig = onCall({ cors: PROCUREMENT_CORS_ORIGINS }
     if (v === null) rejected.push('bidIncrementUnit'); else configPatch.bidIncrementUnit = v
   }
 
-  // ── the cost distributions ──────────────────────────────────────────────────
+  // ── the cost distributions (§3) ─────────────────────────────────────────────
+  //
+  // ⚠ VALIDATED HERE, NOT LEFT TO parseCostDist. That parser is a DEFENSIVE READER for
+  // half-written docs: it silently substitutes the default when it dislikes the input,
+  // which is right on the read path and wrong on a save — an instructor who typed
+  // min 60 / max 20 would be told "saved" and get 10/110 back. On this path a bad range
+  // is REJECTED BY NAME so the Settings page can say which field it refused.
+  //
+  // ⚠ INTEGERS ONLY. Costs are whole ECU by construction (§3.1) and every bid is an
+  // integer; a fractional bound would make `randomInt` draw outside the stated range.
+  const costDist = (raw: unknown, key: string) => {
+    if (typeof raw !== 'object' || raw === null) { rejected.push(key); return null }
+    const d = raw as Record<string, unknown>
+    const min = d.min, max = d.max
+    if (!num(min) || !num(max) || !Number.isInteger(min) || !Number.isInteger(max)) {
+      rejected.push(key); return null
+    }
+    if (min < 0 || min >= max) { rejected.push(key); return null }
+    return { distribution: 'uniform' as const, min, max, integer: true }
+  }
   if ('rivalCostDist' in patch) {
-    configPatch.rivalCostDist = parseCostDist(patch.rivalCostDist, DEFAULT_RIVAL_COST_DIST)
+    const d = costDist(patch.rivalCostDist, 'rivalCostDist')
+    if (d) configPatch.rivalCostDist = d
   }
   if ('playerCostDist' in patch) {
-    configPatch.playerCostDist = parseCostDist(patch.playerCostDist, DEFAULT_PLAYER_COST_DIST)
+    const d = costDist(patch.playerCostDist, 'playerCostDist')
+    if (d) configPatch.playerCostDist = d
   }
 
-  // ── the reserve ─────────────────────────────────────────────────────────────
-  // ⚠ DELIBERATELY NOT CLAMPED to the rival cost range. Lowering it below the cost max
-  // is the setting slide 10 teaches — it makes the entry decision live (Part 1 §3.1) —
-  // and clamping would silently undo the instructor's choice. `null` resets it to the
-  // top of the rival range, which is the shipped default.
-  if ('reserve' in patch) {
+  // ── the reserve, and whether it still FOLLOWS the rival max ─────────────────
+  //
+  // ⚠ DELIBERATELY NOT CLAMPED to the rival cost range. Lowering it below the cost max is
+  // the setting slide 10 teaches — it makes the entry decision live (Part 1 §3.1) — and
+  // clamping would silently undo the instructor's choice.
+  //
+  // ⚠⚠ THE FOLLOW RULE. `reserve` defaults to the top of the rival range, and a rival
+  // whose cost exceeds the reserve makes NO BID (§3.1). So if the reserve did not follow,
+  // raising the rival max to 130 would quietly convert the instance into a lowered-reserve
+  // game with bots missing from the auction. It therefore FOLLOWS until the instructor
+  // edits it, and STOPS the moment they do — recorded in `reserveAuto`, never inferred
+  // from whether the two numbers happen to match (config.ts).
+  const explicitReserve = 'reserve' in patch
+  if (explicitReserve) {
     if (patch.reserve === null) {
-      const dist = (configPatch.rivalCostDist ?? null) as ReturnType<typeof parseCostDist> | null
-      configPatch.reserve = defaultReserve(dist ?? DEFAULT_RIVAL_COST_DIST)
-    } else if (num(patch.reserve)) {
+      // Reset: back to the top of the rival range, and following again.
+      const dist = (configPatch.rivalCostDist ?? existing.rivalCostDist) as CostDist
+      configPatch.reserve = defaultReserve(dist)
+      configPatch.reserveAuto = true
+    } else if (num(patch.reserve) && patch.reserve >= 0) {
       configPatch.reserve = patch.reserve
+      // ⚠ Set even when the value is unchanged. An instructor who types the number that
+      // was already there has still CHOSEN it, and a reserve that resumed following after
+      // a no-op save would be the surprise this whole rule exists to prevent.
+      configPatch.reserveAuto = false
     } else {
       rejected.push('reserve')
     }
+  } else if (configPatch.rivalCostDist !== undefined && existing.reserveAuto) {
+    // The rival range moved and nobody has pinned the reserve — carry it along.
+    configPatch.reserve = defaultReserve(configPatch.rivalCostDist as CostDist)
   }
 
   // ── open-format pacing ──────────────────────────────────────────────────────
