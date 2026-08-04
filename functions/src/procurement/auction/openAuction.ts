@@ -85,6 +85,21 @@ export interface OpenSettings {
   order?: 'random' | 'lowestIndex'
 }
 
+/**
+ * ⚠⚠ THE INVARIANT THAT LETS THE BID HISTORY STAY FULLY PUBLIC:
+ * **A BOT NEVER EMITS ANYTHING BUT A BID.**
+ *
+ * There is no "bot 3 has stopped" event and no bot drop-out event, and there is no code
+ * path that could produce one: `markStopped` records a bot's departure in `state.stopped`
+ * and appends NOTHING, and the only `dropOut` event in the system is written by
+ * `playerDropOut` with `s.playerId`. So the history is bids and one possible player
+ * drop-out — every row of it is an action somebody took, publicly, in a real auction.
+ *
+ * This is what makes the history safe to show in full while the active-bidder count is
+ * not: a bid is an announcement, a departure is silence, and silence stays ambiguous
+ * between "priced out" and "still thinking". Pinned by a test; if a "stopped" event is
+ * ever added here, that pin fails and the leak analysis in openView.ts stops holding.
+ */
 export type OpenEvent =
   | { kind: 'bid'; bidderId: string; amount: number; isPlayer: boolean }
   | { kind: 'dropOut'; bidderId: string }
@@ -482,29 +497,30 @@ export function playerDropOut(state: OpenState, s: OpenSettings, nowMs: number):
   return cur
 }
 
-/**
- * How many bidders could still act — the "N of M still bidding" counter (open §5.1).
- *
- * ⚠ EXCLUDES BOTS PRICED OUT BY THE RESERVE FROM THE OPENING (open §4.3). That is the
- * stated requirement, and `openAuction` implements it by settling once before anyone acts
- * rather than by filtering here.
- *
- * ⚠ DEFINITIONAL CHOICE, RAISED FOR ELENA AT THIS CHECKPOINT as BUILD_NOTES §2 promised:
- * "still bidding" is read as "could make a FURTHER bid" — not stopped, not dropped out. A
- * bot that holds the low bid but cannot legally go lower is therefore NOT counted, even
- * though it is winning. The alternative reading ("still in the auction") would count it.
- * The spec's sample screen shows "3 of 5" without pinning which reading produced it. Under
- * the reference trace the two readings agree at every step, so nothing in §8 distinguishes
- * them; they differ only when the holder is itself priced out by its own bid.
- */
-export function activeBidderCount(state: OpenState, s: OpenSettings): number {
-  const stopped = new Set(state.stopped)
-  const bots = s.bots.filter(b => !stopped.has(b.bidderId)).length
-  return bots + (state.playerOut ? 0 : 1)
-}
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠⚠ THERE IS DELIBERATELY NO `activeBidderCount`. IT WAS DELETED, NOT UNEXPORTED
+// (Elena, 2026-08-04) — and deleting the DERIVATION rather than hiding the field is the
+// point, because a helper sitting here is an invitation to put it back on a screen.
+//
+// **A competitor's departure is not announced in a live auction.** The player infers it
+// from silence, and silence is ambiguous between "priced out" and "still thinking". An
+// explicit count destroys that ambiguity — and it was the last client-side field derived
+// from bot COST state, so removing it closes the category rather than one instance.
+//
+// It supersedes open §4.3's "the active-bidder count must reflect this from the opening"
+// and §5.1's "3 of 5 still bidding"; the spec is being updated to match. What survives of
+// §4.3 is the mechanism, untouched: a bot with `cost > reserve` is ABSENT from the
+// auction, it never bids, and it never appears in the history. That is still asserted —
+// by the trace, which is where it was always observable.
+//
+// ⚠ THE OPENING TOTAL STAYS PUBLIC. "There are 5 bidders in this auction" is stated up
+// front in the deck and the player needs `n` to reason at all — it is a parameter, not a
+// running commentary. `totalBidderCount` below is that number and never moves.
+// ═══════════════════════════════════════════════════════════════════════════════
 
-/** Total bidders in the auction, including those the reserve priced out. The `M` in
- *  "N of M" — the player plus every rival, whether or not any of them can act. */
+/** Total bidders in the auction, INCLUDING those the reserve priced out — the player plus
+ *  every rival, whether or not any of them can act. ⚠ Constant for the whole round: it is
+ *  a parameter of the auction, and nothing about who is still in can be read off it. */
 export function totalBidderCount(s: OpenSettings): number {
   return s.bots.length + 1
 }

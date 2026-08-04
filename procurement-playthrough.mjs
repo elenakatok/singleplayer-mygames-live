@@ -178,10 +178,17 @@ const PARAMS_KEYS = [
 
 /** ⚠ THE OPEN FORMAT'S LIVE PAYLOAD. The key set is the leak defence: `OpenState` carries
  *  a `stopped` list derived from the bots' costs, and shipping it would give each rival's
- *  cost away to within one step of the schedule, every step. A COUNT is what may cross. */
+ *  cost away to within one step of the schedule, every step.
+ *
+ *  ⚠⚠ AND NO COUNT OF IT CROSSES EITHER (Elena, 2026-08-04). `activeBidders` — "3 of 5
+ *  still bidding" — was here, and is gone along with the server-side derivation. A
+ *  competitor's departure is not announced in a live auction: the player infers it from
+ *  silence, and silence is ambiguous between "priced out" and "still thinking". This pin
+ *  is what stops it coming back. `totalBidders` STAYS — the opening parameter, which never
+ *  moves and reports nothing about who is left. */
 const AUCTION_KEYS = [
   'round', 'status', 'standing', 'holderLabel', 'youHold', 'yourLastBid', 'youAreOut',
-  'sequence', 'nextBotAtMs', 'step', 'minNextBid', 'history', 'activeBidders',
+  'sequence', 'nextBotAtMs', 'step', 'minNextBid', 'history',
   'totalBidders', 'winnerLabel', 'youWon', 'price',
 ].sort()
 
@@ -1093,27 +1100,29 @@ async function main() {
   const r1Costs = (botTruth?.r1?.arrayValue?.values ?? []).map(v => Number(v.integerValue))
   check(r1Costs.length === 4, '§15 four bot costs are recorded for round 1')
 
-  // ⚠⚠ THE ACTIVE COUNT, CROSS-CHECKED AGAINST THE COSTS THE HARNESS READ WITH OWNER
-  // CREDENTIALS — a second source, not the server's own arithmetic played back.
+  // ⚠⚠ NOT ONE OF THOSE COSTS IS REACHABLE — AND NEITHER IS A COUNT OF WHO IS LEFT.
   //
-  // §4.3: the count must exclude priced-out bots FROM THE OPENING. Two kinds are excluded
-  // at a standing of 110: `cost > reserve` (absent outright) and — the easily missed one,
-  // recorded in §4.1 as a known consequence of a coarse top band — any bot whose cost
-  // exceeds the FIRST LEGAL BID of 100, which cannot reach the auction at all. This
-  // instance is unseeded, so on most runs at least one bot lands in 101–110 and the count
-  // genuinely is below five; the assertion is the RELATION, never a fixed number.
+  // The count used to be here, cross-checked against these very costs. It is gone (Elena,
+  // 2026-08-04): a competitor's departure is not announced in a live auction, the player
+  // infers it from silence, and silence is ambiguous between "priced out" and "still
+  // thinking". This unseeded instance is exactly the case that made it leaky — on most
+  // runs at least one bot draws in 101–110 and cannot reach the first legal bid of 100,
+  // so a count would have said "4 of 5" on the opening screen and named the fact.
   const canAct = r1Costs.filter(c => c <= 100).length
-  check(o0.auction.activeBidders === canAct + 1,
-    `⚠⚠ §15 the opening active count is honest: ${o0.auction.activeBidders} = ${canAct} bots under the first legal bid of 100, plus the student`)
-  mustFail(() => o0.auction.activeBidders === r1Costs.length + 1 && canAct < r1Costs.length,
-    'the count reported every bot as active when some could not reach the first legal bid')
-
-  // ⚠⚠ AND NOT ONE OF THEM IS REACHABLE. Recursive key pins above already forbid a cost
-  // FIELD; this forbids the derived `stopped` list under any spelling.
   const auctionJson = JSON.stringify(o0.auction)
   check(!/stopped/i.test(auctionJson), '⚠⚠ §15 the payload carries no `stopped` list')
+  check(!/activeBidders/.test(auctionJson), '⚠⚠ §15 and no active-bidder count')
   check(!/cost/i.test(auctionJson.replace(/"yourCost"[^,]*/g, '')),
     '⚠⚠ §15 and no cost field of any kind')
+
+  // ⚠ THE STRONGER FORM: the number must not be RECOVERABLE, not merely unnamed. Nothing
+  // in the payload may vary with how many bots are already out. Asserted against the
+  // owner-credentials read — a second source, not the server's arithmetic played back.
+  check(!Object.values(o0.auction).some(v => typeof v === 'number' && v === canAct + 1
+    && canAct + 1 !== o0.auction.totalBidders),
+    `⚠⚠ §15 and no field happens to equal the live count (${canAct + 1} of 5 could act)`)
+  check(o0.auction.totalBidders === 5,
+    '§15 the only bidder number sent is the OPENING TOTAL, which never moves')
   // The participant doc DOES hold `stopped` — it is rules-denied, and this is the point:
   // the split is what makes the payload's silence a boundary rather than a coincidence.
   const oDoc = await getDoc(`procurement_game_instances/${gidO}/participants/${pidO}`)
@@ -1151,43 +1160,86 @@ async function main() {
   check(turn.roundOutcome === null, '§15 nothing is written while the round waits')
   check((await storedRounds(gidO, pidO)).length === 0, '§15 and no round is stored yet')
 
+  // ⚠⚠ THE INVARIANT THAT LETS THE BID HISTORY STAY FULLY PUBLIC while the count does not:
+  // A BOT NEVER EMITS ANYTHING BUT A BID. There is no "bot 3 has stopped" event and no bot
+  // drop-out event, so every row is an action somebody publicly took — a bid is an
+  // announcement, a departure is silence. By this point bots really HAVE dropped away
+  // (the cascade halted), so the scenario contains the condition.
+  check(turn.auction.history.length > 0, '§15 the history has rows to check')
+  check(turn.auction.history.every(e => e.kind === 'bid'),
+    '⚠⚠ §15 every history row so far is a BID — no bot announces that it stopped')
+  check(turn.auction.history.every(e => /^(You|Bot \d+)$/.test(e.label)),
+    '§15 and every row carries a bidder label and an amount, nothing else')
+
   // ⚠ AN IDLE ROUND STAYS IDLE. §8.3 case 8.
   const idle = (await callFn('procurementAdvance', asStudent(gidO, pidO))).result
   check(idle.auction.sequence === turn.auction.sequence,
     '⚠ §15 advancing a halted round commits nothing, however often it is asked')
 
-  // ── a bid, and the bot's answer ────────────────────────────────────────────
+  // ── an ILLEGAL bid, taken at the HALT ──────────────────────────────────────
+  //
+  // ⚠ ORDER MATTERS HERE, AND IT COST A FLAKY RUN. This probe used to come AFTER the
+  // player's legal bid — but this instance is unseeded, so on a run where most bots draw
+  // above the first legal bid the player's opening bid WINS OUTRIGHT and the round is
+  // already resolved. The refusal then reads "this auction has already ended", which is
+  // correct behaviour and a failed assertion. Taken at the halt, the round is guaranteed
+  // live: `status === 'waiting'` was asserted three lines up.
   const halted = turn.auction
-  const myBid = halted.minNextBid
-  const bidTurn = (await callFn('procurementSubmitBid',
-    asStudent(gidO, pidO, { bid: myBid, sequence: halted.sequence }))).result
-  pinOpenTurnShape(bidTurn, '§15 player bid')
-  check(bidTurn.rejected === null, '§15 the minimum legal bid is accepted')
-  check(bidTurn.auction.standing === myBid && bidTurn.auction.youHold,
-    '§15 the player now holds the standing bid')
-
-  // ⚠ AN ILLEGAL BID IS REFUSED WITH A REASON, AND CHANGES NOTHING (§8.3 case 3).
   const tooHigh = (await callFn('procurementSubmitBid',
-    asStudent(gidO, pidO, { bid: bidTurn.auction.standing, sequence: bidTurn.auction.sequence }))).result
+    asStudent(gidO, pidO, { bid: halted.standing, sequence: halted.sequence }))).result
   check(tooHigh.rejected !== null && /must bid at least|price moved/i.test(tooHigh.rejected),
     '§15 an illegal bid is refused with a visible reason')
-  check(tooHigh.auction.sequence === bidTurn.auction.sequence,
+  check(tooHigh.auction.sequence === halted.sequence,
     '§15 and a refused bid changes nothing')
   // ⚠ AND THE REFUSAL STILL CARRIES THE CURRENT PRICE — "the price moved to 46, minimum
   // next bid is 44" is useless without the 46, so this is not an exception response.
   check(typeof tooHigh.auction.standing === 'number',
     '⚠ §15 a refusal still carries the live auction, not an error alone')
+  check((await storedRounds(gidO, pidO)).length === 0,
+    '§15 and a refused bid still writes no round')
 
-  // ── drop out ends the round, and the bots settle ───────────────────────────
-  const dropped = (await callFn('procurementDropOut', asStudent(gidO, pidO))).result
-  pinOpenTurnShape(dropped, '§15 drop out')
-  check(dropped.auction.status === 'resolved', '§15 dropping out resolves the round')
-  check(dropped.auction.youAreOut, '§15 and records the player as out')
+  // ── a legal bid, which may or may not end the round ────────────────────────
+  const myBid = halted.minNextBid
+  const bidTurn = (await callFn('procurementSubmitBid',
+    asStudent(gidO, pidO, { bid: myBid, sequence: halted.sequence }))).result
+  pinOpenTurnShape(bidTurn, '§15 player bid')
+  check(bidTurn.rejected === null, '§15 the minimum legal bid is accepted')
+  check(bidTurn.auction.standing === myBid, '§15 and the price moves to it')
+
+  // ⚠ TWO LEGITIMATE OUTCOMES, AND THE HARNESS MUST NOT ASSUME ONE. If a bot can still
+  // answer, the player holds and the round runs on; if none can — which happens whenever
+  // the field is thin, and this instance is unseeded — the player has WON, then and there.
+  // Both are correct, and a check written for only the first goes red on a good build.
+  const wonOutright = bidTurn.roundOutcome !== null
+  check(wonOutright
+    ? bidTurn.auction.youWon && bidTurn.auction.status === 'resolved'
+    : bidTurn.auction.youHold && bidTurn.auction.status === 'bot_turn',
+    `§15 the bid either wins outright or is answered (${wonOutright ? 'won outright' : 'answered'})`)
+
+  // ── the round ENDS: by Drop Out if it is still live, else it already has ───
+  let dropped = bidTurn
+  if (!wonOutright) {
+    dropped = (await callFn('procurementDropOut', asStudent(gidO, pidO))).result
+    pinOpenTurnShape(dropped, '§15 drop out')
+    check(dropped.auction.youAreOut, '§15 and records the player as out')
+    check(dropped.roundOutcome.droppedOut === true, '§15 as a DROP OUT — play, never an absence')
+    // ⚠ THE ONLY DROP-OUT EVENT IN THE SYSTEM IS THE PLAYER'S.
+    const outs = dropped.auction.history.filter(e => e.kind === 'dropOut')
+    check(outs.length === 1 && outs[0].isYou && outs[0].label === 'You',
+      '⚠⚠ §15 exactly one drop-out row, and it is the student\'s — bots never emit one')
+  }
+  check(dropped.auction.status === 'resolved', '§15 the round is resolved')
   check(dropped.roundOutcome !== null, '§15 the round is written')
-  check(dropped.roundOutcome.droppedOut === true, '§15 as a DROP OUT — play, never an absence')
+  // ⚠⚠ NO BOT EVER EMITS A NON-BID ROW, whichever way the round ended.
+  check(dropped.auction.history.every(e => e.kind === 'bid' || e.isYou),
+    '⚠⚠ §15 every non-bid row belongs to the STUDENT — bots only ever bid')
+  check(dropped.auction.history.filter(e => !e.isYou).every(e => e.kind === 'bid'),
+    '§15 and every bot row is a bid')
   check(dropped.auction.price !== null,
     '⚠ §15 and the player is still shown where it landed (§4.5)')
-  check(dropped.roundOutcome.profit === 0, '§15 a losing round earns zero, never negative')
+  check(dropped.roundOutcome.profit === (dropped.roundOutcome.won
+    ? dropped.roundOutcome.price - dropped.roundOutcome.yourCost : 0),
+    '§15 profit is price − cost when they won, and zero when they lost — never negative on a loss')
 
   const stored1 = await storedRounds(gidO, pidO)
   check(stored1.length === 1, '§15 exactly one round is stored')

@@ -221,9 +221,9 @@ export const procurementSubmitBid = (round: number, bid: number) =>
  * NOT add client-side interpolation, optimistic bids, or a locally-advanced price: every
  * one of those recreates the gap this design exists to close.
  *
- * ⚠ NOTE WHAT IS ABSENT: any bot cost, and the `stopped` list, which is derived from bot
- * costs and would give each rival's away to within one step of the schedule. The server
- * sends a COUNT of active bidders and nothing more (functions procurement/openView.ts).
+ * ⚠ NOTE WHAT IS ABSENT: any bot cost, the `stopped` list — derived from bot costs, and it
+ * would give each rival's away to within one step of the schedule — AND ANY COUNT OF IT.
+ * See `totalBidders` below (functions procurement/openView.ts).
  */
 export type ProcurementAuctionEvent = {
   kind: 'bid' | 'dropOut'
@@ -253,7 +253,13 @@ export type ProcurementAuction = {
    *  jump bidding is legal and useful (§4.2). */
   minNextBid: number | null
   history: ProcurementAuctionEvent[]
-  activeBidders: number
+  /**
+   * ⚠⚠ THE OPENING PARAMETER, AND IT NEVER MOVES. There is deliberately NO `activeBidders`
+   * — a competitor's departure is not announced in a live auction, the player infers it
+   * from silence, and silence is ambiguous between "priced out" and "still thinking". The
+   * server does not compute it; if you are about to add "how many are left", you are
+   * re-adding the last client-side field derived from bot cost state.
+   */
   totalBidders: number
   winnerLabel: string | null
   youWon: boolean

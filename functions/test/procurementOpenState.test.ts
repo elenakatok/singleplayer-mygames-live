@@ -75,7 +75,7 @@ const sameKeys = (obj: object, keys: string[]) =>
 
 const AUCTION_KEYS = [
   'round', 'status', 'standing', 'holderLabel', 'youHold', 'yourLastBid', 'youAreOut',
-  'sequence', 'nextBotAtMs', 'step', 'minNextBid', 'history', 'activeBidders',
+  'sequence', 'nextBotAtMs', 'step', 'minNextBid', 'history',
   'totalBidders', 'winnerLabel', 'youWon', 'price',
 ]
 const EVENT_KEYS = ['kind', 'label', 'amount', 'isYou']
@@ -135,38 +135,113 @@ describe('the client payload is a whitelist (open §4.3, §5.1)', () => {
   })
 })
 
-describe('§4.3 the active-bidder count is a scalar, and honest from the opening', () => {
-  it('at the opening it is 5 of 5 under the default reserve', () => {
-    const s = base()
-    const view = toClientAuction(1, openAuction(s, 0), s)
-    expect(view.activeBidders).toBe(5)
-    expect(view.totalBidders).toBe(5)
-    expect(view.history).toEqual([])
-  })
+describe('⚠⚠ there is NO active-bidder count, anywhere (Elena, 2026-08-04)', () => {
+  // A competitor's departure is not announced in a live auction. The player infers it from
+  // silence, and silence is ambiguous between "priced out" and "still thinking". A running
+  // count destroys that ambiguity, and it was the last client-side field derived from bot
+  // COST state. This supersedes open §4.3's count note and §5.1's "3 of 5 still bidding".
+  //
+  // ⚠ THE DERIVATION WAS DELETED, NOT UNEXPORTED — `activeBidderCount` no longer exists in
+  // `auction/openAuction.ts`, so there is nothing to call. These tests guard the payload;
+  // the module's absence guards against someone re-deriving it.
 
-  it('⚠ a lowered reserve shows fewer bidders BEFORE anyone has acted', () => {
-    // "The active-bidder count must reflect this from the opening, or the player is told
-    // five suppliers are bidding when only three can."
-    const s = base({ reserve: 60 })
-    const view = toClientAuction(1, openAuction(s, 0), s)
-    expect(view.history).toEqual([])
-    expect(view.totalBidders).toBe(5)
-    expect(view.activeBidders).toBe(3)   // rival2 (88) and rival4 (63) are absent
-  })
-
-  it('and it is a NUMBER — never a per-bot list the client could difference', () => {
-    const s = base({ reserve: 60 })
-    const view = toClientAuction(1, openAuction(s, 0), s)
-    expect(typeof view.activeBidders).toBe('number')
-    expect(typeof view.totalBidders).toBe('number')
-  })
-
-  it('dropping out takes the player out of the count', () => {
-    const s = base()
+  it('the payload has no count of who is still in, under any spelling', () => {
+    const s = base({ reserve: 60 })          // ⚠ two bots priced out: the case that leaked
     const halted = run(openAuction(s, 0), s)
-    const before = toClientAuction(1, halted, s).activeBidders
-    const after = toClientAuction(1, playerDropOut(halted, s, 0), s).activeBidders
-    expect(after).toBe(before - 1)
+    for (const [label, st] of Object.entries({ opening: openAuction(s, 0), halted })) {
+      const view = toClientAuction(1, st, s) as unknown as Record<string, unknown>
+      expect('activeBidders' in view, label).toBe(false)
+      // ⚠ `youAreOut` is deliberately NOT matched: it is about the PLAYER's own decision,
+      // which they took and already know about. The names hunted here are the ones that
+      // would describe the FIELD's state — how many are active, remaining, still bidding.
+      const counts = Object.keys(view).filter(k => /active|remaining|still|bidding|count/i.test(k))
+      expect(counts, `${label}: no field names a running count`).toEqual([])
+    }
+    // The scenario contains the condition: bots really are out by the halt.
+    expect(halted.stopped.length).toBeGreaterThan(0)
+  })
+
+  it('⚠ and no OTHER field reproduces it — the payload cannot be differenced back', () => {
+    // The real question is not "is the field named activeBidders" but "can the number be
+    // recovered". Two auctions with the SAME standing price and the SAME history, whose
+    // bots have stopped in different numbers, must be INDISTINGUISHABLE on the wire.
+    //
+    // Constructed so both open at 110 and neither has bid: one field is fully alive, the
+    // other has three of four bots priced out by a lowered reserve.
+    const alive = base({ reserve: 110 })
+    const mostlyOut = base({
+      reserve: 110,
+      bots: [
+        { bidderId: 'rival1', cost: 47 },
+        { bidderId: 'rival2', cost: 105 },   // above the first legal bid of 100
+        { bidderId: 'rival3', cost: 107 },
+        { bidderId: 'rival4', cost: 109 },
+      ],
+    })
+    const a = toClientAuction(1, openAuction(alive, 1_000), alive)
+    const b = toClientAuction(1, openAuction(mostlyOut, 1_000), mostlyOut)
+
+    // The states genuinely differ in how many are out — the condition is present.
+    expect(openAuction(alive, 0).stopped.length).toBe(0)
+    expect(openAuction(mostlyOut, 0).stopped.length).toBe(3)
+
+    // ⚠ AND THE PAYLOADS ARE IDENTICAL. `status` is 'bot_turn' in both — the one boundary
+    // it does carry is "ALL stopped", which neither of these is. See BUILD_NOTES §6h.
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b))
+  })
+
+  it('the opening TOTAL stays, and never moves — it is a parameter, not a commentary', () => {
+    // "There are 5 bidders in this auction" is public and the player needs n to reason at
+    // all. What matters is that it is the same number before and after bots drop away.
+    const s = base({ reserve: 60 })
+    const opening = toClientAuction(1, openAuction(s, 0), s)
+    const halted = toClientAuction(1, run(openAuction(s, 0), s), s)
+    const droppedOut = toClientAuction(1, playerDropOut(run(openAuction(s, 0), s), s, 0), s)
+    expect(opening.totalBidders).toBe(5)
+    expect(halted.totalBidders).toBe(5)
+    expect(droppedOut.totalBidders).toBe(5)
+  })
+})
+
+describe('⚠⚠ the invariant that lets the bid history stay fully public', () => {
+  // A BOT NEVER EMITS ANYTHING BUT A BID. There is no "stopped" event and no bot drop-out
+  // event, so every row of the history is an action somebody publicly took. A bid is an
+  // announcement; a departure is silence, and silence stays ambiguous.
+  it('no bot ever produces a non-bid event — across reserves that strand bots mid-cascade', () => {
+    let sawStoppedBots = false
+    let events = 0
+    for (const reserve of [110, 90, 60, 48, 30]) {
+      for (let i = 0; i < 12; i++) {
+        const s = base({ reserve, order: 'random', rngAt: () => Math.random })
+        const st = playerDropOut(run(openAuction(s, 0), s), s, 0)
+        if (st.stopped.length > 0) sawStoppedBots = true
+        for (const e of st.history) {
+          events++
+          if (e.kind === 'dropOut') {
+            // The ONLY drop-out in the system is the player's.
+            expect(e.bidderId).toBe('player')
+          } else {
+            expect(e.kind).toBe('bid')
+          }
+        }
+      }
+    }
+    // ⚠ Assert the scenario contained the condition before trusting the loop above.
+    expect(events).toBeGreaterThan(50)
+    expect(sawStoppedBots).toBe(true)
+  })
+
+  it('and the client history carries the same shape — bids, plus the player\'s drop-out', () => {
+    const s = base({ reserve: 60 })
+    const st = playerDropOut(run(openAuction(s, 0), s), s, 0)
+    const view = toClientAuction(1, st, s)
+    expect(view.history.length).toBeGreaterThan(0)
+    const dropOuts = view.history.filter(e => e.kind === 'dropOut')
+    expect(dropOuts.length).toBe(1)
+    expect(dropOuts[0].isYou).toBe(true)
+    expect(dropOuts[0].label).toBe('You')
+    expect(view.history.filter(e => e.kind === 'bid').every(e => typeof e.amount === 'number'))
+      .toBe(true)
   })
 })
 

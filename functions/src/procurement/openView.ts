@@ -1,6 +1,6 @@
 import { maxLegalBid, stepAt } from './auction/schedule'
 import {
-  activeBidderCount, totalBidderCount, lastPlayerBid,
+  totalBidderCount, lastPlayerBid,
   type OpenSettings, type OpenState,
 } from './auction/openAuction'
 import { PLAYER_ID } from './round'
@@ -9,19 +9,31 @@ import { PLAYER_ID } from './round'
 // OPEN FORMAT — WHAT A STUDENT MAY SEE OF THE LIVE AUCTION, as a whitelist.
 //
 // ⚠⚠ BUILT FIELD BY FIELD FROM NAMED LOCALS. It NEVER spreads `OpenState`, because that
-// record carries two things a student must not have:
+// record carries something a student must not have. It is not a cost — there is no cost
+// in `OpenState` at all — it is `stopped`: A LIST OF BOT IDS DERIVED FROM THEIR COSTS.
+// "bot3 stopped at a standing of 48" says its cost is above 46. Ship the array and a
+// student reading the network tab learns each rival's cost to within one step of the
+// schedule, every step, which is the entire game.
 //
-//   • nothing directly — no cost is in `OpenState` at all — but
-//   • `stopped` IS a list of bot ids derived from their costs. "bot3 stopped at a
-//     standing of 48" says its cost is above 46. Ship the array and a student reading the
-//     network tab learns each rival's cost to within one step, every step, which is the
-//     entire game.
+// ⚠⚠ AND NEITHER DOES A COUNT OF IT CROSS (Elena, 2026-08-04). An earlier build sent
+// `activeBidders` — "3 of 5 still bidding" — because open §4.3 and §5.1 asked for it. It
+// is gone, the derivation is DELETED rather than unexported, and the spec is being updated
+// to match:
 //
-// So `stopped` never crosses this boundary. What does is a COUNT — open §4.3 and §5.1
-// require the active-bidder count to be visible, and require it to exclude bots the
-// reserve priced out FROM THE OPENING. A scalar says "how many can still act"; it does
-// not say WHICH, and it cannot be differenced back into a cost because a student sees
-// only their own auction and only forward in time.
+//   **A competitor's departure is not announced in a live auction.** The player infers it
+//   from silence, and silence is ambiguous between "priced out" and "still thinking". An
+//   explicit count destroys that ambiguity — and it was the last client-side field derived
+//   from bot cost state.
+//
+// ⚠ THE OPENING TOTAL STAYS. "There are 5 bidders in this auction" is a PARAMETER, stated
+// up front in the deck, and the player needs `n` to reason at all. It never moves, so
+// nothing about who is still in can be read off it.
+//
+// ⚠ THE BID HISTORY STAYS PUBLIC IN FULL, labels and all — and it is consistent with the
+// above because of one invariant, stated and pinned on `OpenEvent`: **a bot never emits
+// anything but a bid.** There is no "stopped" event and no bot drop-out event, and no
+// code path that could produce one. Every row is an action somebody publicly took. A bid
+// is an announcement; a departure is silence.
 //
 // ⚠ BIDDER LABELS AND AMOUNTS ONLY, IN THE HISTORY. Open §5.1: "Bidder labels are shown
 // (`bot 3`) … Costs are never shown."
@@ -76,9 +88,14 @@ export interface ClientAuction {
    *  (§4.2) and the box is freely editable. */
   minNextBid: number | null
   history: ClientAuctionEvent[]
-  /** ⚠ A COUNT, NEVER A LIST (see the header). Excludes bots priced out by the reserve
-   *  from the opening (§4.3). */
-  activeBidders: number
+  /**
+   * The total number of bidders — ⚠ THE OPENING PARAMETER, AND IT NEVER MOVES.
+   *
+   * ⚠⚠ THERE IS NO `activeBidders` AND THERE MUST NOT BE ONE. See the file header: a
+   * competitor's departure is not announced in a live auction, and a running count was
+   * the last client-side field derived from bot cost state. If you are about to add "how
+   * many are left", you are re-adding it.
+   */
   totalBidders: number
   winnerLabel: string | null
   youWon: boolean
@@ -105,14 +122,21 @@ export function toClientAuction(
     step: stepAt(state.standing, s.schedule),
     minNextBid: resolved ? null : maxLegalBid(state.standing, s.schedule),
     history: state.history.map(e => e.kind === 'dropOut'
-      ? { kind: 'dropOut' as const, label: bidderLabel(e.bidderId), amount: null, isYou: true }
+      ? {
+        kind: 'dropOut' as const,
+        label: bidderLabel(e.bidderId),
+        amount: null,
+        // ⚠ DERIVED, not hardcoded `true`. Only the player can drop out (see `OpenEvent`),
+        // so this is always true today — writing it as a derivation means the day that
+        // stops being so, this row does not silently claim a bot's exit was the player's.
+        isYou: e.bidderId === PLAYER_ID,
+      }
       : {
         kind: 'bid' as const,
         label: bidderLabel(e.bidderId),
         amount: e.amount,
         isYou: e.isPlayer,
       }),
-    activeBidders: activeBidderCount(state, s),
     totalBidders: totalBidderCount(s),
     winnerLabel: state.winnerId === null ? null : bidderLabel(state.winnerId),
     youWon: state.winnerId === PLAYER_ID,

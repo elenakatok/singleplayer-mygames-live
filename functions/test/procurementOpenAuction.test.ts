@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   openAuction, advanceOne, playerBid, playerDropOut,
-  activeBidderCount, totalBidderCount, playerExit, lastPlayerBid, lastBotBids,
+  totalBidderCount, playerExit, lastPlayerBid, lastBotBids,
   type OpenSettings, type OpenState,
 } from '../src/procurement/auction/openAuction'
 import { maxLegalBid, isLegalBid } from '../src/procurement/auction/schedule'
@@ -351,9 +351,11 @@ describe('§8.3 required cases', () => {
     // ⚠ NOT ONE OF THEM IS "ABSENT BECAUSE cost > reserve" — every cost here is at or
     // under the reserve of 110. They are out because the FIRST LEGAL BID is 100 and none
     // can reach it. §4.1 records this as a known, accepted consequence of a coarse top
-    // band; the count must reflect it FROM THE OPENING regardless of the reason.
+    // band.
     expect(opened.status).toBe('waiting')
-    expect(activeBidderCount(opened, s)).toBe(1)
+    expect(opened.stopped.length).toBe(4)   // server-side truth; it reaches no client
+    // ⚠ THE TOTAL IS UNCHANGED AT 5 — the auction's parameter, not a report on who is
+    // left. There is no longer any count that reports that; see openView.ts.
     expect(totalBidderCount(s)).toBe(5)
 
     const { state: settled, commits } = runCascade(opened, s)
@@ -532,18 +534,22 @@ describe('§8.3 required cases', () => {
 // ── the reserve as an entry gate (§4.1, §4.3) ─────────────────────────────────
 
 describe('a lowered reserve prices bots out of the auction entirely', () => {
-  it('⚠ the active count excludes them FROM THE OPENING, before anyone has acted', () => {
-    // ⚠ "The active-bidder count must reflect this from the opening, or the player is
-    // told five suppliers are bidding when only three can." Asserted on the OPENING
-    // state — a count that only became honest after the first commit would show "5 of 5"
-    // on the screen the player first sees.
+  it('⚠ they are out FROM THE OPENING, before anyone has acted', () => {
+    // ⚠ WHAT SURVIVES OF §4.3'S REQUIREMENT. The clause that said "the active-bidder count
+    // must reflect this from the opening" is superseded — there is no count (Elena,
+    // 2026-08-04, openView.ts). The MECHANISM it was guarding is untouched and is what is
+    // asserted here: a bot the reserve prices out is ABSENT from the auction from the
+    // first moment, not a bidder who bids high.
     const s = base({ reserve: 60 })
     const opened = openAuction(s, 0)
     expect(opened.history).toEqual([])
     expect(opened.stopped).toContain('bot2')  // cost 88 > 60
     expect(opened.stopped).toContain('bot4')  // cost 63 > 60
     // bot1 (47) and bot3 (21) are under the reserve; the player is in.
-    expect(activeBidderCount(opened, s)).toBe(3)
+    expect(opened.stopped).not.toContain('bot1')
+    expect(opened.stopped).not.toContain('bot3')
+    // ⚠ AND THE ONE NUMBER THE PLAYER IS TOLD DOES NOT MOVE. "There are 5 bidders in this
+    // auction" is the opening parameter; it says nothing about who can still act.
     expect(totalBidderCount(s)).toBe(5)
   })
 

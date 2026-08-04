@@ -191,16 +191,19 @@ export function OpenBidScreen({
         </p>
 
         <dl style={{ margin: '0.7rem 0 0', fontSize: '0.85rem', color: colors.textSecondary }}>
+          {/* ⚠⚠ THE OPENING TOTAL, AND ONLY THE OPENING TOTAL. It never moves. There was
+              a "Still bidding — 3 of 5" row here; it is gone, along with the field behind
+              it (Elena, 2026-08-04). A competitor's departure is not announced in a live
+              auction: the player infers it from silence, and silence is ambiguous between
+              "priced out" and "still thinking". A count destroys that. ⚠ Do not restore
+              it — the server no longer computes it, and that is deliberate. */}
+          <Fact
+            label="Bidders"
+            value={`${auction.totalBidders} in this auction, including you`}
+            testId="proc-open-bidders"
+          />
           <Fact label="Your cost" value={ecu(cost, c)} testId="proc-open-cost" />
           <Fact label="Reserve" value={ecu(params.reserve, c)} />
-          {/* ⚠ THE ACTIVE COUNT IS REAL INFORMATION (§5.1): it tells the player how close
-              the auction is to ending. It excludes bots the reserve priced out, from the
-              opening — a server-computed scalar, never a per-bot list. */}
-          <Fact
-            label="Still bidding"
-            value={`${auction.activeBidders} of ${auction.totalBidders}`}
-            testId="proc-open-active"
-          />
           {auction.minNextBid !== null && (
             <Fact
               label="Minimum next bid"
@@ -281,9 +284,16 @@ export function OpenBidScreen({
             The other suppliers are bidding…
           </p>
         )}
+        {/* ⚠ IT SAYS "IT IS YOUR MOVE", NOT "NOBODY ELSE WILL GO LOWER". The earlier
+            wording announced, in words, exactly what removing the active-bidder count
+            exists to withhold: that every remaining supplier has stopped. The player
+            still gets the affordance — the price is not moving and the controls are
+            live — without being told why. ⚠ See the residual noted in BUILD_NOTES §6h:
+            `status` itself still carries this boundary, because the client has to know
+            when to stop asking. */}
         {auction.status === 'waiting' && (
           <p data-testid="proc-open-waiting" style={{ margin: '0.5rem 0 0', fontSize: '0.8rem', color: colors.textSecondary }}>
-            Nobody else will go lower. It is your move — bid, or drop out.
+            It is your move — bid, or drop out. There is no clock.
           </p>
         )}
       </section>
@@ -291,14 +301,22 @@ export function OpenBidScreen({
       {/* ── the history, most recent first, with band markers ───────────── */}
       <section style={card}>
         <h2 style={{ fontSize: '0.95rem', margin: '0 0 0.5rem' }}>Bidding so far</h2>
-        {auction.history.length === 0 && (
-          <p style={{ fontSize: '0.85rem', color: colors.textSecondary, margin: 0 }}>
-            No bids yet. The auction opens at the incumbent's price of {ecu(params.reserve, c)}.
-          </p>
-        )}
         <ol data-testid="proc-open-history" style={{ margin: 0, padding: 0, listStyle: 'none', fontSize: '0.88rem' }}>
-          {historyRows(auction, params.decrementSchedule).map((row, i) => (
-            row.kind === 'band' ? (
+          {historyRows(auction, params.decrementSchedule, params.reserve, c).map((row, i) => (
+            row.kind === 'open' ? (
+              /* ⚠ THE OPENING LINE. The auction begins with the incumbent's price
+                 STANDING and UNOWNED (§4.1) — a real standing bid for the purpose of the
+                 decrement rule, and the thing the first bid must undercut. Without this
+                 row the history starts mid-story, and on a round nobody has bid in yet it
+                 is empty, which reads as a page that has not loaded. It is rendered from
+                 `params.reserve`, public config, not from a synthetic server event: a
+                 fabricated event would end up in `open_history` and in §5.2's replay as
+                 a bid that nobody made. */
+              <li key={`open-${i}`} data-testid="proc-open-opened"
+                style={{ padding: '0.2rem 0', color: colors.textSecondary }}>
+                Auction opened at {row.amount}
+              </li>
+            ) : row.kind === 'band' ? (
               /* ⚠ THE MOMENT 5 BECOMES 2 IS WHEN THE ENDGAME STARTS (§5.1). A player who
                  misses it will misjudge how much room is left, so it is marked rather
                  than left to be inferred from the numbers. */
@@ -329,14 +347,27 @@ export function OpenBidScreen({
 type Row =
   | { kind: 'event'; label: string; amount: number | null; isYou: boolean }
   | { kind: 'band'; step: number }
+  | { kind: 'open'; amount: string }
 
 /**
- * The history, MOST RECENT FIRST, with a marker wherever the step size changed.
+ * The history, MOST RECENT FIRST, with a marker wherever the step size changed and the
+ * opening price as the oldest row.
  *
  * ⚠ THE MARKER IS COMPUTED FROM THE SCHEDULE, not stored per event, so an instructor who
  * retunes the bands at the §9 step-5 checkpoint sees the markers move with them.
+ *
+ * ⚠ EVERY ROW IS AN ACTION SOMEBODY TOOK, or the auction opening. There is no "bot 3 has
+ * stopped" row and there is no way to render one — the server never emits such an event
+ * (see `OpenEvent` in auction/openAuction.ts). That invariant is what lets this list stay
+ * fully public while the active-bidder count does not: a bid is an announcement, and a
+ * departure is silence.
  */
-function historyRows(auction: ProcurementAuction, schedule: DecrementBand[]): Row[] {
+function historyRows(
+  auction: ProcurementAuction,
+  schedule: DecrementBand[],
+  reserve: number,
+  currency: string,
+): Row[] {
   const rows: Row[] = []
   const events = auction.history
   for (let i = events.length - 1; i >= 0; i--) {
@@ -351,6 +382,8 @@ function historyRows(auction: ProcurementAuction, schedule: DecrementBand[]): Ro
       if (now !== before) rows.push({ kind: 'band', step: now })
     }
   }
+  // Oldest last, because the list reads newest first.
+  rows.push({ kind: 'open', amount: ecu(reserve, currency) })
   return rows
 }
 

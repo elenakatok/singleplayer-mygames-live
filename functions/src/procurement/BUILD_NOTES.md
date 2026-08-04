@@ -503,13 +503,104 @@ Everything below is scope, not divergence, but is recorded because a reader will
   NOT reused: its scatter draws β, which is the wrong benchmark for this mechanism, and
   drawing it would assert a line these rounds were never played against.
 
+## 6h. ⚠⚠ The active-bidder count is GONE — screen, payload and derivation (Elena, 2026-08-04)
+
+**Decided before the CP4a deploy, and it supersedes spec text.** Open §5.1's mock line
+("3 of 5 still bidding"), §4.3's "the active-bidder count must reflect this from the
+opening", and §10 item 3 ("active bidder count stays visible") are all superseded; the
+spec is being updated to match.
+
+**The reason, in Elena's words:** *a competitor's departure is not announced in a live
+auction. The player infers it from silence, and silence is ambiguous between "priced out"
+and "waiting." An explicit count destroys that ambiguity* — **and it was the last
+client-side field derived from bot cost state.**
+
+That last clause is why this is a category being closed rather than a field being hidden.
+Everything else a student receives is either their own (`yourCost`, `yourLastBid`), public
+config (`reserve`, `step`, `totalBidders`), or an action somebody publicly took (the
+history). The count was the one number computed *from what the bots' costs imply*.
+
+### What was removed, and where
+
+| | |
+|---|---|
+| `activeBidderCount()` in `auction/openAuction.ts` | **DELETED**, not unexported. A helper sitting there is an invitation to put it back on a screen. |
+| `activeBidders` on `ClientAuction` | gone; the key-set pins in `procurementOpenState.test.ts` and harness §15 now assert its **absence** |
+| "Still bidding — 3 of 5" row | gone; replaced by **"Bidders — 5 in this auction, including you"**, the opening total |
+| "Nobody else will go lower. It is your move" | **"It is your move — bid, or drop out. There is no clock."** The old wording announced in prose exactly what the count was removed to withhold. |
+
+### The opening total stays, and it is a different kind of thing
+
+"There are 5 bidders in this auction" is stated up front in the deck, the player needs `n`
+to reason at all, and it **never moves** — a parameter, not a running commentary. A test
+asserts it is identical at the opening, at the halt, and after a drop-out.
+
+### The invariant that lets the bid history stay fully public
+
+**A bot never emits anything but a bid.** There is no "bot 3 has stopped" event and no bot
+drop-out event, and no code path that could produce one: `markStopped` records a departure
+in `state.stopped` and appends *nothing*, and the only `dropOut` event in the system is
+written by `playerDropOut` with the player's id. Stated on `OpenEvent`, and pinned three
+ways — a unit test sweeping five reserves (including ones that strand bots mid-cascade), a
+callable-level check in harness §15 at the halt, and a browser check that no
+`Bot N — dropped out` row can appear.
+
+So: **a bid is an announcement; a departure is silence.** Showing every announcement in
+full is consistent with never reporting the silences.
+
+`toClientAuction` now derives a drop-out row's `isYou` from the bidder id rather than
+hardcoding `true` — always true today, but written so that if that ever changes the row
+does not silently attribute a bot's exit to the student.
+
+### "Auction opened at 110" is the oldest history row
+
+§4.1: the auction opens with the incumbent's price **standing and unowned** — a real
+standing bid for the decrement rule, and the thing the first bid must undercut. Without it
+the history started mid-story, and on a round nobody had bid in it was empty, which reads
+as a page that failed to load.
+
+⚠ **Rendered client-side from `params.reserve`, NOT as a synthetic server event.** A
+fabricated event would land in `open_history` and reappear in §5.2's replay as a bid that
+nobody made. A test moves the reserve to 90 and checks the row follows.
+
+### ⚠ The residual, stated rather than left to be discovered
+
+`status` (and equivalently `nextBotAtMs === null`) still carries **one** boundary fact:
+*all* remaining bots have stopped. The client cannot do without it — it is precisely the
+signal to stop asking, and the alternative is polling a halted round forever, against a
+format that already makes ~16 calls a round.
+
+It is strictly weaker than the count: it distinguishes "everyone is out" from "someone is
+still in", and says nothing about *how many* or *which*. Two auctions differing only in how
+many bots are priced out are byte-identical on the wire — there is a test that constructs
+exactly that pair and compares the serialised payloads. The screen no longer names the
+boundary either, which is why the waiting line was reworded.
+
+**Removing it entirely would mean unbounded polling.** Not proposed; recorded so nobody
+re-derives the trade-off.
+
+### What §8's conformance cases asserted about the count
+
+**Nothing.** All twelve of §8.3's cases are about the mechanism — the trace, the bot rule,
+legality, collisions, timing, the paused tab — and not one mentions the bidder count. The
+count assertions that existed were mine, written to cover §4.3's *separate* requirement,
+and they lived in three places: two in `procurementOpenAuction.test.ts` (case 7's field of
+priced-out bots, and the lowered-reserve block) and the cross-check in harness §15.
+
+What those tests were really guarding is untouched and is still asserted, at the level
+where it was always observable: **a bot the reserve prices out is ABSENT from the
+auction** — it is in `state.stopped` from the opening, and it never appears in the trace.
+Case 7 now asserts `stopped.length === 4` (server-side truth) plus an unchanged
+`totalBidderCount` of 5, instead of `activeBidderCount === 1`.
+
+---
+
 ### Two things raised for Elena at this checkpoint
 
-1. **"Still bidding" is read as "could make a FURTHER bid"** — a bot holding the low bid
-   that cannot legally go lower is NOT counted, even though it is winning. BUILD_NOTES §2
-   promised to raise this at CP4. Under the reference trace the two readings agree at every
-   step, so nothing in §8 distinguishes them; they differ only when the holder is priced out
-   by its own bid. Say the word and it becomes "still in the auction" — one line.
+1. ~~**"Still bidding" is read as "could make a FURTHER bid"**~~ — **CLOSED by §6h.**
+   BUILD_NOTES §2 promised to raise the definitional question at CP4; it was raised, and
+   the answer was that there should be no count at all. The reading no longer exists to be
+   chosen.
 2. **`§8.3` case 1 ends by Drop Out in the harness.** §4.4's second row is a WAIT, not a
    resolution, so a round in which the player stops bidding never resolves on its own. That
    is the spec, and it is right, but it means a student who simply stops has an unfinished

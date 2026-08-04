@@ -674,12 +674,34 @@ async function main() {
     )
     check(true, '⚠⚠ [open] the price falls WITHOUT the harness touching anything — the client tick fires')
 
-    // Let the cascade run itself out. "Nobody else will go lower" is the halt.
+    // ⚠ THE OPENING ROW IS THERE FROM THE FIRST PAINT, before any bid exists (§4.1).
+    check(/Auction opened at 110 ECU/.test(await bodyText(op)),
+      '[open] the history opens with "Auction opened at 110 ECU"')
+
+    // Let the cascade run itself out. The halt is "it is your move".
     await op.waitForSelector('[data-testid="proc-open-waiting"]', { timeout: 30_000 })
     const halted = Number(await testId(op, 'proc-open-standing'))
     check(halted < RESERVE, `[open] the cascade halts on its own at ${halted}`)
     check(/not winning/i.test(await testId(op, 'proc-open-winning')),
       '[open] and the student is told they are not winning')
+
+    // ⚠⚠ AND THE SCREEN NEVER SAYS WHO IS LEFT, OR WHY THE PRICE STOPPED MOVING.
+    // A competitor's departure is not announced in a live auction — the player infers it
+    // from silence, and silence is ambiguous between "priced out" and "still thinking".
+    // Asserted AT THE HALT, which is the moment a count would have been most revealing:
+    // by now bots really have dropped away, so the scenario contains the condition.
+    const haltedBody = await bodyText(op)
+    check(!/still bidding/i.test(haltedBody),
+      '⚠⚠ [open] no "N of M still bidding" anywhere on the page')
+    check(!/nobody else will go lower/i.test(haltedBody),
+      '⚠⚠ [open] and the page does not announce that everyone else has stopped')
+    check(!/priced out|has stopped|no longer bidding/i.test(haltedBody),
+      '[open] nor say it in any other words')
+    check(/5 in this auction/.test(haltedBody),
+      '[open] the OPENING TOTAL is still shown — it is a parameter, and it never moved')
+    // ⚠ Every history row is an action somebody took. No bot announces a departure.
+    check(!/Bot \d+ — dropped out/.test(haltedBody),
+      '⚠⚠ [open] and no bot emits a drop-out row — only bids appear')
 
     // ⚠ AND IT STAYS HALTED. §4.4: no clock, no timeout, no auto-resolve.
     const beforeIdle = await testId(op, 'proc-open-standing')
