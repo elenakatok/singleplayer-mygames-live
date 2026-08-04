@@ -103,6 +103,16 @@ export default function Dashboard() {
 
   const actions = (
     <>
+      {/* ⚠ REFRESH FIRST, as in forecast and newsvendor. The dashboard is watched during
+          a live session while students finish; without it the only way to see progress
+          is a full page reload, which drops the instructor session's place. */}
+      <button
+        data-testid="proc-dash-refresh"
+        disabled={busy !== null}
+        // ⚠ `run` already calls `load()` after the action, so refresh only has to be a
+        // no-op with a message — re-loading here would fetch the report twice.
+        onClick={() => run('refresh', async () => 'Refreshed.')}
+      >{busy === 'refresh' ? 'Refreshing…' : 'Refresh'}</button>
       <button
         data-testid="proc-dash-roster"
         disabled={busy !== null}
@@ -132,18 +142,6 @@ export default function Dashboard() {
       navLinks={navLinks}
       onNavigate={navigate}
     >
-      {/* ⚠ SPAWN NOTICE. Removed by Checkpoint 2. It is here so an instructor who opens
-          a real instance before the game exists is not left guessing why nobody has
-          played. */}
-      <p data-testid="proc-dash-spawn-notice" style={{
-        fontSize: '0.85rem', padding: '0.6rem 0.8rem', marginBottom: '1rem',
-        border: `1px solid ${colors.borderMid}`, borderRadius: 6, background: '#FFF8E6',
-      }}>
-        <strong>This game is not playable yet.</strong> The instance, the roster, the
-        settings and the reports all work; the bidding round has not been built. Students
-        who open the link will be told so.
-      </p>
-
       {error && <p style={{ color: '#b00' }}>{error}</p>}
       {note && (
         <p data-testid="proc-dash-note" style={{ fontSize: '0.85rem', color: colors.textSecondary, marginBottom: '1rem' }}>

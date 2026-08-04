@@ -175,6 +175,22 @@ const exists = async (page, sel) => (await page.locator(sel).count()) > 0
 /** The whole rendered page, for "this number is nowhere on screen" assertions. */
 const bodyText = async (page) => (await page.locator('body').innerText())
 
+/** Close every open report modal.
+ *
+ *  ⚠ A LOOP, NOT ONE CLICK. The per-student drill-through closes BACK TO the roster
+ *  (that is where it was opened from), so a single Close leaves the roster modal up and
+ *  its backdrop swallows the next tile click — which surfaces as an opaque 30s
+ *  "intercepts pointer events" timeout rather than anything about modals. */
+async function closeModals(page) {
+  for (let i = 0; i < 4; i++) {
+    const btn = page.locator('[data-testid="proc-rep-modal-close"]')
+    if (await btn.count() === 0) return
+    await btn.first().click()
+    await page.waitForTimeout(150)
+  }
+  throw new Error('modals would not close')
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function main() {
@@ -420,8 +436,22 @@ async function main() {
     // waiting on the table and then reading it is a RACE, and one that resolves in the
     // harness's favour often enough to look stable. Wait for a row that could only come
     // from loaded data.
-    await irp.waitForSelector('[data-testid="proc-rep-roster"] tbody tr button', { timeout: 30_000 })
-    check(true, '[Tier 1a] the roster renders, with data')
+    // ⚠ THE REPORTS PAGE IS A TILE GRID NOW (08-03): each report opens in its own modal.
+    // ⚠ WAIT FOR A TILE THAT ONLY EXISTS WITH DATA. The roster tile renders immediately
+    // showing 0, because the board is built from `rows ?? []` before the fetch resolves —
+    // so waiting on it is a race, the same one that bit the roster table earlier.
+    await irp.waitForSelector('[data-testid="proc-tile-S8"]', { timeout: 30_000 })
+    check(true, '[reports] the tile grid renders')
+    check(await exists(irp, '[data-testid="proc-tile-chart"]'), '[reports] with a tile for the class chart')
+    check(await exists(irp, '[data-testid="proc-tile-S8"]') && await exists(irp, '[data-testid="proc-tile-S9"]'),
+      '[reports] and one tile per free-text question')
+
+    await irp.locator('[data-testid="proc-tile-roster"]').click()
+    await irp.waitForSelector('[data-testid="proc-rep-roster"] tbody tr button', { timeout: 15_000 })
+    check(true, '[Tier 1a] the roster opens in its own window, with data')
+    // ⚠ NO KC COLUMN (Elena, 08-03).
+    const rosterHead = await irp.locator('[data-testid="proc-rep-roster"] thead').innerText()
+    check(!/\bKC\b/.test(rosterHead), '⚠ [Tier 1a] and it has NO knowledge-check column')
 
     // ⚠ NOT a string match on the participant id — the roster renders `name ?? id`, and
     // a bootstrap that supplies a name would fail that assertion while the page was
@@ -429,13 +459,16 @@ async function main() {
     // win count the playthrough actually produced.
     const rosterRows = await irp.locator('[data-testid="proc-rep-roster"] tbody tr').count()
     check(rosterRows === 1, '[Tier 1a] exactly one student is on the roster')
+    // Columns: Name · Status · Rounds · Won · Profit · (drill-through button).
+    // ⚠ KC is deliberately absent (Elena, 08-03), which is why these indices moved.
     const rosterCells = await irp
       .locator('[data-testid="proc-rep-roster"] tbody tr td').allInnerTexts()
-    check(rosterCells[1] === String(ROUNDS),
-      '[Tier 1a] and it reports the rounds they played')
-    check(rosterCells[2] === String(wins),
+    check(rosterCells[1] === 'Finished', '[Tier 1a] and it reports their status')
+    check(rosterCells[2] === String(ROUNDS),
+      '[Tier 1a] and the rounds they played')
+    check(rosterCells[3] === String(wins),
       '[Tier 1a] and the wins the playthrough actually produced')
-    check(Number(rosterCells[3]) === expectedTotal,
+    check(Number(rosterCells[4]) === expectedTotal,
       '[Tier 1a] and the profit the round screens showed')
 
     await irp.locator('[data-testid="proc-rep-roster"] button').first().click()
@@ -446,16 +479,23 @@ async function main() {
     check((await irp.locator('[data-testid="proc-rep-detail"] tbody tr').count()) === ROUNDS,
       '[Tier 1b] one row per round played')
 
-    // ── Tier 3 ─────────────────────────────────────────────────────────────
+    // ── Tier 3, behind its own tile ────────────────────────────────────────
+    await closeModals(irp)
+    await irp.locator('[data-testid="proc-tile-chart"]').click()
+    await irp.waitForSelector('[data-testid="proc-class-scatter"]', { timeout: 15_000 })
     check(await exists(irp, '[data-testid="proc-class-scatter"]'),
-      '[Tier 3] the class scatter renders')
+      '[Tier 3] the class scatter opens in its own window')
+    check(await exists(irp, '[data-testid="proc-class-scatter-legend"]'),
+      '[Tier 3] with a legend')
+    check(await svgCount(irp, 'proc-class-scatter-rival') > 0,
+      '⚠ [Tier 3] and the simulated rivals are plotted as their own series')
     const classPoints = await svgCount(irp, 'proc-class-scatter-point')
     check(classPoints === ROUNDS,
       `[Tier 3] with one point per bid in the instance (${classPoints})`)
     check(await exists(irp, '[data-testid="proc-class-scatter-optimal"]'),
       '[Tier 3] and the optimal line')
-    check((await testId(irp, 'proc-class-scatter-n')).includes(`${ROUNDS} bids`),
-      '[Tier 3] captioned with how many bids it is drawn from')
+    check((await testId(irp, 'proc-class-scatter-n')).includes(`${ROUNDS} student bids`),
+      '[Tier 3] captioned with how many student bids it is drawn from')
 
     // ⚠ THE TIER-3 LINE IS PER INSTANCE. A second instance with a DIFFERENT rival range
     // must draw a DIFFERENT line — the failure a hardcoded `0.8c + 22` would hide, in
@@ -481,7 +521,9 @@ async function main() {
 
     const irpB = await browser.newPage()
     await irpB.goto(reportsUrl(gidB))
-    await irpB.waitForSelector('[data-testid="proc-class-scatter-point"]', { timeout: 30_000 })
+    await irpB.waitForSelector('[data-testid="proc-tile-chart"]', { timeout: 30_000 })
+    await irpB.locator('[data-testid="proc-tile-chart"]').click()
+    await irpB.waitForSelector('[data-testid="proc-class-scatter-point"]', { timeout: 15_000 })
     const optimalPointsB = await irpB.locator('[data-testid="proc-class-scatter-optimal"]')
       .getAttribute('points')
     check(optimalPointsA !== optimalPointsB,
@@ -490,14 +532,16 @@ async function main() {
       'the two instances share one optimal line (a hardcoded constant would)')
 
     // ── Tier 2 ─────────────────────────────────────────────────────────────
-    check(await exists(irp, '[data-testid="proc-rep-text-S8"]'),
-      '[Tier 2] the prep paragraph has its own tile')
-    check(await exists(irp, '[data-testid="proc-rep-text-S9"]'),
-      '[Tier 2] and so does the debrief — the PAIR is the point')
+    await closeModals(irp)
+    await irp.locator('[data-testid="proc-tile-S8"]').click()
+    await irp.waitForSelector('[data-testid="proc-rep-text-S8"]', { timeout: 15_000 })
     check((await testId(irp, 'proc-rep-text-S8')).includes('decent markup'),
-      '[Tier 2] the student\'s own prep answer is in it')
+      '[Tier 2] the prep answers open in their own window')
+    await closeModals(irp)
+    await irp.locator('[data-testid="proc-tile-S9"]').click()
+    await irp.waitForSelector('[data-testid="proc-rep-text-S9"]', { timeout: 15_000 })
     check((await testId(irp, 'proc-rep-text-S9')).includes('under-marked up'),
-      '[Tier 2] and their debrief answer')
+      '[Tier 2] and the debrief answers in theirs — the PAIR is the point')
 
     // ═════════════════════════════════════════════════════════════════════════
     section('[LAUNCHER]  The SHIPPED auto-drive sequence, end to end')

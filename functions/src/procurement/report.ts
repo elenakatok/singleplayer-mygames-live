@@ -6,7 +6,9 @@ import {
   loadProcurementConfig,
 } from './config'
 import { KC_POOL_IDS, defaultVisibleFor, gradedFor, resolveQuestions } from './questions'
-import { parseStoredRounds, toClientHistory, totalProfit, roundsWon } from './rounds'
+import {
+  parseStoredRounds, toClientHistory, totalProfit, roundsWon, toReportRivalPoints,
+} from './rounds'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // procurementGetReport (instructor) — every report tier in ONE call, as the rest of the
@@ -25,18 +27,21 @@ import { parseStoredRounds, toClientHistory, totalProfit, roundsWon } from './ro
 // optimal lines. The line's PARAMETERS travel with the report too (see the return), so
 // two instances with different rival ranges cannot end up sharing one line.
 //
-// ⚠⚠ TIER 3 CARRIES NO RIVAL COST, and it does not need one. §12's class scatter is
-// EVERY STUDENT'S BID AGAINST THEIR OWN COST — the bots are represented by the optimal
-// LINE, not by points, because on a class chart four bot points per student per round
-// would bury the students under 32× their own number. `toClientHistory` is the same
-// whitelist the student path uses, so this is structural rather than a filter: there is
-// no rival cost on these rows to gate, per student or otherwise.
+// ⚠⚠ TIER 3 DOES CARRY RIVAL COSTS, AND THAT CHANGED ON 2026-08-03. Until then this
+// header said it never would — §12's class scatter was students' bids against students'
+// costs, with the bots represented by the optimal LINE. Elena asked for the simulated
+// rivals to be PLOTTED as their own series, coloured by whether they won, so
+// `rows[].rivalPoints` now carries (cost, bid, won) per rival per round.
 //
-// The consequence worth stating plainly: a student who is still playing contributes
-// their RESOLVED rounds to this report and nothing else — no unresolved round exists,
-// and no rival figure is present at any point. The §9 reveal gate governs a different
-// payload (`getState.revealRivalPoints`) on a different, student-facing path, and it is
-// unaffected by anything here.
+// ⚠ THIS DOES NOT TOUCH §4. This callable is instructor-authenticated and nothing it
+// returns reaches a student. The STUDENT path's rival reveal is a different payload
+// (`getState.revealRivalPoints`), still gated per student on `finished_at`, and the
+// harness asserts that gate independently — including that opening this report does not
+// open it.
+//
+// ⚠ RESOLVED ROUNDS ONLY, structurally: these come off the stored round record, and a
+// round is only there once it resolved. A mid-game student contributes what they have
+// finished and nothing else.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const procurementGetReport = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, async (request) => {
@@ -83,6 +88,10 @@ export const procurementGetReport = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, a
       normalizedScore: typeof p.normalized_score === 'number' ? p.normalized_score : null,
       /** Tier 1b — this student's rounds, in full. */
       rounds: toClientHistory(rounds),
+      /** ⚠ TIER 3 — the simulated rivals this student faced, for the class chart's
+       *  rival series (Elena, 08-03). INSTRUCTOR-ONLY; the student path's own reveal is
+       *  gated on `finished_at` and is untouched by this. */
+      rivalPoints: toReportRivalPoints(rounds),
       /** ⚠ TIER 2 — EVERY free-text answer, keyed by question id. Not just the debrief:
        *  the prep paragraph is a Tier-2 question too, and the pair is the point — the
        *  plan beside what actually happened. */

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { Timestamp } from 'firebase-admin/firestore'
 import {
   parseStoredRounds, toClientHistory, toClientResult, totalProfit, totalEquilibriumProfit,
-  roundsWon, toRevealPoints, type StoredRound,
+  roundsWon, toRevealPoints, toReportRivalPoints, type StoredRound,
 } from '../src/procurement/rounds'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -30,6 +30,7 @@ function round(over: Partial<StoredRound> = {}): StoredRound {
     played_at: T,
     rival_costs: [80, 95, 40, 102],
     rival_bids: [86, 98, 62, 104],
+    winner_id: 'player',
     tie: false,
     tied_and_lost: false,
     eq_bid: 46,
@@ -74,6 +75,58 @@ describe('§4 no student shape can carry a rival cost', () => {
     expect(JSON.stringify(toClientHistory([sneaky]))).not.toContain('secret_seed')
     expect(JSON.stringify(toClientResult([sneaky], 110))).not.toContain('secret_seed')
     expect(JSON.stringify(toClientResult([sneaky], 110))).not.toContain('rival_costs')
+  })
+})
+
+// ── The Tier-3 rival series (INSTRUCTOR-ONLY) ──────────────────────────────────
+
+describe('§12 toReportRivalPoints — the class chart\'s rival series', () => {
+  it('carries (round, cost, bid, won) and nothing else', () => {
+    for (const p of toReportRivalPoints([round()])) {
+      expect(Object.keys(p).sort()).toEqual(['bid', 'cost', 'round', 'won'])
+    }
+  })
+
+  it('marks the winner from the RECORDED winner_id', () => {
+    const pts = toReportRivalPoints([round({
+      won: false, price: 62, profit: 0, winner_id: 'rival3',
+    })])
+    expect(pts.filter(p => p.won).map(p => p.bid)).toEqual([62])
+  })
+
+  it('⚠ a rival-vs-rival TIE marks exactly ONE winner — which deriving could not do', () => {
+    // Two rivals both bid 62 and one of them won. `bid === price` would call both
+    // winners; the recorded id knows which. This is the case the field exists for.
+    const pts = toReportRivalPoints([round({
+      won: false, price: 62, profit: 0, tie: true,
+      rival_bids: [62, 98, 62, 104], winner_id: 'rival3',
+    })])
+    expect(pts.filter(p => p.won)).toHaveLength(1)
+  })
+
+  it('falls back to bid===price on rounds stored before winner_id existed', () => {
+    const pts = toReportRivalPoints([round({
+      won: false, price: 62, profit: 0, winner_id: null,
+    })])
+    expect(pts.filter(p => p.won).map(p => p.bid)).toEqual([62])
+  })
+
+  it('⚠ and the fallback\'s KNOWN limitation: a tie marks BOTH — documented, not hidden', () => {
+    const pts = toReportRivalPoints([round({
+      won: false, price: 62, profit: 0, tie: true,
+      rival_bids: [62, 98, 62, 104], winner_id: null,
+    })])
+    expect(pts.filter(p => p.won)).toHaveLength(2)
+  })
+
+  it('marks no rival a winner when the PLAYER won', () => {
+    const pts = toReportRivalPoints([round({ won: true, price: 50, winner_id: 'player' })])
+    expect(pts.every(p => !p.won)).toBe(true)
+  })
+
+  it('omits a rival who made no bid', () => {
+    const pts = toReportRivalPoints([round({ rival_bids: [86, null, 62, null] })])
+    expect(pts.map(p => p.cost)).toEqual([80, 40])
   })
 })
 

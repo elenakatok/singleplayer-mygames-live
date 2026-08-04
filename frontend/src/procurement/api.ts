@@ -303,6 +303,16 @@ export const procurementScoreAndRecord = () =>
   callFn<{ ok: boolean; scored: number; finishers: number; push: ProcurementPushSummary | null }>(
     'procurementScoreAndRecord')
 
+/** One simulated rival's (cost, bid, won) triple for the Tier-3 class chart.
+ *  ⚠ INSTRUCTOR-ONLY — this comes from `procurementGetReport`, which no student can call.
+ *  The student-facing rival reveal is a different payload, gated on `finished_at`. */
+export type ProcurementReportRivalPoint = {
+  round: number
+  cost: number
+  bid: number
+  won: boolean
+}
+
 export type ProcurementReportRow = {
   participantId: string
   name: string | null
@@ -315,6 +325,8 @@ export type ProcurementReportRow = {
   rawScore: number | null
   normalizedScore: number | null
   rounds: ProcurementPlayedRow[]
+  /** The simulated rivals this student faced — the class chart's rival series. */
+  rivalPoints: ProcurementReportRivalPoint[]
   /** Every free-text answer, keyed by question id. */
   freeText: Record<string, string>
 }

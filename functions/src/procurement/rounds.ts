@@ -66,6 +66,19 @@ export interface StoredRound {
    *  ABSENT from the auction rather than bidding high (§3.1). Student-visible AFTER
    *  the round resolves — this is the sealed format's reveal. */
   rival_bids: (number | null)[]
+  /**
+   * WHO won — `player`, `rival1`..`rivalN`, or null for no award.
+   *
+   * ⚠ RECORDED, NOT DERIVED. "the bidder whose bid equals `price`" identifies the winner
+   * only when there was no tie; in a rival-vs-rival tie two bidders share that price and
+   * one of them lost. The Tier-3 class chart colours points by won/lost, so deriving it
+   * would mislabel a point on the chart Elena presents. Same lesson as the player's cost
+   * (BUILD_NOTES 6e): record the fact.
+   *
+   * ⚠ ABSENT on rounds stored before 2026-08-03. Consumers fall back to the bid===price
+   * heuristic for those and must accept its tie ambiguity — see `toReportRivalPoints`.
+   */
+  winner_id: string | null
   /** Two or more bids tied at the lowest price. */
   tie: boolean
   /** The player was in that tie and did not win it — the only case the round result
@@ -142,6 +155,7 @@ export function parseStoredRounds(raw: unknown): StoredRound[] {
       // doc, applied at the right granularity.
       rival_costs: numArray(r.rival_costs),
       rival_bids: nullableNumArray(r.rival_bids),
+      winner_id: typeof r.winner_id === 'string' ? r.winner_id : null,
       tie: r.tie === true,
       tied_and_lost: r.tied_and_lost === true,
       eq_bid: num(r.eq_bid) ? r.eq_bid : null,
@@ -341,6 +355,54 @@ export function toRevealPoints(rounds: readonly StoredRound[]): ClientRivalPoint
   }
   return out
 }
+
+/** One rival's (cost, bid, won) triple for the TIER-3 CLASS CHART. */
+export interface ReportRivalPoint {
+  round: number
+  cost: number
+  bid: number
+  won: boolean
+}
+
+/**
+ * The rivals each student faced, for the instructor's Tier-3 chart.
+ *
+ * ⚠⚠ INSTRUCTOR-ONLY, AND THIS IS A DELIBERATE CHANGE FROM CP3b. Tier 3 previously
+ * carried no rival figure at all; Elena asked (08-03) for the simulated rivals to be
+ * plotted on the class chart, coloured by whether they won. The report callable is
+ * instructor-authenticated and nothing it returns reaches a student, so this does not
+ * touch §4 — the STUDENT path's `revealRivalPoints` is still gated on `finished_at`
+ * per student, and that gate is asserted separately.
+ *
+ * ⚠ RESOLVED ROUNDS ONLY, by construction: these come off the stored round record, and a
+ * round is only there once it resolved.
+ *
+ * ⚠ THE TIE CAVEAT. `winner_id` is recorded from 08-03 onward and is exact. For rounds
+ * stored before that it is absent, and the fallback — "this rival's bid equals the
+ * winning price" — marks BOTH bidders as winners in a rival-vs-rival tie (~3% of rounds).
+ * Stated rather than hidden: a chart that quietly overstates winners is worse than one
+ * whose limitation is written down.
+ */
+export function toReportRivalPoints(rounds: readonly StoredRound[]): ReportRivalPoint[] {
+  const out: ReportRivalPoint[] = []
+  for (const r of rounds) {
+    r.rival_bids.forEach((bid, i) => {
+      const cost = r.rival_costs[i]
+      if (bid === null || typeof cost !== 'number') return
+      const id = rivalIdFor(i)
+      const won = r.winner_id !== null
+        ? r.winner_id === id
+        : (!r.won && r.price !== null && bid === r.price)
+      out.push({ round: r.round, cost, bid, won })
+    })
+  }
+  return out
+}
+
+/** ⚠ Must match `rivalId` in round.ts — the ids `winner_id` is compared against are
+ *  written by the resolver, so the two spellings cannot diverge without mislabelling
+ *  every winner on the chart. */
+const rivalIdFor = (i: number) => `rival${i + 1}`
 
 /** Cumulative profit the §8 benchmark bid would have earned against the SAME realized
  *  rival bids — "a perfect player would have earned X from your draws" (§9). */

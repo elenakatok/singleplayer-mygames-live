@@ -150,6 +150,9 @@ export const procurementSubmitBid = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, a
       played_at: Timestamp.now(),
       rival_costs: res.rivalCosts,
       rival_bids: res.rivalBids,
+      // ⚠ RECORDED, not left to be derived from `price` — a rival-vs-rival tie has two
+      // bidders at the winning price and only one of them won (rounds.ts).
+      winner_id: res.winnerId,
       tie: res.tie,
       tied_and_lost: res.tiedAndLost,
       eq_bid: res.equilibriumBid,

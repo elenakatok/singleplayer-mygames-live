@@ -754,13 +754,27 @@ async function main() {
   // rounds, which is a contract, rather than by scanning for a number.
   const ROW_KEYS = [
     'participantId', 'name', 'externalId', 'finished', 'roundsPlayed', 'roundsWon',
-    'profitTotal', 'knowledgeCheckScore', 'rawScore', 'normalizedScore', 'rounds', 'freeText',
+    'profitTotal', 'knowledgeCheckScore', 'rawScore', 'normalizedScore', 'rounds',
+    // ⚠ NEW 08-03: the Tier-3 class chart's rival series. INSTRUCTOR-ONLY — the student
+    // path's rival reveal is a different payload and is still gated on `finished_at`,
+    // which §9 asserts independently (including that opening this report does not open it).
+    'rivalPoints', 'freeText',
   ].sort()
   check(rep.rows.every(r => sameKeys(r, ROW_KEYS)), '§12 every report row key set is exactly the contract')
   check(rep.rows.every(r => r.rounds.every(x => sameKeys(x, PLAYED_KEYS))),
     '⚠ §12 report rounds use the SAME whitelist as the student path — no rival cost exists to gate')
-  check(!JSON.stringify(rep.rows).includes('rival'),
-    '⚠ §12 and no key anywhere under rows mentions a rival')
+  // ⚠ THE ROWS NOW CARRY RIVAL POINTS ON PURPOSE (Elena, 08-03) — the class chart plots
+  // the simulated rivals. What must still hold is that the ROUND rows are the same
+  // student whitelist, and that the rival points carry exactly four fields.
+  check(rep.rows.every(r => (r.rivalPoints ?? []).every(p =>
+    sameKeys(p, ['round', 'cost', 'bid', 'won'].sort()))),
+    '§12 every rival point carries exactly (round, cost, bid, won)')
+  const anyRivals = rep.rows.flatMap(r => r.rivalPoints ?? [])
+  check(anyRivals.length > 0, `§12 and the rival series is populated (${anyRivals.length} points)`)
+  check(anyRivals.every(p => p.bid === betaInt(p.cost, {
+    rivalCostMax: rep.rivalCostMax, reserve: rep.reserve, totalBidders: rep.totalBidders,
+  })),
+    '⚠ §12 every rival bid IS β at its own cost — which is why they lie on the chart\'s green line')
 
   // ⚠ Elena's Tier-1b check: the SERVER's β travels with the row.
   check(rep.rows.every(r => r.rounds.every(x => 'yourEquilibriumBid' in x)),
