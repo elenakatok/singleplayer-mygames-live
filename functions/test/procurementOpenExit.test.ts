@@ -4,7 +4,7 @@ import {
   type OpenSettings, type OpenState,
 } from '../src/procurement/auction/openAuction'
 import { perfectPlayProfit } from '../src/procurement/auction/perfectPlay'
-import { maxLegalBid } from '../src/procurement/auction/schedule'
+import { maxLegalBid, stepAt } from '../src/procurement/auction/schedule'
 import { makeRng } from '../src/procurement/auction/rng'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -262,6 +262,7 @@ describe('⚠⚠ a real player CAN exceed the closed form, by less than one endg
     let wins = 0
     let beat = 0
     let worstExcess = 0
+    let worstBound = 0
     for (let i = 0; i < 300; i++) {
       const playerCost = 10 + (i % 45)
       const botCosts = [17 + (i * 7) % 80, 23 + (i * 13) % 70, 11 + (i * 29) % 90, 31 + (i * 3) % 60]
@@ -279,23 +280,32 @@ describe('⚠⚠ a real player CAN exceed the closed form, by less than one endg
       const actual = st.winnerId === 'player' && st.price !== null ? st.price - playerCost : 0
       const benchmark = perfectPlayProfit(playerCost, botCosts, 110, SCHEDULE).profit
       if (st.winnerId === 'player') wins++
+
+      // ⚠⚠ THE BOUND IS BAND-DERIVED, NOT A CONSTANT (Elena, 2026-08-04). The runner-up
+      // stops when `standing − step(standing) < its cost`, so the winner can hold at up to
+      // `secondLowest + step(P) − 1` where P is the price the round ACTUALLY settled at.
+      // That is 1 in the step-2 band and 4 in the step-5 band — so a constant is either
+      // wrong or useless. The first version asserted `< 10`, the schedule's largest step:
+      // never red, and blind to an excess of 6 in a band whose true bound is 1.
+      const bound = st.price !== null ? stepAt(st.price, SCHEDULE) - 1 : 0
       if (actual > benchmark) {
         beat++
         worstExcess = Math.max(worstExcess, actual - benchmark)
+        worstBound = Math.max(worstBound, bound)
+        expect(
+          actual - benchmark,
+          `round ${i}: settled at ${st.price} (step ${stepAt(st.price!, SCHEDULE)}), `
+          + `excess ${actual - benchmark} must not exceed ${bound}`,
+        ).toBeLessThanOrEqual(bound)
       }
     }
     expect(wins, 'the sweep must actually contain wins').toBeGreaterThan(20)
-
-    // ⚠ THE BOUND. The largest step in the shipped schedule is 10, so an excess can never
-    // reach it; in practice the rounds that settle in the fine bands cap it far lower.
-    // If this ever fails, the closed form and the mechanism have parted company by more
-    // than discretization explains, and that IS a defect rather than a rounding artifact.
-    expect(worstExcess).toBeLessThan(10)
+    expect(beat, 'and the gap this documents must actually occur').toBeGreaterThan(0)
 
     // Recorded for the record rather than asserted tightly: the frequency is what tells
     // Elena whether "perfect play" reads as beatable on a student's screen.
     // eslint-disable-next-line no-console
     console.log(`      [measured] ${beat}/${wins} winning rounds beat the closed form; `
-      + `worst excess ${worstExcess} ECU`)
+      + `worst excess ${worstExcess} ECU (band bound there: ${worstBound})`)
   })
 })

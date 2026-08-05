@@ -361,6 +361,15 @@ async function main() {
     // ⚠ THE BOT SERIES DEFAULTS TO OFF.
     check(await svgCount(page, 'proc-scatter-bot-point') === 0,
       '⚠ [§9] the bot series is OFF on arrival — the student reads their own pattern first')
+    // ⚠ WAIT FOR IT, DO NOT SAMPLE FOR IT. The bot series arrives from a SECOND call:
+    // `finished_at` is stamped by the final round's commit, so the state call that seeded
+    // the page was correctly refused the rival costs and `Play.tsx` re-fetches them once
+    // the loop ends. Asserting `exists()` the instant Continue is clicked is a race with
+    // that fetch — it won for every run until the bundle grew, then went red for a reason
+    // that had nothing to do with the toggle. Waiting keeps the check honest: it still
+    // fails if the toggle never appears.
+    await page.waitForSelector('[data-testid="proc-scatter-bot-toggle"]', { timeout: 15_000 })
+      .catch(() => { /* fall through to the check, which reports it properly */ })
     check(await exists(page, '[data-testid="proc-scatter-bot-toggle"]'),
       '[§9] the toggle is offered, because the game is over')
     await page.locator('[data-testid="proc-scatter-bot-toggle"]').check()
@@ -771,7 +780,18 @@ async function main() {
       '[open] the per-round table shows EXIT PRICE, not a bid')
     check(!/Optimal/i.test(endBody), '[open] and has no optimal-bid column')
     check(await exists(op, '[data-testid="proc-open-end-perfect"]'),
-      '[open] perfect-play profit is shown (§7 / Item 1)')
+      '[open] the frictionless benchmark is shown (§7 / Item 1)')
+    // ⚠⚠ IT READS AS A FACT ABOUT AUCTIONS, NOT AS A SCORE. A student can legitimately
+    // earn MORE than this figure — discrete increments hand the winner the gap between
+    // the last two bids — so nothing here may read as an error or a mark.
+    check(/With no bid increments/.test(endBody),
+      '⚠⚠ [open] and it is labelled as the FRICTIONLESS outcome')
+    check(!/Perfect play would have earned/.test(endBody),
+      '[open] the old ceiling wording is gone')
+    check(/increment size is an auction-design decision/i.test(endBody),
+      '⚠ [open] and the gap is named as the lesson')
+    check(!/you should have|is incorrect|a mistake in your/i.test(endBody),
+      '[open] nothing on the screen blames the student for the gap')
     check(/plotted separately/i.test(endBody),
       '⚠ [open] and the caption says WHY winners are a separate series (§7)')
     // ⚠ THE BOT SERIES IS DEFAULT OFF (§7) — the reader reveals the benchmark.

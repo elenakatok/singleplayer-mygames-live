@@ -387,6 +387,40 @@ function historyRows(
   return rows
 }
 
+/**
+ * ⚠⚠ THE PER-ROUND BENCHMARK SENTENCE (§5.2). Presentation only — the arithmetic is the
+ * server's closed form and is not touched here.
+ *
+ * It must work in BOTH directions. The common case is a student below the benchmark, who
+ * stopped while there was still room. But roughly a fifth of the rounds a student WINS
+ * come in above it, because the runner-up stops one whole step short and the winner keeps
+ * the difference. Neither is an error, and a sentence that only handled the first would
+ * tell the better half of the class they had done something wrong.
+ */
+function benchmarkLine(
+  outcome: NonNullable<ProcurementOpenTurn['roundOutcome']>,
+  c: string,
+): string {
+  // Somebody else could go lower: there was nothing to take at this cost, increments or
+  // no increments. Saying so plainly is §5.2's "you lost correctly" in benchmark terms.
+  if (!outcome.perfectWon) {
+    return 'Another supplier could bid lower than you here, so there was nothing to win '
+      + 'at your cost — with or without bid increments.'
+  }
+
+  const frictionless = 'With no bid increments the contract goes to the lowest-cost '
+    + `supplier at the second-lowest cost. On your draws that is ${outcome.perfectProfit} ${c}.`
+
+  if (outcome.profit > outcome.perfectProfit) {
+    return `${frictionless} You earned ${outcome.profit} — the increments left a little on `
+      + 'the table for you.'
+  }
+  if (outcome.profit === outcome.perfectProfit) {
+    return `${frictionless} You earned exactly that.`
+  }
+  return `${frictionless} You earned ${outcome.profit}.`
+}
+
 function Fact({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
     <div style={{ display: 'flex', gap: '0.5rem', padding: '0.12rem 0' }}>
@@ -483,13 +517,16 @@ export function OpenRoundEnd({
           {counterfactual}
         </p>
 
-        {/* ⚠ The benchmark for THIS round, so "perfect play" is a number they can compare
-            against rather than an abstraction they meet only on the results screen. */}
+        {/* ⚠⚠ THE BENCHMARK IS THE FRICTIONLESS OUTCOME, NOT AN UNBEATABLE CEILING
+            (Elena, 2026-08-04). With no bid increments the contract goes to the
+            lowest-cost supplier at the second-lowest cost; real increments are discrete,
+            and a discrete step hands the winner a small surplus. So a student can earn
+            MORE than this number — measured at about a fifth of the rounds they win — and
+            the wording must not read as though they have found an error or made one.
+            **The gap IS the lesson**: increment size is an auction-design decision.
+            The number is unchanged; only how it is described. */}
         <p data-testid="proc-open-perfect" style={{ margin: '0.4rem 0 0', fontSize: '0.85rem', color: colors.textSecondary }}>
-          {outcome.perfectWon
-            ? `Playing it perfectly — stopping exactly at your cost — would have earned `
-              + `${outcome.perfectProfit} ${c} this round.`
-            : 'Even played perfectly, this round was not winnable at your cost.'}
+          {benchmarkLine(outcome, c)}
         </p>
 
         {outcome.droppedOut && (

@@ -334,8 +334,11 @@ describe('the round end is deliberately spare — §5.2 is CP4b', () => {
         outcome={{ ...outcome, price: 30, perfectWon: false, perfectProfit: 0 }} />)
     expect(textOf(lostRight, 'proc-open-counterfactual')).toBe(
       'The contract went for 30, which was below your cost — there was nothing more to win here.')
-    expect(textOf(lostRight, 'proc-open-perfect'))
-      .toBe('Even played perfectly, this round was not winnable at your cost.')
+    // ⚠ THE BENCHMARK IS THE FRICTIONLESS OUTCOME, and when somebody else was cheaper
+    // there was nothing to take at this cost either way.
+    expect(textOf(lostRight, 'proc-open-perfect')).toBe(
+      'Another supplier could bid lower than you here, so there was nothing to win at '
+      + 'your cost — with or without bid increments.')
   })
 
   it('⚠ a WINNER is told their exit price is an upper bound', () => {
@@ -346,6 +349,37 @@ describe('the round end is deliberately spare — §5.2 is CP4b', () => {
     expect(textOf(won, 'proc-open-gap'))
       .toBe('You won at 46 with a cost of 34 — 12 ECU of profit.')
     expect(textOf(won, 'proc-open-censored')).toMatch(/nobody pushed you any lower/i)
+  })
+
+  it('⚠⚠ §5.2 the benchmark reads as the FRICTIONLESS outcome, not a ceiling', () => {
+    // outcome: perfectWon, perfectProfit 2, actual profit 0 — the common direction.
+    expect(textOf(html, 'proc-open-perfect')).toBe(
+      'With no bid increments the contract goes to the lowest-cost supplier at the '
+      + 'second-lowest cost. On your draws that is 2 ECU. You earned 0.')
+  })
+
+  it('⚠⚠ and works in the OTHER direction — a player ABOVE it is not told off', () => {
+    // ~19% of the rounds a student wins land here, because the runner-up stops a whole
+    // step short and the winner keeps the difference. Nothing in this sentence may imply
+    // an error: the gap IS the lesson.
+    const above = renderToStaticMarkup(
+      <OpenRoundEnd params={PARAMS} done={false} onContinue={() => {}} auction={auction()}
+        outcome={{ ...outcome, won: true, price: 46, profit: 12, yourLastBid: 46,
+          exitPrice: 46, exitCensored: true, perfectWon: true, perfectProfit: 10 }} />)
+    expect(textOf(above, 'proc-open-perfect')).toBe(
+      'With no bid increments the contract goes to the lowest-cost supplier at the '
+      + 'second-lowest cost. On your draws that is 10 ECU. You earned 12 — the increments '
+      + 'left a little on the table for you.')
+    // ⚠ NOT ONE WORD OF BLAME, and no suggestion the figures are wrong.
+    expect(above).not.toMatch(/mistake|error|should have|too much|incorrect/i)
+  })
+
+  it('and says so plainly when the two agree', () => {
+    const same = renderToStaticMarkup(
+      <OpenRoundEnd params={PARAMS} done={false} onContinue={() => {}} auction={auction()}
+        outcome={{ ...outcome, won: true, price: 46, profit: 12, yourLastBid: 46,
+          exitPrice: 46, exitCensored: true, perfectWon: true, perfectProfit: 12 }} />)
+    expect(textOf(same, 'proc-open-perfect')).toContain('You earned exactly that.')
   })
 
   it('§5.2 the full bid history for the round is replayed', () => {
@@ -374,10 +408,30 @@ describe('§5.3 the open results screen', () => {
     <OpenEndScreen params={PARAMS} history={rows} totalProfit={26} totalPerfectProfit={34}
       roundsWon={1} botCosts={[47, 88, 21, 63]} onContinue={() => {}} />)
 
-  it('reports the totals and the perfect-play benchmark', () => {
+  it('reports the totals and the frictionless benchmark', () => {
     expect(html).toContain('Your 2 auctions')
     expect(textOf(html, 'proc-open-end-profit')).toBe('+26 ECU')
     expect(textOf(html, 'proc-open-end-perfect')).toBe('+34 ECU')
+    // ⚠ THE LABEL NAMES WHAT THE NUMBER IS, not a grade.
+    expect(html).toContain('With no bid increments')
+    expect(html).not.toMatch(/Perfect play would have earned/)
+  })
+
+  it('⚠⚠ §5.3 the benchmark note works in BOTH directions and blames nobody', () => {
+    // Below: the common case.
+    expect(textOf(html, 'proc-open-end-benchmark-note'))
+      .toMatch(/You earned less than that/i)
+    expect(textOf(html, 'proc-open-end-benchmark-note'))
+      .toMatch(/increment size is an auction-design decision/i)
+
+    // Above: ~19% of winning rounds. Must read as the increments working for them.
+    const over = renderToStaticMarkup(
+      <OpenEndScreen params={PARAMS} history={rows} totalProfit={40} totalPerfectProfit={34}
+        roundsWon={1} botCosts={null} />)
+    const note = textOf(over, 'proc-open-end-benchmark-note') ?? ''
+    expect(note).toMatch(/You earned more than that/i)
+    expect(note).toMatch(/not a mistake in the numbers/i)
+    expect(over).not.toMatch(/you should have|error|incorrect/i)
   })
 
   it('⚠⚠ the per-round table shows EXIT PRICE, and no optimal-bid column', () => {

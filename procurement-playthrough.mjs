@@ -1306,14 +1306,36 @@ async function main() {
 
   // ⚠⚠ THE "≥ WHAT THE PLAYER EARNED" PROPERTY IS **NOT** GUARANTEED, AND THAT IS REPORTED
   // RATHER THAN ASSERTED AWAY. The closed form prices the contract at exactly the
-  // second-lowest cost; the MECHANISM cannot, because a bot stops when
-  // `standing − step < its cost`, so a player holding the low bid wins at up to
-  // `secondLowest + step − 1`. A real player can therefore beat the benchmark by less than
-  // one step — measured at 31 of 166 winning rounds, worst excess 3 ECU
-  // (procurementOpenExit.test.ts). The bound is asserted; the property is not claimed.
-  check(dropped.roundOutcome.profit - recPerfect < 10,
-    `⚠ §15 any excess over perfect play is under one step `
-    + `(player ${dropped.roundOutcome.profit}, perfect ${recPerfect})`)
+  // second-lowest cost; the MECHANISM cannot, because the runner-up stops when
+  // `standing − step(standing) < its cost`, so a player holding the low bid wins at up to
+  // `secondLowest + step(P) − 1`. A real player can therefore beat the benchmark by less
+  // than one step. That is a fact about discrete increments, not an error — see
+  // BUILD_NOTES §6i and the screen wording.
+  //
+  // ⚠⚠ THE BOUND IS BAND-DERIVED, NOT A CONSTANT (Elena, 2026-08-04). It is 1 in the
+  // step-2 band and 4 in the step-5 band, so a constant is either wrong or useless: this
+  // check first read `< 10`, the schedule's largest step, which accepted an excess of 6 in
+  // a band whose true bound is 4 and would have accepted 9 in a band whose bound is 1.
+  //
+  // ⚠ THE STEP LOOKUP IS THIS FILE'S OWN, not the server's — same discipline as the
+  // closed-form recomputation above.
+  const stepAtPrice = (price) => {
+    for (const [above, step] of [[80, 10], [50, 5], [30, 2], [0, 1]]) {
+      if (price > above) return step
+    }
+    return 1
+  }
+  if (dropped.roundOutcome.won && dropped.roundOutcome.price !== null) {
+    const excess = dropped.roundOutcome.profit - recPerfect
+    const bound = stepAtPrice(dropped.roundOutcome.price) - 1
+    check(excess <= bound,
+      `⚠ §15 any excess over perfect play is within the band's own step `
+      + `(settled at ${dropped.roundOutcome.price}, excess ${excess}, bound ${bound})`)
+  } else {
+    check(dropped.roundOutcome.profit <= recPerfect,
+      `§15 a player who did not win cannot have beaten perfect play `
+      + `(player ${dropped.roundOutcome.profit}, perfect ${recPerfect})`)
+  }
 
   // ⚠ AND THE ROUND-2 DRAWS ARE ALREADY IN TRUTH, not on the participant doc.
   const botTruth2 = await getDoc(`procurement_game_instances/${gidO}/truth/bots_${pidO}`)

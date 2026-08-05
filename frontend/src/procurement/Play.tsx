@@ -244,8 +244,9 @@ export default function Play() {
   const applyTurn = (turn: ProcurementOpenTurn) => {
     setHistory(turn.history)
     // ⚠ `benchmark` IS REAL NOW. CP4a wrote 0 here because the open format had no
-    // benchmark; it has one (perfect play, replayed per round), the server sums it into
-    // `totalEquilibriumProfit` exactly as it does for the sealed format, and §5.3 prints it.
+    // benchmark; it has one — the FRICTIONLESS outcome, `auction/perfectPlay.ts`'s closed
+    // form — the server sums it into `totalEquilibriumProfit` exactly as it does for the
+    // sealed format, and §5.3 prints it.
     setTotals({
       profit: turn.totalProfit,
       benchmark: turn.totalEquilibriumProfit,

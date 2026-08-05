@@ -81,16 +81,35 @@ export function OpenEndScreen({
         <div style={{ display: 'flex', gap: '2.5rem', flexWrap: 'wrap' }}>
           <Big label="Contracts won" value={`${roundsWon} of ${history.length}`} />
           <Big label="Total profit" value={signedEcu(totalProfit, c)} testId="proc-open-end-profit" />
-          <Big label="Perfect play would have earned" value={signedEcu(totalPerfectProfit, c)} testId="proc-open-end-perfect" />
+          <Big label="With no bid increments" value={signedEcu(totalPerfectProfit, c)} testId="proc-open-end-perfect" />
         </div>
-        {/* ⚠ SAID PLAINLY, because a student comparing two numbers will otherwise read the
-            gap as a mark out of ten. It is not: it is luck plus judgement, and the point
-            of showing it is that bad draws stop looking like bad play. */}
+        {/* ⚠⚠ THE BENCHMARK IS THE FRICTIONLESS OUTCOME, NOT A MARK OUT OF TEN (Elena,
+            2026-08-04). The previous wording — "perfect play would have earned" — invited a
+            student above it to read the figures as broken and a student below it to read
+            the gap as a grade. Neither is right: real increments are discrete, a discrete
+            step hands the winner a small surplus, and **that gap is the lesson** — it is
+            why increment size is an auction-design decision. Works in both directions, and
+            never implies an error. The arithmetic is untouched. */}
         <p style={{ margin: '0.8rem 0 0', fontSize: '0.85rem', color: colors.textSecondary }}>
-          "Perfect play" means stopping exactly at your own cost in every round — never
-          quitting while the next legal bid still cleared it, and never bidding below it.
-          It is computed against <strong>the same suppliers you actually faced</strong>, so
-          the difference is what your stopping decisions cost or earned you, not luck.
+          In an auction with <strong>no bid increments</strong>, the contract goes to the
+          lowest-cost supplier at the second-lowest cost — every time. Against{' '}
+          <strong>the same suppliers you actually faced</strong>, that comes to{' '}
+          {signedEcu(totalPerfectProfit, c)}. It is the frictionless outcome, not a score.
+        </p>
+        <p data-testid="proc-open-end-benchmark-note" style={{ margin: '0.5rem 0 0', fontSize: '0.85rem', color: colors.textSecondary }}>
+          {totalProfit > totalPerfectProfit
+            ? <>You earned <strong>more</strong> than that. Real auctions move in steps, and
+              a step hands the winner whatever is left between the last two bids — so
+              earning above the frictionless figure is the increments working in your
+              favour, not a mistake in the numbers.</>
+            : totalProfit === totalPerfectProfit
+              ? <>You earned exactly that.</>
+              : <>You earned <strong>less</strong> than that, which usually means stopping
+                while the next legal bid still cleared your cost. Increments cut both
+                ways — they can hand a winner a surplus, and they can end a round a step
+                before you meant to leave.</>}
+          {' '}This is why <strong>increment size is an auction-design decision</strong>,
+          not a detail.
         </p>
       </section>
 

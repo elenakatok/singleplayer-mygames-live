@@ -687,34 +687,43 @@ field would report `reserve − cost` and overstate what was winnable by a whole
 (§8.3 case 7: unopposed at 100, not 110). It also absorbs §4.1's known artifact — a
 supplier costing between the ceiling and the reserve can never bid — for free.
 
-### ⚠⚠ THE "≥ WHAT THE PLAYER EARNED" PROPERTY IS **NOT** GUARANTEED — measured, reported
-
-Elena asked me to confirm it is now genuinely guaranteed rather than usually true, and to
-report a defect rather than relax the assertion. **It is not guaranteed.**
+### ⚠⚠ A PLAYER CAN BEAT THE BENCHMARK — measured, and RESOLVED AS WORDING (Elena, 08-04)
 
 The closed form prices the contract at *exactly* the second-lowest cost. The mechanism
-cannot: a bot stops when `standing − step < its cost`, so a player holding the low bid wins
-at up to `secondLowest + step − 1`. A real player therefore beats the benchmark by **less
-than one step in force where the round settled**.
+cannot: the runner-up stops when `standing − step(standing) < its cost`, so the winner
+holds at up to `secondLowest + step(P) − 1`. **Measured** (300 unseeded rounds, player
+following the dominant strategy): about **a quarter of winning rounds beat the closed form,
+worst excess 4 ECU against a band bound of exactly 4**. The emulator harness hit one live:
+player 28, perfect 25.
 
-**Measured** (`procurementOpenExit.test.ts`, 300 unseeded rounds, player following the
-dominant strategy): **31 of 166 winning rounds beat the closed form — about 19% of wins —
-worst excess 3 ECU.** The emulator harness hit one live on its first run: player 28,
-perfect 25.
+**Elena's decision (08-04): OPTION 1 — keep the closed form, keep the ceiling cap, change
+the WORDING.** Options 2 (`secondLowest + step − 1`) and 3 (clamp to realized profit) are
+declined.
 
-So a student can see "you earned 28, perfect play would have earned 25". Options, none
-taken unilaterally:
+⚠ **The rationale is the part worth keeping, because it reframes the whole thing.** The
+same phenomenon *already ships in the sealed format*: β maximises EXPECTED profit, so a
+realized draw can beat it ex post, and a live sealed instance shows "+40 earned, +38
+perfect" and has been fine. **So the issue was never that a student may beat the benchmark.
+It is that the old wording invited reading that as an error.** The gap IS the lesson —
+discrete increments hand the winner a small surplus, which is why increment size is an
+auction-design decision.
 
-1. **Leave it.** The gap is ≤ 3 ECU and only on rounds they won; the benchmark stays the
-   theoretical statement the lecture makes.
-2. **Define the benchmark as `secondLowest + step(secondLowest) − 1`** — the best the
-   mechanism can actually pay a perfect player. Exact, never beatable, but no longer the
-   number on the slide.
-3. **Clamp** `eq_profit` up to the realized profit. Cheapest, and dishonest — it would
-   make the benchmark a function of the student's own play.
+The benchmark is therefore presented as **the frictionless outcome**, not an unbeatable
+ceiling: what the auction would pay with no increments at all. Every string reads in both
+directions and none implies a mistake. **The arithmetic is untouched.**
 
-Tests assert the **bound** (excess < one step), not the property. The harness comment says
-so in those words so nobody later reads a passing check as "perfect play is never beaten".
+### ⚠ The excess bound is BAND-DERIVED, not a constant
+
+`step(winningPrice) − 1` — 1 in the step-2 band, 4 in the step-5 band. It was originally
+hardcoded to `10`, the schedule's largest step. Not to the 3 ECU first measured, but still
+a constant, and a **useless** one: under a mutation that understated the benchmark by 3,
+the constant let **150 of 162 winning rounds** "beat" the benchmark with a worst excess of
+6 and still passed. The band-derived bound fails the same mutation immediately —
+`round 0: settled at 11 (step 1), excess 3 must not exceed 0`.
+
+Both call sites are fixed: the unit sweep, and the emulator harness (which implements its
+own step lookup rather than importing the server's, same discipline as its independent
+recomputation of the closed form).
 
 ### §5.2's gap sentence is UNCHANGED
 
