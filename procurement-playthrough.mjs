@@ -1279,11 +1279,41 @@ async function main() {
   check(recPerfect >= 0, '§15 perfect play never earns less than zero')
   check(dropped.roundOutcome.perfectProfit === recPerfect,
     '§15 and the response carries the recorded number, not a second computation')
-  // ⚠ THE BENCHMARK IS AT LEAST AS GOOD AS WHAT THIS PLAYER ACTUALLY DID — a robot that
-  // dropped out early cannot have beaten perfect play. This is the property that would
-  // catch a benchmark computed against the wrong bots or the wrong cost.
-  check(recPerfect >= dropped.roundOutcome.profit,
-    `⚠ §15 perfect play (${recPerfect}) is at least what the player earned (${dropped.roundOutcome.profit})`)
+  // ⚠⚠ THE CLOSED FORM, RECOMPUTED HERE BY A SEPARATE CODE PATH from the bot costs read
+  // out of the RULES-DENIED TRUTH DOC with owner credentials. It does not import the
+  // server's helper and does not share a line with it: two independent implementations of
+  // the same sentence, checked against each other. If they agree, the number the student
+  // sees is the number the theory says.
+  //
+  //   profit = (second-lowest cost among all bidders incl. the player) − player cost,
+  //            when the player is cheapest; 0 otherwise — capped at the first legal bid,
+  //            because the auction opens AT the reserve and nobody is ever paid more.
+  const closedForm = (playerCost, botCosts, reserve, topStep) => {
+    if (playerCost > reserve) return 0
+    const ceiling = reserve - topStep
+    const inField = botCosts.filter(c => c <= reserve)
+    const cheapestRival = inField.length > 0 ? Math.min(...inField) : Infinity
+    if (cheapestRival <= playerCost) return 0
+    const price = Math.min(cheapestRival, ceiling)
+    return price < playerCost ? 0 : price - playerCost
+  }
+  const recCost = Number(rec.cost.integerValue)
+  const recRivalCosts = (rec.rival_costs?.arrayValue?.values ?? []).map(v => Number(v.integerValue))
+  const independent = closedForm(recCost, recRivalCosts, RESERVE, 10)
+  check(recPerfect === independent,
+    `⚠⚠ §15 eq_profit (${recPerfect}) matches the closed form recomputed independently `
+    + `from truth (${independent})`)
+
+  // ⚠⚠ THE "≥ WHAT THE PLAYER EARNED" PROPERTY IS **NOT** GUARANTEED, AND THAT IS REPORTED
+  // RATHER THAN ASSERTED AWAY. The closed form prices the contract at exactly the
+  // second-lowest cost; the MECHANISM cannot, because a bot stops when
+  // `standing − step < its cost`, so a player holding the low bid wins at up to
+  // `secondLowest + step − 1`. A real player can therefore beat the benchmark by less than
+  // one step — measured at 31 of 166 winning rounds, worst excess 3 ECU
+  // (procurementOpenExit.test.ts). The bound is asserted; the property is not claimed.
+  check(dropped.roundOutcome.profit - recPerfect < 10,
+    `⚠ §15 any excess over perfect play is under one step `
+    + `(player ${dropped.roundOutcome.profit}, perfect ${recPerfect})`)
 
   // ⚠ AND THE ROUND-2 DRAWS ARE ALREADY IN TRUTH, not on the participant doc.
   const botTruth2 = await getDoc(`procurement_game_instances/${gidO}/truth/bots_${pidO}`)

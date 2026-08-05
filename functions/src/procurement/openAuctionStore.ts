@@ -274,34 +274,6 @@ export function resolveBotCosts(
  *  path stamp rounds the same way — a sentinel is illegal inside an array element. */
 export const playedAtNow = () => Timestamp.now()
 
-/**
- * Settings for the PERFECT-PLAY BENCHMARK replay (§7, CP4b Item 1) — the same bots at the
- * same costs, on a SEPARATELY KEYED ordering stream.
- *
- * ⚠ THE SEPARATE KEY IS THE POINT, and it is the sealed format's `counterfactual`
- * convention applied here (round.ts). If the replay drew from the play stream, the real
- * auction's bot ordering would depend on whether a benchmark had been computed — the exact
- * data-dependent coupling the positional-draw convention exists to prevent (rng.ts).
- *
- * ⚠ THE JITTER IS ZERO. It is a wall-clock nicety for a live screen; a replay has no
- * screen, and a `Math.random` call here would make the benchmark itself non-reproducible
- * for no reason at all.
- */
-export function benchmarkSettingsFor(
-  config: ProcurementConfig,
-  botCosts: readonly number[],
-  seed: string | null,
-  participantId: string,
-  round: number,
-): OpenSettings {
-  return {
-    ...openSettingsFor(config, botCosts, seed, participantId, round),
-    rngAt: (decision: number) =>
-      makeRng(seed, `${participantId}:benchmark:${round}:${decision}`),
-    jitterAt: () => 0,
-  }
-}
-
 // ── opening a round, in one transaction ────────────────────────────────────────
 
 export interface OpenedRound {

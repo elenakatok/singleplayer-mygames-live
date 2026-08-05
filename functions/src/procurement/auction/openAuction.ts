@@ -525,61 +525,20 @@ export function totalBidderCount(s: OpenSettings): number {
   return s.bots.length + 1
 }
 
-/**
- * ⚠⚠ PERFECT PLAY, REPLAYED — the open format's benchmark (CP4b Item 1).
- *
- * Runs a whole hypothetical auction against the SAME bots at the SAME costs, with the
- * player following the dominant strategy §1 states: **keep undercutting while the price is
- * above your cost, then stop.** Concretely — bid the minimum whenever the minimum legal
- * bid still clears your own cost, and drop out the moment it does not.
- *
- * ⚠ THE TEST IS `maxLegalBid >= cost`, NOT `standing > cost`. At a standing of 48 with a
- * cost of 47 the PRICE is still above cost, but the next legal bid is 46 — already a loss.
- * A benchmark that compared the standing price would keep bidding into a loss and would
- * quietly understate what perfect play earns. Same trap the robots hit (Item 2).
- *
- * ⚠⚠ IT IS NOT EXACT, AND THE PROMPT'S PREMISE THAT IT IS DESERVES CORRECTING. Bot
- * behaviour is deterministic given bot costs, but bot RESPONSE ORDERING is not (§4.3,
- * seeded-random), and BUILD_NOTES §2 measured that ordering moving the halt price by up to
- * 10 ECU — 15.7% of draws exceed one step at the halt. So this replay is ONE sample from
- * that distribution, not a closed form. It is computed once, at round end, from a
- * SEPARATELY KEYED stream, and recorded; it never re-derives, so a student never sees it
- * change. Averaging over N orderings would de-noise it and is a one-line change — flagged
- * for Elena rather than taken unilaterally, because it is a different number from the one
- * the spec asked for.
- *
- * ⚠ NO CLOCK. The `now` counter below only satisfies `settle`'s scheduling arithmetic; it
- * advances far faster than any delay so every step is immediately due. Nothing here reads
- * a real clock, and none of this state is ever persisted.
- */
-export function replayPerfectPlay(s: OpenSettings, playerCost: number): OpenState {
-  let st = openAuction(s, 0)
-  let now = 0
-  // A bound, not a policy: every commit strictly lowers the price and the price is bounded
-  // below by the lowest cost, so this cannot spin.
-  for (let guard = 0; guard < 10_000; guard++) {
-    if (st.status === 'resolved') return st
-    // Step the clock past whatever `settle` scheduled, so the bot is always due.
-    now += 1_000_000
-    if (st.status === 'bot_turn') {
-      const r = advanceOne(st, s, now)
-      if (!r.committed) return r.state
-      st = r.state
-      continue
-    }
-    // 'waiting' — the cascade has halted and it is the benchmark player's move.
-    if (maxLegalBid(st.standing, s.schedule) >= playerCost) {
-      const r = playerBid(st, s, maxLegalBid(st.standing, s.schedule), st.sequence, now)
-      // A refusal here would mean the machine and this policy disagree about legality;
-      // dropping out rather than looping is the safe reading, and a test pins that the
-      // policy never actually produces one.
-      st = r.ok ? r.state : playerDropOut(st, s, now)
-      continue
-    }
-    return playerDropOut(st, s, now)
-  }
-  throw new Error('[procurement] perfect-play replay did not terminate')
-}
+// ⚠⚠ THERE IS NO `replayPerfectPlay` HERE ANY MORE, AND ITS ABSENCE IS THE POINT.
+// CP4b computed the perfect-play benchmark by replaying the whole auction with the player
+// exiting at their own cost — which inherited the seeded-random bot ORDERING and so
+// returned one sample from a distribution BUILD_NOTES §2 measured spanning up to 10 ECU.
+//
+// Elena replaced it with a closed form (`auction/perfectPlay.ts`, 2026-08-04): the ordering
+// noise is a LARGE-INCREMENT phenomenon, and the increments that settle this auction are 2
+// and 1. Ordering changes the path, not the destination. Do not reintroduce a replay to
+// "check" the closed form — a sampled cross-check of a closed form is the noisier number
+// auditing the exact one.
+//
+// It took a separately-keyed RNG stream with it (`benchmarkSettingsFor`): a hypothetical
+// replay had to be prevented from disturbing the real auction's draws, and there is now
+// nothing to disturb.
 
 /** The player's own last bid this round, or null if they never bid. */
 export function lastPlayerBid(state: OpenState, s: OpenSettings): number | null {

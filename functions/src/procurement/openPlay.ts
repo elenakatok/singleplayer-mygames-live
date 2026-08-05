@@ -14,12 +14,12 @@ import {
 } from './rounds'
 import { phaseOf } from './clientState'
 import {
-  advanceOne, playerBid, playerDropOut, lastPlayerBid, lastBotBids,
-  playerExit, replayPerfectPlay,
+  advanceOne, playerBid, playerDropOut, lastPlayerBid, lastBotBids, playerExit,
   type OpenSettings, type OpenState,
 } from './auction/openAuction'
+import { perfectPlayProfit } from './auction/perfectPlay'
 import {
-  ensureRoundOpen, serializeAuction, playedAtNow, benchmarkSettingsFor,
+  ensureRoundOpen, serializeAuction, playedAtNow,
   botCostsDocId, botCostsPatch, drawBotCosts,
 } from './openAuctionStore'
 import { toClientAuction, type ClientAuction } from './openView'
@@ -111,14 +111,17 @@ function resolvedRoundRecord(
   botCosts: readonly number[],
   state: OpenState,
   s: OpenSettings,
-  /** ⚠ A SEPARATELY KEYED settings object for the benchmark replay — see the call site.
-   *  Passing it in keeps this function free of any notion of seeds or streams. */
-  benchmark: OpenSettings,
 ): StoredRound {
   const won = state.winnerId === PLAYER_ID
   const exit = playerExit(state, s)
 
   // ── the open format's benchmark (§7, CP4b Item 1) ──────────────────────────
+  //
+  // ⚠⚠ THE CLOSED FORM (Elena, 2026-08-04), not a replay: the lowest-cost bidder wins at
+  // the second-lowest cost, so perfect play earns that gap and nothing when somebody else
+  // is cheaper. It replaced a sampled replay whose bot ORDERING made the number wobble by
+  // up to 10 ECU — ordering changes the path, not the destination. It is also the result
+  // Elena teaches, so the screen and the lecture now assert the same number.
   //
   // ⚠⚠ `eq_won` AND `eq_profit` ARE REUSED RATHER THAN GIVEN NEW `perfect_*` NAMES, and
   // the reason is that the CONCEPT is the same sentence in both formats: "what a player
@@ -131,8 +134,7 @@ function resolvedRoundRecord(
   //
   // ⚠ WHAT DOES NOT CARRY OVER IS `eq_bid`. It stays null here, and the instructor's
   // "Optimal" column is format-gated away (Item 3) rather than shown as a row of dashes.
-  const perfect = replayPerfectPlay(benchmark, cost)
-  const perfectWon = perfect.winnerId === PLAYER_ID
+  const perfect = perfectPlayProfit(cost, botCosts, s.reserve, s.schedule)
   return {
     round,
     cost,
@@ -155,10 +157,10 @@ function resolvedRoundRecord(
     tie: false,
     tied_and_lost: false,
     eq_bid: null,
-    eq_won: perfectWon,
-    // ⚠ A LOSER EARNS ZERO, never negative (Part 1 §7 step 5) — and perfect play never
-    // bids below its own cost, so this can only be positive or zero.
-    eq_profit: perfectWon && perfect.price !== null ? perfect.price - cost : 0,
+    eq_won: perfect.won,
+    // ⚠ NEVER NEGATIVE — perfect play does not bid below its own cost, and a loser earns
+    // nothing rather than losing something (Part 1 §7 step 5).
+    eq_profit: perfect.profit,
     exit_price: exit.exitPrice,
     exit_censored: exit.censored,
     open_history: serializeAuction(round, state).open_auction.history,
@@ -264,13 +266,7 @@ async function runOpenTurn(
     }
 
     // ── the round ENDED: append it, and open the next one's draws ───────────
-    // ⚠ THE BENCHMARK REPLAY GETS ITS OWN STREAM, keyed `benchmark`, exactly as the sealed
-    // format's counterfactual does (round.ts). Sharing the play stream would make the real
-    // auction's bot ordering depend on whether a benchmark was computed — the coupling the
-    // positional-draw convention exists to prevent (rng.ts).
-    const record = resolvedRoundRecord(
-      round, cost, opened.botCosts, next, settings,
-      benchmarkSettingsFor(config, opened.botCosts, seed, participantId, round))
+    const record = resolvedRoundRecord(round, cost, opened.botCosts, next, settings)
     const all = [...stored, record]
     const finished = all.length >= config.rounds
 

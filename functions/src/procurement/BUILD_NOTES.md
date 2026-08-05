@@ -663,18 +663,67 @@ datum means. A chart that inferred one from the other would start lying the firs
 round could end another way — and §7's entire point is that a winner's exit is not a
 revealed stopping point.
 
-### ⚠ A correction to the prompt: perfect-play profit is NOT exactly computable
+### The benchmark is a CLOSED FORM (Elena, 2026-08-04) — superseding a sampled replay
 
-The prompt says it is, "since bot behaviour is deterministic given bot costs". Each bot's
-RULE is deterministic; **the auction is not.** Response ordering is seeded-random (§4.3),
-and BUILD_NOTES §2 measured that moving the halt price by up to 10 ECU (15.7% of draws
-exceed one step). So `replayPerfectPlay` is **one sample** from that distribution, computed
-once at round end on a separately-keyed stream and recorded — so it never re-derives and a
-student never sees it change, but it carries the same ±0–10 noise the round itself did.
+    profit = (second-lowest cost among all bidders, including the player) − player cost,
+             when the player's cost is the lowest;  0 otherwise
 
-A test asserts the variation exists, so that if ordering is ever made deterministic
-somewhere this claim fails loudly rather than silently becoming true. **Averaging over N
-orderings would de-noise it and is a one-line change — Elena's call, not taken.**
+CP4b first computed this by **replaying** the whole auction with the player exiting at
+their own cost. That inherited the seeded-random bot ORDERING, which BUILD_NOTES §2
+measured moving the halt price by up to 10 ECU, so the number wobbled. **Elena's
+correction, and it is right: the ordering noise is a LARGE-INCREMENT phenomenon.** The
+increments that settle this auction are 2 and 1; ordering changes the path, not the
+destination. It is also the standard result she teaches, so the student's screen and the
+lecture slide now assert the same number rather than two that nearly agree.
+
+Removed with it: `replayPerfectPlay` and `benchmarkSettingsFor` — **and its separately
+keyed RNG stream**, which existed only so a hypothetical replay could not disturb the real
+auction's draws. Nothing else used either. The test that asserted ordering variation
+*exists* went too: it was guarding the sampled implementation, not a property of the game.
+
+⚠ **The ceiling cap is part of the closed form, not a fudge.** The auction opens AT the
+reserve, so nobody is ever paid more than `reserve − step(reserve)`. Without it an empty
+field would report `reserve − cost` and overstate what was winnable by a whole top step
+(§8.3 case 7: unopposed at 100, not 110). It also absorbs §4.1's known artifact — a
+supplier costing between the ceiling and the reserve can never bid — for free.
+
+### ⚠⚠ THE "≥ WHAT THE PLAYER EARNED" PROPERTY IS **NOT** GUARANTEED — measured, reported
+
+Elena asked me to confirm it is now genuinely guaranteed rather than usually true, and to
+report a defect rather than relax the assertion. **It is not guaranteed.**
+
+The closed form prices the contract at *exactly* the second-lowest cost. The mechanism
+cannot: a bot stops when `standing − step < its cost`, so a player holding the low bid wins
+at up to `secondLowest + step − 1`. A real player therefore beats the benchmark by **less
+than one step in force where the round settled**.
+
+**Measured** (`procurementOpenExit.test.ts`, 300 unseeded rounds, player following the
+dominant strategy): **31 of 166 winning rounds beat the closed form — about 19% of wins —
+worst excess 3 ECU.** The emulator harness hit one live on its first run: player 28,
+perfect 25.
+
+So a student can see "you earned 28, perfect play would have earned 25". Options, none
+taken unilaterally:
+
+1. **Leave it.** The gap is ≤ 3 ECU and only on rounds they won; the benchmark stays the
+   theoretical statement the lecture makes.
+2. **Define the benchmark as `secondLowest + step(secondLowest) − 1`** — the best the
+   mechanism can actually pay a perfect player. Exact, never beatable, but no longer the
+   number on the slide.
+3. **Clamp** `eq_profit` up to the realized profit. Cheapest, and dishonest — it would
+   make the benchmark a function of the student's own play.
+
+Tests assert the **bound** (excess < one step), not the property. The harness comment says
+so in those words so nobody later reads a passing check as "perfect play is never beaten".
+
+### §5.2's gap sentence is UNCHANGED
+
+It never referenced the benchmark: *"You stopped at 38. Your cost was 34, so you had 4 ECU
+of room left."* is their last bid against their own cost. The line that did change wording
+is the separate per-round benchmark line, and only in what computes it — *"Playing it
+perfectly — stopping exactly at your cost — would have earned X this round"* and *"Even
+played perfectly, this round was not winnable at your cost"* both still read correctly
+under the closed form, because `eq_won` is now exactly "somebody else was cheaper".
 
 ### Item 2 — the personas, and why the sealed six do not port
 

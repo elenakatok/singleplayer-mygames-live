@@ -22,9 +22,11 @@ import { signedEcu } from './format'
 // profit. There is no "your equilibrium bid" column, because there is no equilibrium bid.
 //
 // ⚠ THE BENCHMARK LINE IS "a perfect player would have earned X from your draws" — the
-// same sentence Part 1 §9 uses, computed for this format by replaying each round with the
-// player exiting at their own cost (server: `replayPerfectPlay`). It de-noises luck: a
-// student who played well into bad draws sees that, instead of a column of zeros.
+// same sentence Part 1 §9 uses, computed for this format by a CLOSED FORM (server:
+// `auction/perfectPlay.ts`): the lowest-cost bidder wins at the second-lowest cost, so
+// perfect play earns that gap and nothing when somebody else is cheaper. It de-noises
+// luck — a student who played well into bad draws sees that, instead of a column of zeros
+// — and it is the result the lecture states, so the screen and the slide agree.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const card: CSSProperties = {

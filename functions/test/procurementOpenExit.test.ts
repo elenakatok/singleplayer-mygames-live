@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
-  openAuction, advanceOne, playerBid, playerDropOut, playerExit, replayPerfectPlay,
+  openAuction, advanceOne, playerBid, playerDropOut, playerExit,
   type OpenSettings, type OpenState,
 } from '../src/procurement/auction/openAuction'
+import { perfectPlayProfit } from '../src/procurement/auction/perfectPlay'
 import { maxLegalBid } from '../src/procurement/auction/schedule'
 import { makeRng } from '../src/procurement/auction/rng'
 
@@ -153,126 +154,148 @@ describe('⚠⚠ §7 a WINNER\'s exit price is CENSORED', () => {
   })
 })
 
-// ── the perfect-play benchmark ────────────────────────────────────────────────
+// ── the perfect-play benchmark: THE CLOSED FORM ──────────────────────────────
+//
+// ⚠⚠ profit = (second-lowest cost among all bidders, including the player) − player cost,
+// when the player is the cheapest; 0 otherwise. It replaced a sampled replay whose bot
+// ORDERING made the number wobble by up to 10 ECU (BUILD_NOTES §2). Elena: the ordering
+// noise is a LARGE-INCREMENT phenomenon, the endgame increments here are 2 and 1, and
+// ordering changes the path, not the destination.
+//
+// ⚠ THE TEST THAT ASSERTED ORDERING VARIATION EXISTS IS GONE WITH IT. It was guarding the
+// sampled implementation — that the replay really did sample — and not a property of the
+// game. Keeping it would have pinned noise the benchmark no longer has.
 
-describe('§7 perfect play — replayed against the same bots at the same costs', () => {
-  it('⚠ the trigger is MINIMUM NEXT BID, not the standing price', () => {
-    // The trap the prompt names, in the benchmark rather than the robot. A player whose
-    // cost is 47 facing a standing of 48 is looking at a price ABOVE their cost — but the
-    // next legal bid is 46, already a loss. A benchmark comparing the standing would bid
-    // into it and overstate what perfect play earns.
-    const s = base({ bots: [{ bidderId: 'rival3', cost: 21 }] })
-    const perfect = replayPerfectPlay(s, 47)
-    expect(perfect.status).toBe('resolved')
-    // rival3 can go all the way to 21, so perfect play at cost 47 never wins here.
-    expect(perfect.winnerId).toBe('rival3')
-    // And it never bid below its own cost on the way out.
-    const mine = perfect.history.filter(e => e.kind === 'bid' && e.isPlayer)
-    expect(mine.every(e => (e as { amount: number }).amount >= 47)).toBe(true)
+describe('§7 perfect-play profit — the closed form', () => {
+  it('the cheapest bidder wins the gap to the SECOND-lowest cost', () => {
+    // Bots 47/88/21/63, player 15 → player is cheapest, second-lowest is 21.
+    // ⚠ EXPECTED DERIVED BY HAND FROM THE SPEC'S OWN NUMBERS, not by re-running the helper.
+    expect(perfectPlayProfit(15, [47, 88, 21, 63], 110, SCHEDULE))
+      .toEqual({ won: true, price: 21, profit: 6 })
   })
 
-  it('perfect play wins when it is the cheapest bidder, and never bids below cost', () => {
-    // Cost 15 is below every bot (cheapest is 21), so perfect play takes the contract.
-    const s = base()
-    const perfect = replayPerfectPlay(s, 15)
-    expect(perfect.winnerId).toBe('player')
-    expect(perfect.price!).toBeGreaterThanOrEqual(15)
-    expect(perfect.price!).toBeLessThan(21)
-    const mine = perfect.history.filter(e => e.kind === 'bid' && e.isPlayer)
-    expect(mine.length).toBeGreaterThan(0)
-    expect(mine.every(e => (e as { amount: number }).amount >= 15)).toBe(true)
+  it('and earns NOTHING when somebody else is cheaper', () => {
+    // Player 34 against a bot at 21: the bot can hold the price below anything the player
+    // can profitably take, so perfect play wins nothing rather than winning at a loss.
+    expect(perfectPlayProfit(34, [47, 88, 21, 63], 110, SCHEDULE))
+      .toEqual({ won: false, price: null, profit: 0 })
   })
 
-  it('⚠ it always terminates, over a wide sweep of costs and fields', () => {
-    // The policy loop is the one place a "wait for the price to fall below my cost" bug
-    // would hang forever rather than fail — the same shape as the robot trap. Asserted
-    // over costs that sit above, between and below the bots'.
-    let resolved = 0
-    for (let cost = 5; cost <= 120; cost += 5) {
+  it('⚠ a TIE at the lowest cost earns zero, not a negative or a win', () => {
+    // There is nothing above cost left to take.
+    expect(perfectPlayProfit(21, [47, 88, 21, 63], 110, SCHEDULE))
+      .toEqual({ won: false, price: null, profit: 0 })
+  })
+
+  it('⚠⚠ an EMPTY field pays the first legal bid, not the reserve (§8.3 case 7)', () => {
+    // Every rival above the ceiling of 100: the player wins unopposed AT 100. A closed
+    // form without the ceiling cap would report a benchmark of 110 − cost and overstate
+    // what was winnable by the whole top step.
+    expect(perfectPlayProfit(34, [101, 105, 108, 110], 110, SCHEDULE))
+      .toEqual({ won: true, price: 100, profit: 66 })
+    expect(perfectPlayProfit(34, [], 110, SCHEDULE))
+      .toEqual({ won: true, price: 100, profit: 66 })
+  })
+
+  it('⚠ §4.1\'s artifact falls out of the ceiling cap', () => {
+    // A supplier costing 105 is under the reserve but can never bid — the first legal bid
+    // is 100. The benchmark must not price the round as though it could.
+    expect(perfectPlayProfit(20, [105], 110, SCHEDULE))
+      .toEqual({ won: true, price: 100, profit: 80 })
+  })
+
+  it('a supplier above the reserve is ABSENT, and so is a player above it (§4.3)', () => {
+    // reserve 60: bots at 88 and 63 are out of the auction entirely.
+    expect(perfectPlayProfit(20, [88, 63, 47], 60, SCHEDULE))
+      .toEqual({ won: true, price: 47, profit: 27 })
+    // The student's own cost above the reserve leaves no bid worth making.
+    expect(perfectPlayProfit(70, [88, 63, 47], 60, SCHEDULE))
+      .toEqual({ won: false, price: null, profit: 0 })
+  })
+
+  it('⚠ never negative, over a wide sweep of costs and fields', () => {
+    let checked = 0
+    for (let cost = 1; cost <= 120; cost += 3) {
       for (const reserve of [110, 60]) {
-        const s = base({ reserve, order: 'random', rngAt: () => Math.random })
-        const perfect = replayPerfectPlay(s, cost)
-        expect(perfect.status, `cost ${cost}, reserve ${reserve}`).toBe('resolved')
-        resolved++
+        for (const bots of [[47, 88, 21, 63], [105], [], [10, 10, 10, 10]]) {
+          const r = perfectPlayProfit(cost, bots, reserve, SCHEDULE)
+          expect(r.profit, `cost ${cost}, reserve ${reserve}`).toBeGreaterThanOrEqual(0)
+          expect(r.won === (r.price !== null)).toBe(true)
+          if (r.won) expect(r.price!).toBeGreaterThanOrEqual(cost)
+          checked++
+        }
       }
     }
-    expect(resolved).toBe(48)
+    expect(checked).toBe(320)
   })
 
-  it('perfect play never earns less than zero, and beats a quitter', () => {
-    const s = base()
-    // A player who quits at 60 leaves the contract to bot3 and earns nothing; perfect play
-    // at the same cost wins it. Two routes to "the benchmark is worth something".
-    const perfect = replayPerfectPlay(s, 18)
-    const perfectProfit = perfect.winnerId === 'player' && perfect.price !== null
-      ? perfect.price - 18
-      : 0
-    expect(perfectProfit).toBeGreaterThan(0)
-
-    const quitter = playerDropOut(run(openAuction(s, 0), s), s, 0)
-    expect(quitter.winnerId).not.toBe('player')
-  })
-
-  it('⚠ RECORDED, NOT EXACT — the halt price is order-dependent, so this is one sample', () => {
-    // ⚠ CORRECTING THE PROMPT'S PREMISE, and worth a failing-loudly test rather than a
-    // comment. "Bot behaviour is deterministic given bot costs" is true of each bot's
-    // RULE but not of the auction: response ORDERING is seeded-random (§4.3), and
-    // BUILD_NOTES §2 measured that moving the halt price by up to 10 ECU. So the benchmark
-    // varies across orderings for identical costs.
-    //
-    // ⚠ TRIAL COUNT AND FAILURE PROBABILITY: 80 unseeded replays at a cost chosen to sit
-    // inside the contested band. Under the correct implementation the ordering race at the
-    // 50-standing step is a coin flip, so P(all 80 land identically) < 2^-79. If this ever
-    // goes green with a single value, ordering has been made deterministic somewhere and
-    // BUILD_NOTES §2's finding has been silently undone.
-    const prices = new Set<number>()
-    for (let i = 0; i < 80; i++) {
-      const s = base({ order: 'random', rngAt: () => Math.random })
-      const perfect = replayPerfectPlay(s, 22)
-      prices.add(perfect.price ?? -1)
+  it('is a pure function of the costs — no RNG, no ordering, no seed', () => {
+    // The property the closed form exists to have. Same inputs, same answer, always —
+    // and the bots\' ORDER in the array cannot matter either.
+    const a = perfectPlayProfit(15, [47, 88, 21, 63], 110, SCHEDULE)
+    const b = perfectPlayProfit(15, [63, 21, 88, 47], 110, SCHEDULE)
+    expect(a).toEqual(b)
+    for (let i = 0; i < 20; i++) {
+      expect(perfectPlayProfit(15, [47, 88, 21, 63], 110, SCHEDULE)).toEqual(a)
     }
-    expect(prices.size).toBeGreaterThan(1)
-    // The spread is small and bounded below by the cheapest bot's cost — it is noise
-    // around a benchmark, not a different benchmark.
-    for (const p of prices) expect(p).toBeGreaterThanOrEqual(21)
-  })
-
-  it('the replay does not disturb the real auction — it is a separate object entirely', () => {
-    // Belt and braces on the call site's separate keying: the replay must not mutate the
-    // settings or the state it was derived from.
-    const s = base()
-    const live = run(openAuction(s, 0), s)
-    const before = JSON.stringify(live)
-    replayPerfectPlay(s, 30)
-    expect(JSON.stringify(live)).toBe(before)
   })
 })
 
-// ── the seeded path, for reproducibility ──────────────────────────────────────
+// ── ⚠⚠ THE DISCRETIZATION GAP, MEASURED AND REPORTED ─────────────────────────
 
-describe('under a seed the benchmark reproduces exactly', () => {
-  it('the same key gives the same replay', () => {
-    const mk = () => {
-      const s = base({ order: 'random', rngAt: (d: number) => makeRng('bench', `b:${d}`) })
-      return replayPerfectPlay(s, 30).price
+describe('⚠⚠ a real player CAN exceed the closed form, by less than one endgame step', () => {
+  // ⚠⚠ REPORTED, NOT SMOOTHED OVER. The closed form prices the contract at exactly the
+  // second-lowest cost. The MECHANISM cannot: a bot stops when `standing − step < its
+  // cost`, so a player holding the low bid wins at up to `secondLowest + step − 1`. The
+  // benchmark is therefore beatable by at most one step minus one ECU — 1 in the fine
+  // band, and only in a round that settles in a coarser one is it more.
+  //
+  // This is exactly the "≥ what the player earned" property Elena asked me to confirm, and
+  // it is NOT guaranteed. It is bounded, and the bound is asserted rather than the
+  // property being relaxed to "usually".
+
+  it('measures the excess: bounded by the step in force where the round settled', () => {
+    // ⚠ TRIAL COUNT AND FAILURE PROBABILITY: 300 unseeded rounds, player playing the
+    // dominant strategy against random-ordered bots. The search is for rounds the player
+    // WINS, which happens whenever their cost is lowest — roughly 39% of draws — so
+    // P(fewer than 20 wins in 300) is far below 1e-6, and the sweep asserts it found some.
+    let wins = 0
+    let beat = 0
+    let worstExcess = 0
+    for (let i = 0; i < 300; i++) {
+      const playerCost = 10 + (i % 45)
+      const botCosts = [17 + (i * 7) % 80, 23 + (i * 13) % 70, 11 + (i * 29) % 90, 31 + (i * 3) % 60]
+      const s = base({ bots: botCosts.map((cost, k) => ({ bidderId: `rival${k + 1}`, cost })),
+        order: 'random', rngAt: () => Math.random })
+
+      let st = run(openAuction(s, 0), s)
+      for (let k = 0; k < 200 && st.status === 'waiting'; k++) {
+        const next = maxLegalBid(st.standing, SCHEDULE)
+        if (next < playerCost) break
+        st = bid(st, s, next)
+      }
+      if (st.status !== 'resolved') st = playerDropOut(st, s, 0)
+
+      const actual = st.winnerId === 'player' && st.price !== null ? st.price - playerCost : 0
+      const benchmark = perfectPlayProfit(playerCost, botCosts, 110, SCHEDULE).profit
+      if (st.winnerId === 'player') wins++
+      if (actual > benchmark) {
+        beat++
+        worstExcess = Math.max(worstExcess, actual - benchmark)
+      }
     }
-    expect(mk()).toBe(mk())
-  })
+    expect(wins, 'the sweep must actually contain wins').toBeGreaterThan(20)
 
-  it('⚠ and it varies WITHIN the replay — the decision index is in the key', () => {
-    // The same trap as the live ordering stream (procurementOpenAuction.test.ts's negative
-    // control): a stream keyed only by round would draw the same value at every decision.
-    const asked: number[] = []
-    const s = base({
-      bots: [
-        { bidderId: 'rival1', cost: 12 }, { bidderId: 'rival2', cost: 13 },
-        { bidderId: 'rival3', cost: 14 }, { bidderId: 'rival4', cost: 15 },
-      ],
-      order: 'random',
-      rngAt: (d: number) => { asked.push(d); return makeRng('bench', `b:${d}`) },
-    })
-    replayPerfectPlay(s, 11)
-    expect(asked.length).toBeGreaterThan(5)
-    expect(asked).toEqual(asked.map((_, i) => i))
+    // ⚠ THE BOUND. The largest step in the shipped schedule is 10, so an excess can never
+    // reach it; in practice the rounds that settle in the fine bands cap it far lower.
+    // If this ever fails, the closed form and the mechanism have parted company by more
+    // than discretization explains, and that IS a defect rather than a rounding artifact.
+    expect(worstExcess).toBeLessThan(10)
+
+    // Recorded for the record rather than asserted tightly: the frequency is what tells
+    // Elena whether "perfect play" reads as beatable on a student's screen.
+    // eslint-disable-next-line no-console
+    console.log(`      [measured] ${beat}/${wins} winning rounds beat the closed form; `
+      + `worst excess ${worstExcess} ECU`)
   })
 })
