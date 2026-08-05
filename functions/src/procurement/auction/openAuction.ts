@@ -525,6 +525,62 @@ export function totalBidderCount(s: OpenSettings): number {
   return s.bots.length + 1
 }
 
+/**
+ * ⚠⚠ PERFECT PLAY, REPLAYED — the open format's benchmark (CP4b Item 1).
+ *
+ * Runs a whole hypothetical auction against the SAME bots at the SAME costs, with the
+ * player following the dominant strategy §1 states: **keep undercutting while the price is
+ * above your cost, then stop.** Concretely — bid the minimum whenever the minimum legal
+ * bid still clears your own cost, and drop out the moment it does not.
+ *
+ * ⚠ THE TEST IS `maxLegalBid >= cost`, NOT `standing > cost`. At a standing of 48 with a
+ * cost of 47 the PRICE is still above cost, but the next legal bid is 46 — already a loss.
+ * A benchmark that compared the standing price would keep bidding into a loss and would
+ * quietly understate what perfect play earns. Same trap the robots hit (Item 2).
+ *
+ * ⚠⚠ IT IS NOT EXACT, AND THE PROMPT'S PREMISE THAT IT IS DESERVES CORRECTING. Bot
+ * behaviour is deterministic given bot costs, but bot RESPONSE ORDERING is not (§4.3,
+ * seeded-random), and BUILD_NOTES §2 measured that ordering moving the halt price by up to
+ * 10 ECU — 15.7% of draws exceed one step at the halt. So this replay is ONE sample from
+ * that distribution, not a closed form. It is computed once, at round end, from a
+ * SEPARATELY KEYED stream, and recorded; it never re-derives, so a student never sees it
+ * change. Averaging over N orderings would de-noise it and is a one-line change — flagged
+ * for Elena rather than taken unilaterally, because it is a different number from the one
+ * the spec asked for.
+ *
+ * ⚠ NO CLOCK. The `now` counter below only satisfies `settle`'s scheduling arithmetic; it
+ * advances far faster than any delay so every step is immediately due. Nothing here reads
+ * a real clock, and none of this state is ever persisted.
+ */
+export function replayPerfectPlay(s: OpenSettings, playerCost: number): OpenState {
+  let st = openAuction(s, 0)
+  let now = 0
+  // A bound, not a policy: every commit strictly lowers the price and the price is bounded
+  // below by the lowest cost, so this cannot spin.
+  for (let guard = 0; guard < 10_000; guard++) {
+    if (st.status === 'resolved') return st
+    // Step the clock past whatever `settle` scheduled, so the bot is always due.
+    now += 1_000_000
+    if (st.status === 'bot_turn') {
+      const r = advanceOne(st, s, now)
+      if (!r.committed) return r.state
+      st = r.state
+      continue
+    }
+    // 'waiting' — the cascade has halted and it is the benchmark player's move.
+    if (maxLegalBid(st.standing, s.schedule) >= playerCost) {
+      const r = playerBid(st, s, maxLegalBid(st.standing, s.schedule), st.sequence, now)
+      // A refusal here would mean the machine and this policy disagree about legality;
+      // dropping out rather than looping is the safe reading, and a test pins that the
+      // policy never actually produces one.
+      st = r.ok ? r.state : playerDropOut(st, s, now)
+      continue
+    }
+    return playerDropOut(st, s, now)
+  }
+  throw new Error('[procurement] perfect-play replay did not terminate')
+}
+
 /** The player's own last bid this round, or null if they never bid. */
 export function lastPlayerBid(state: OpenState, s: OpenSettings): number | null {
   for (let i = state.history.length - 1; i >= 0; i--) {
@@ -547,9 +603,10 @@ export function lastBotBids(state: OpenState, s: OpenSettings): (number | null)[
 /**
  * The player's EXIT PRICE for the Tier-3 scatter (open §7), and whether it is censored.
  *
- * ⚠⚠ NOT YET CONSUMED — exit-price CAPTURE is §9 step 6 (CP4b) and is deliberately not
- * built here. This function is the derivation, kept beside the machine that knows the
- * facts it needs, so CP4b wires a call rather than reconstructing a rule.
+ * ⚠⚠ CALLED AT ROUND END AND RECORDED, NEVER RECONSTRUCTED LATER (§7, CP4b). The result
+ * is written onto the round record by `resolvedRoundRecord`; nothing downstream re-derives
+ * it, and in particular nothing downstream infers `censored` from `won`. They are the same
+ * fact today, and the flag is stored anyway — see below.
  *
  *   • A LOSING player's exit price is the standing price at the moment they stopped
  *     bidding or dropped out. It is their REVEALED stopping point, directly observable.

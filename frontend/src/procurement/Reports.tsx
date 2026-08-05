@@ -5,6 +5,7 @@ import { ReportBoard, colors, typography, type ReportTileConfig } from '@mygames
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { ClassScatterSVG, classScatterPoints, classRivalPoints } from './ClassScatterSVG'
+import { OpenClassScatterSVG, openClassExitPoints, openClassBotExits } from './OpenClassScatterSVG'
 import {
   procurementGetReport, procurementInstructorSession, instructorErrorMessage,
   FORMAT_LABEL, type ProcurementReport, type ProcurementReportRow,
@@ -152,22 +153,40 @@ function RosterTable({ rows, onOpenStudent }: {
 
 // ── Tier 1b ────────────────────────────────────────────────────────────────────
 
-function StudentRounds({ row, currency }: { row: ProcurementReportRow; currency: string }) {
+function StudentRounds({ row, currency, isOpen }: {
+  row: ProcurementReportRow
+  currency: string
+  /** ⚠ THE GATE. The two formats record different quantities, not the same quantity
+   *  under different names — see the note above the columns. */
+  isOpen: boolean
+}) {
   return (
     <div style={{ overflowX: 'auto' }}>
+      {/* ⚠⚠ THE CAPTION IS REWRITTEN, NOT ADAPTED (Elena, CP4b). The sealed one explains
+          β — "the bid that maximises expected profit at that cost" — which is a true
+          sentence about a sealed auction and a false one about this. */}
       <p style={{ margin: '0 0 0.6rem', fontSize: '0.8rem', color: colors.textSecondary }}>
-        What this student drew, what they bid, and what the round paid. “Optimal” is the
-        bid that maximises expected profit at that cost — the same number the student saw
-        on their own results screen.
+        {isOpen
+          ? 'What this student drew, where they stopped bidding, and what the contract '
+            + 'finally went for. ↑ marks a round they WON: the auction ended before anyone '
+            + 'pushed them lower, so that exit price is an upper bound on where they would '
+            + 'have stopped, not the stopping point itself.'
+          : 'What this student drew, what they bid, and what the round paid. \u201cOptimal\u201d is the '
+            + 'bid that maximises expected profit at that cost \u2014 the same number the student saw '
+            + 'on their own results screen.'}
       </p>
       <table data-testid="proc-rep-detail" style={{ borderCollapse: 'collapse' }}>
         <thead>
           <tr>
             <th style={th}>Round</th>
             <th style={th}>Cost</th>
-            <th style={th}>Bid</th>
-            <th style={th}>Optimal</th>
-            <th style={th}>Price</th>
+            {/* ⚠ THE OPEN COLUMNS ARE cost / exit price / final price / won / profit.
+                There is no "Bid" — a round contains many — and no "Optimal", because the
+                sealed optimal bid has no meaning in a descending auction. */}
+            {isOpen
+              ? <th style={th}>Exit price</th>
+              : <><th style={th}>Bid</th><th style={th}>Optimal</th></>}
+            <th style={th}>{isOpen ? 'Final price' : 'Price'}</th>
             <th style={{ ...th, textAlign: 'left' }}>Won</th>
             <th style={th}>Profit</th>
           </tr>
@@ -177,9 +196,21 @@ function StudentRounds({ row, currency }: { row: ProcurementReportRow; currency:
             <tr key={x.round}>
               <td style={td}>{x.round}</td>
               <td style={td}>{x.yourCost}</td>
-              <td style={td}>{x.yourBid ?? '—'}</td>
-              <td style={td}>{x.yourEquilibriumBid ?? '—'}</td>
-              <td style={td}>{x.price ?? '—'}</td>
+              {isOpen
+                ? (
+                  <td style={td} data-testid={`proc-rep-exit-${x.round}`}>
+                    {x.exitPrice ?? '\u2014'}
+                    {/* The censoring marker travels with the number wherever it is shown. */}
+                    {x.exitCensored && <span title="won \u2014 nobody pushed them lower"> \u2191</span>}
+                  </td>
+                )
+                : (
+                  <>
+                    <td style={td}>{x.yourBid ?? '\u2014'}</td>
+                    <td style={td}>{x.yourEquilibriumBid ?? '\u2014'}</td>
+                  </>
+                )}
+              <td style={td}>{x.price ?? '\u2014'}</td>
               <td style={{ ...td, textAlign: 'left' }}>{x.won ? 'Yes' : 'No'}</td>
               <td style={td}>{x.profit}</td>
             </tr>
@@ -187,7 +218,7 @@ function StudentRounds({ row, currency }: { row: ProcurementReportRow; currency:
         </tbody>
         <tfoot>
           <tr>
-            <td style={{ ...td, fontWeight: 600, textAlign: 'left' }} colSpan={6}>
+            <td style={{ ...td, fontWeight: 600, textAlign: 'left' }} colSpan={isOpen ? 5 : 6}>
               Total ({currency})
             </td>
             <td style={{ ...td, fontWeight: 600 }}>{row.profitTotal}</td>
@@ -236,6 +267,8 @@ export default function Reports() {
   const [error, setError] = useState<string | null>(null)
   /** Which report is open: a tile id, or `student:<participantId>` for the drill-through. */
   const [active, setActive] = useState<string | null>(null)
+  // ⚠ DEFAULT OFF (§7): the reader sees the class cloud first and reveals the benchmark.
+  const [showBots, setShowBots] = useState(false)
 
   const load = useCallback(async () => {
     try { setData(await procurementGetReport()); setError(null) } catch (err) {
@@ -264,8 +297,14 @@ export default function Reports() {
   const textQuestions = data?.textQuestions ?? []
   const played = rows.filter(r => r.roundsPlayed > 0)
   const finished = rows.filter(r => r.finished).length
-  const studentBids = data ? classScatterPoints(data).length : 0
-  const rivalBids = data ? classRivalPoints(data).length : 0
+  // ⚠⚠ THE FORMAT GATE, read once and threaded to every surface that depends on it.
+  // Before CP4b this page read `data.format` only to print a label, and the class chart
+  // rendered the SEALED scatter for open instances — β drawn through cascade bids, under
+  // a caption its own data contradicted. Every format-dependent surface is gated here:
+  // the chart, the per-student rounds modal, the tile counts, and every caption.
+  const isOpen = data?.format === 'open_descending'
+  const studentBids = data ? (isOpen ? openClassExitPoints(data).length : classScatterPoints(data).length) : 0
+  const rivalBids = data ? (isOpen ? openClassBotExits(data).length : classRivalPoints(data).length) : 0
   const openStudent = active?.startsWith('student:') ? active.slice('student:'.length) : null
   const openRow = openStudent ? rows.find(r => r.participantId === openStudent) ?? null : null
 
@@ -278,11 +317,15 @@ export default function Reports() {
     },
     {
       id: 'chart',
-      title: 'Every bid in the class',
+      // ⚠ THE TILE NAMES THE RIGHT QUANTITY. In an open instance the chart is not "every
+      // bid" — a single round contains a dozen of them and none is the decision.
+      title: isOpen ? 'Where the class stopped' : 'Every bid in the class',
       preview: (
         <Stat
           value={String(studentBids)}
-          label={`student bids · ${rivalBids} rival bids`}
+          label={isOpen
+            ? `student exits · ${rivalBids} supplier exits`
+            : `student bids · ${rivalBids} rival bids`}
           testId="proc-tile-chart"
         />
       ),
@@ -338,13 +381,36 @@ export default function Reports() {
           title={`${openRow.name ?? openRow.participantId} — every round`}
           onClose={() => setActive('roster')}
         >
-          <StudentRounds row={openRow} currency={data?.currencyLabel ?? 'ECU'} />
+          <StudentRounds row={openRow} currency={data?.currencyLabel ?? 'ECU'} isOpen={isOpen} />
         </Modal>
       )}
 
       {active === 'chart' && data && (
-        <Modal title="Every bid in the class, against the bidder’s own cost" onClose={() => setActive(null)}>
-          <ClassScatterSVG report={data} />
+        <Modal
+          title={isOpen
+            ? 'Where every student stopped, against their own cost'
+            : 'Every bid in the class, against the bidder\u2019s own cost'}
+          onClose={() => setActive(null)}
+        >
+          {/* ⚠⚠ THE GATE THAT WAS MISSING. `ClassScatterSVG` plots bid-vs-cost with \u03b2 as the
+              benchmark, which is the right chart for a sealed auction and a wrong one for a
+              descending auction \u2014 it judges rounds against a line they were never played
+              against. The open chart is a different quantity on the y axis and a different
+              benchmark, so it is a different component, not a prop. */}
+          {isOpen
+            ? <OpenClassScatterSVG report={data} showBots={showBots} />
+            : <ClassScatterSVG report={data} />}
+          {isOpen && (
+            <label style={{ display: 'block', fontSize: '0.8rem', marginTop: '0.6rem' }}>
+              <input
+                type="checkbox"
+                data-testid="proc-rep-show-bots"
+                checked={showBots}
+                onChange={e => setShowBots(e.target.checked)}
+              />
+              {' '}Show the simulated suppliers (they stop exactly at cost, so they sit on the line)
+            </label>
+          )}
         </Modal>
       )}
 

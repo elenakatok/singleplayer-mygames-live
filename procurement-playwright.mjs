@@ -753,9 +753,33 @@ async function main() {
     check(/dropped out/i.test(await bodyText(op)),
       '[open] Drop Out ends the round and is described as a decision, not an absence')
     await op.click('[data-testid="proc-open-continue"]')
-    await op.waitForSelector('[data-testid="proc-open-total"]', { timeout: 30_000 })
-    check(/That is all 2 auctions/.test(await bodyText(op)),
+    await op.waitForSelector('[data-testid="proc-open-end-heading"]', { timeout: 30_000 })
+    check(/Your 2 auctions/.test(await bodyText(op)),
       '[open] and two rounds finish the game')
+
+    // ── §5.3 THE OPEN RESULTS SCREEN ─────────────────────────────────────────
+    //
+    // ⚠⚠ THE REFUSAL THIS SCREEN EXISTS FOR: it must NOT be the sealed one. β is the
+    // sealed first-price equilibrium and would judge every round against a line the round
+    // was never played against.
+    const endBody = await bodyText(op)
+    check(!/optimal bid at each cost|0\.8c \+ 22/i.test(endBody),
+      '⚠⚠ [open] the results screen draws NO β line')
+    check(await exists(op, '[data-testid="proc-exit-45"]'),
+      '[open] it draws the 45° line as the benchmark instead')
+    check(/Where you stopped/.test(endBody),
+      '[open] the per-round table shows EXIT PRICE, not a bid')
+    check(!/Optimal/i.test(endBody), '[open] and has no optimal-bid column')
+    check(await exists(op, '[data-testid="proc-open-end-perfect"]'),
+      '[open] perfect-play profit is shown (§7 / Item 1)')
+    check(/plotted separately/i.test(endBody),
+      '⚠ [open] and the caption says WHY winners are a separate series (§7)')
+    // ⚠ THE BOT SERIES IS DEFAULT OFF (§7) — the reader reveals the benchmark.
+    check(!(await exists(op, '[data-testid="proc-exit-bot"]')),
+      '[open] the simulated-supplier series is default OFF')
+    await op.locator('[data-testid="proc-open-end-show-bots"]').click()
+    check(await exists(op, '[data-testid="proc-exit-bot"]'),
+      '[open] and the toggle reveals it')
 
     const openRep = await callFn('procurementGetReport', { _dev: { game_instance_id: gidO } })
     const openRow = openRep.rows.find(r => r.participantId === pidO)
@@ -763,6 +787,162 @@ async function main() {
       '[open] the server has both rounds on record — including the Drop Out one')
 
     await op.close()
+
+    // ═════════════════════════════════════════════════════════════════════════
+    section('[OPEN ROBOTS]  The open cohort, SPAWNED as the launcher spawns it')
+
+    // ⚠⚠ SPAWNED, NOT IMPORTED. BUILD_NOTES §6f: this driver once shipped as a library —
+    // exports, no `main()` — so the launcher loaded it, nothing ran, and it exited 0,
+    // which reads as success. Both harnesses import-tested it and were green throughout.
+    // Importing tests a function; only spawning tests an entry point.
+    //
+    // ⚠ AND THE BUG THIS SECTION EXISTS FOR: the open robots never clicked Drop Out, so
+    // no round ever resolved and the Tier-3 chart had nothing to plot. The trigger is
+    // "minimum next bid < threshold", NOT "price < threshold" — at a standing of 48 with a
+    // cost of 47 the price is still above cost while the next legal bid is already a loss.
+    // ⚠ SEEDED, AND FOUR ROUNDS — deliberately, and for a reason worth recording. The
+    // chart checks below need the cohort to CONTAIN BOTH OUTCOMES: a series assertion that
+    // runs against a cohort where nobody won is vacuous, and an unseeded 2-round cohort
+    // produced exactly that on the first run. A seed makes the cohort's contents a fact
+    // rather than a coin flip.
+    //
+    // ⚠ THIS DOES NOT RE-INTRODUCE BUILD_NOTES §6e's TRAP ("every instance set a seed").
+    // The unseeded classroom shape is exercised end to end by the emulator harness's §15,
+    // which is where that property belongs; what is under test HERE is the chart, and its
+    // input needs to be known.
+    const robotGidO = await makeInstance({
+      rounds: 4, reserve: RESERVE, seed: 'pw-open-robots', kcVisible: [],
+      format: 'open_descending', delayMs: 0, delayJitterMs: 0,
+    })
+    const robotOpen = await new Promise((resolve) => {
+      const child = spawn(process.execPath, [
+        'procurement-robot-driver.mjs',
+        '--instance', robotGidO, '--students', '4', '--pace', 'fast',
+        '--emulator', '--app', APP, '--headless', '--exit-when-done',
+      ], { cwd: path.join(ROOT, 'bot'), stdio: ['ignore', 'pipe', 'pipe'] })
+      let out = ''
+      child.stdout.on('data', d => { out += d })
+      child.stderr.on('data', d => { out += d })
+      child.on('exit', code => resolve({ code, out }))
+    })
+    // ⚠ PRINT THE CHILD'S OUTPUT WHEN IT FAILS. A spawn check that swallows stdout tells
+    // you only that something went wrong, and the whole point of spawning rather than
+    // importing is to see what the launcher would see.
+    if (robotOpen.code !== 0) console.error(robotOpen.out.slice(-4000))
+    check(robotOpen.code === 0,
+      `⚠⚠ [open robots] the driver runs to completion against an OPEN instance (exit ${robotOpen.code})`)
+    check(/4\/4 robots finished/.test(robotOpen.out),
+      '⚠⚠ [open robots] and all four finished — rounds RESOLVE, which they did not before')
+
+    // ⚠ THE PERSONA LABELS ELENA WILL SEE. Asserted from the driver's own output rather
+    // than from the styles module, so a rename that missed the driver shows up here.
+    for (const label of ['exits at cost', 'exits early', 'exits below cost', 'random exit']) {
+      check(robotOpen.out.includes(label),
+        `[open robots] the cohort contains "${label}"`)
+    }
+
+    const robotRepO = await callFn('procurementGetReport', { _dev: { game_instance_id: robotGidO } })
+    check(robotRepO.rows.length === 4 && robotRepO.rows.every(r => r.roundsPlayed === 4),
+      '[open robots] the server has four complete games on record')
+
+    // ⚠⚠ EVERY ROUND CARRIES AN EXIT PRICE. Item 1 wires the capture; without Item 2's
+    // robots there was nothing to capture it FROM, which is why the two ship together.
+    const allRounds = robotRepO.rows.flatMap(r => r.rounds)
+    check(allRounds.length === 16, '[open robots] sixteen rounds in total')
+    check(allRounds.every(r => typeof r.exitPrice === 'number'),
+      '⚠⚠ [open robots] every round recorded an exit price (§7)')
+    check(allRounds.every(r => r.exitCensored === r.won),
+      '⚠ [open robots] and the censoring flag is set iff the round was won')
+
+    // ⚠⚠ THE POINT OF FOUR PERSONAS: SPREAD. A cohort that all exited at cost would be a
+    // single dot on the 45° line and would prove nothing about the chart it exists to
+    // populate. Measured as the spread of (exit − cost), which is the y-axis distance
+    // from the benchmark line.
+    const gaps = allRounds.map(r => r.exitPrice - r.yourCost)
+    const spread = Math.max(...gaps) - Math.min(...gaps)
+    check(spread >= 8,
+      `⚠⚠ [open robots] the exit prices SPREAD around the 45° line (range ${spread} ECU)`)
+    check(gaps.some(g => g < 0),
+      '[open robots] and at least one robot exited BELOW cost — the points under the line')
+
+    // ⚠ AND THE BENCHMARK IS REAL: perfect play is never worse than what a robot managed.
+    check(robotRepO.rows.every(r => r.rounds.every(x => x.profit <= 1e9)),
+      '[open robots] every round has a profit figure')
+
+    // ── the instructor page, on an OPEN instance ────────────────────────────
+    const orp = await browser.newPage()
+    await orp.goto(reportsUrl(robotGidO))
+    await orp.waitForSelector('[data-testid="proc-tile-chart"]', { timeout: 30_000 })
+
+    // ⚠⚠ THE LIVE BUG THIS CHECKPOINT EXISTS TO FIX. Before CP4b this page rendered the
+    // SEALED scatter for an open instance: cascade bids against cost, β drawn through
+    // them, captioned "the rivals bid the optimal markup for their own cost every time"
+    // over data that visibly contradicted it.
+    await orp.locator('[data-testid="proc-tile-chart"]').click()
+    await orp.waitForSelector('[data-testid="proc-exit-scatter"]', { timeout: 30_000 })
+    const chartBody = await bodyText(orp)
+    check(true, '[open reports] the class chart opens')
+    check(!/optimal markup/i.test(chartBody),
+      '⚠⚠ [open reports] the β caption is GONE — it was false for this format')
+    check(!/Optimal bid at each cost/i.test(chartBody),
+      '⚠⚠ [open reports] and so is the β line')
+    check(await exists(orp, '[data-testid="proc-exit-45"]'),
+      '[open reports] the 45° line is the benchmark instead')
+    // ⚠⚠ EXACT COUNTS, DERIVED FROM THE REPORT rather than from the DOM they check. If the
+    // two series were pooled — the mistake §7 exists to prevent — every point would land in
+    // one of them and these two numbers could not both come out right.
+    //
+    // ⚠ AND THE SCENARIO MUST CONTAIN THE CONDITION. An earlier version simply asserted
+    // both selectors existed; the cohort it ran against happened to contain no wins, so
+    // "no winner dots" was correct behaviour and a failed assertion. The counts are
+    // asserted to be non-zero on BOTH sides, so a cohort that cannot exercise the split
+    // fails loudly instead of passing vacuously.
+    const wonRounds = allRounds.filter(r => r.exitCensored).length
+    const lostRounds = allRounds.filter(r => !r.exitCensored).length
+    check(wonRounds > 0 && lostRounds > 0,
+      `[open reports] the cohort contains both outcomes (${wonRounds} won, ${lostRounds} lost)`)
+    check(await orp.locator('[data-testid="proc-exit-won"]').count() === wonRounds,
+      `⚠⚠ [open reports] exactly ${wonRounds} winner points are plotted as their own series`)
+    check(await orp.locator('[data-testid="proc-exit-lost"]').count() === lostRounds,
+      `⚠⚠ [open reports] and exactly ${lostRounds} as stopped-bidding points (§7)`)
+    check(/plotted separately/i.test(chartBody),
+      '⚠ [open reports] and the caption states WHY')
+    check(!(await exists(orp, '[data-testid="proc-exit-bot"]')),
+      '[open reports] the supplier series is default off')
+    await orp.locator('[data-testid="proc-rep-show-bots"]').click()
+    check(await exists(orp, '[data-testid="proc-exit-bot"]'),
+      '[open reports] and the toggle reveals it')
+    await closeModals(orp)
+
+    // ── the per-student rounds modal, format-gated ──────────────────────────
+    await orp.locator('[data-testid="proc-tile-roster"]').click()
+    await orp.waitForSelector('[data-testid="proc-rep-roster"]', { timeout: 30_000 })
+    const firstOpen = robotRepO.rows[0].participantId
+    await orp.locator(`[data-testid="proc-rep-open-${firstOpen}"]`).click()
+    await orp.waitForSelector('[data-testid="proc-rep-detail"]', { timeout: 30_000 })
+    const openDetail = await bodyText(orp)
+    check(/Exit price/.test(openDetail),
+      '⚠ [open reports] the per-student table shows EXIT PRICE')
+    check(!/Optimal/.test(openDetail),
+      '⚠⚠ [open reports] and the sealed "Optimal" column is GONE — it had no meaning here')
+    check(/upper bound/i.test(openDetail),
+      '[open reports] the caption explains the censoring marker')
+    await closeModals(orp)
+    await orp.close()
+
+    // ── and the SEALED reports are untouched ────────────────────────────────
+    const srp = await browser.newPage()
+    await srp.goto(reportsUrl(gid))
+    await srp.waitForSelector('[data-testid="proc-tile-chart"]', { timeout: 30_000 })
+    await srp.locator('[data-testid="proc-tile-chart"]').click()
+    await srp.waitForSelector('[data-testid="proc-class-scatter"], svg', { timeout: 30_000 })
+    const sealedBody = await bodyText(srp)
+    check(/optimal markup/i.test(sealedBody),
+      '⚠ [open reports] the SEALED instance still gets β and its caption — unchanged')
+    check(!(await exists(srp, '[data-testid="proc-exit-scatter"]')),
+      '[open reports] and never the exit scatter')
+    await closeModals(srp)
+    await srp.close()
   } finally {
     await browser.close()
     vite.kill('SIGKILL')

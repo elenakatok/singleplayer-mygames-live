@@ -196,16 +196,20 @@ const AUCTION_EVENT_KEYS = ['kind', 'label', 'amount', 'isYou'].sort()
 
 const OPEN_TURN_KEYS = [
   'ok', 'auction', 'yourCost', 'rejected', 'roundOutcome', 'history', 'totalProfit',
-  'roundsWon', 'roundsPlayed', 'nextRound', 'phase', 'gameOver',
+  'totalEquilibriumProfit', 'roundsWon', 'roundsPlayed', 'nextRound', 'phase', 'gameOver',
 ].sort()
 
 const OPEN_OUTCOME_KEYS = [
   'round', 'yourCost', 'yourLastBid', 'won', 'price', 'profit', 'profitTotal', 'droppedOut',
+  'exitPrice', 'exitCensored', 'perfectProfit', 'perfectWon',
 ].sort()
 
 const PLAYED_KEYS = [
   'round', 'yourCost', 'yourBid', 'won', 'price', 'profit', 'profitTotal',
-  'yourEquilibriumBid',
+  // ⚠ CP4b (open §7). The student's OWN stopping point and whether it is observed or only
+  // bounded. Null/false on every sealed round; the pin's job is unchanged, since a RIVAL
+  // figure still cannot appear here without this line failing.
+  'yourEquilibriumBid', 'exitPrice', 'exitCensored',
 ].sort()
 
 /** ⚠ The §9 reveal — the ONLY rival cost that ever reaches a client, gated on
@@ -1248,6 +1252,38 @@ async function main() {
     '§15 the round record carries its replayable history (§4.6)')
   check(rec.rival_costs !== undefined,
     '§15 and the bot costs, for the reports — server-side only')
+
+  // ── §7 EXIT-PRICE CAPTURE, on the record ───────────────────────────────────
+  //
+  // ⚠⚠ RECORDED AT ROUND END, NEVER RECONSTRUCTED. Asserted against the STORED DOCUMENT
+  // read with owner credentials — a different source from the response the client got.
+  const recExit = rec.exit_price === undefined ? null : Number(rec.exit_price.integerValue)
+  const recCensored = rec.exit_censored?.booleanValue === true
+  const recWon = rec.won?.booleanValue === true
+  check(rec.exit_price !== undefined, '⚠⚠ §15 the round record carries an exit price (§7)')
+  check(rec.exit_censored !== undefined, '⚠⚠ §15 and the censoring flag, STORED not inferred')
+  check(recCensored === recWon,
+    `§15 censored iff won (won=${recWon}, censored=${recCensored})`)
+  check(recExit === dropped.roundOutcome.exitPrice,
+    '§15 and the number the client was given IS the number on the record')
+  check(dropped.roundOutcome.exitCensored === recCensored,
+    '§15 including the flag')
+
+  // ⚠ THE PERFECT-PLAY BENCHMARK. It is the open analogue of the sealed eq_* fields and
+  // it reuses their names — see openPlay.ts for why — so `totalEquilibriumProfit` works
+  // unchanged across formats and this is the same field the sealed §12 report reads.
+  check(rec.eq_profit !== undefined, '⚠ §15 perfect-play profit is recorded (eq_profit)')
+  check(rec.eq_bid === undefined || rec.eq_bid.nullValue !== undefined,
+    '§15 and eq_bid is NULL on an open round — there is no single benchmark bid')
+  const recPerfect = Number(rec.eq_profit.integerValue ?? rec.eq_profit.doubleValue ?? 0)
+  check(recPerfect >= 0, '§15 perfect play never earns less than zero')
+  check(dropped.roundOutcome.perfectProfit === recPerfect,
+    '§15 and the response carries the recorded number, not a second computation')
+  // ⚠ THE BENCHMARK IS AT LEAST AS GOOD AS WHAT THIS PLAYER ACTUALLY DID — a robot that
+  // dropped out early cannot have beaten perfect play. This is the property that would
+  // catch a benchmark computed against the wrong bots or the wrong cost.
+  check(recPerfect >= dropped.roundOutcome.profit,
+    `⚠ §15 perfect play (${recPerfect}) is at least what the player earned (${dropped.roundOutcome.profit})`)
 
   // ⚠ AND THE ROUND-2 DRAWS ARE ALREADY IN TRUTH, not on the participant doc.
   const botTruth2 = await getDoc(`procurement_game_instances/${gidO}/truth/bots_${pidO}`)

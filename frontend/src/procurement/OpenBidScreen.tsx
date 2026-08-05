@@ -149,7 +149,7 @@ export function OpenBidScreen({
 
   return (
     <div style={{ fontFamily: typography.fontFamily }}>
-      <p style={{ fontSize: '0.8rem', color: colors.textSecondary, margin: 0 }}>
+      <p data-testid="proc-open-round" style={{ fontSize: '0.8rem', color: colors.textSecondary, margin: 0 }}>
         Round {roundNumber} of {params.rounds}
       </p>
       <h1 style={{ fontSize: '1.15rem', margin: '0.25rem 0 0' }}>
@@ -203,7 +203,7 @@ export function OpenBidScreen({
             testId="proc-open-bidders"
           />
           <Fact label="Your cost" value={ecu(cost, c)} testId="proc-open-cost" />
-          <Fact label="Reserve" value={ecu(params.reserve, c)} />
+          <Fact label="Reserve" value={ecu(params.reserve, c)} testId="proc-open-reserve" />
           {auction.minNextBid !== null && (
             <Fact
               label="Minimum next bid"
@@ -387,51 +387,6 @@ function historyRows(
   return rows
 }
 
-/**
- * All rounds played, in the OPEN format.
- *
- * ⚠⚠ THIS IS NOT §5.3. The final-results screen — the per-round table, the exit-price
- * scatter, the benchmark — is CP4b. The sealed format's `EndScreen` is deliberately NOT
- * reused: its scatter plots bid against cost with the first-price optimal line `β`, which
- * is the wrong benchmark for this mechanism entirely (§7 replaces it with the exit-price
- * scatter). Showing it here would assert a line these rounds were never played against.
- */
-export function OpenAllRoundsDone({
-  params,
-  roundsPlayed,
-  roundsWon,
-  totalProfit,
-  onContinue,
-}: {
-  params: ProcurementParams
-  roundsPlayed: number
-  roundsWon: number
-  totalProfit: number
-  onContinue?: () => void
-}) {
-  const c = params.currencyLabel
-  return (
-    <div style={{ fontFamily: typography.fontFamily }}>
-      <h1 style={{ fontSize: '1.15rem' }}>That is all {roundsPlayed} auctions</h1>
-      <section style={card}>
-        <dl style={{ margin: 0, fontSize: '0.9rem' }}>
-          <Fact label="Contracts won" value={`${roundsWon} of ${roundsPlayed}`} />
-          <Fact label="Cumulative profit" value={signedEcu(totalProfit, c)} testId="proc-open-total" />
-        </dl>
-        <p style={{ margin: '0.7rem 0 0', fontSize: '0.85rem', color: colors.textSecondary }}>
-          Your full results and the class charts are still being built — for now, one last
-          question.
-        </p>
-      </section>
-      {onContinue && (
-        <p style={{ marginTop: '1rem' }}>
-          <button data-testid="proc-open-done-continue" onClick={onContinue}>Continue</button>
-        </p>
-      )}
-    </div>
-  )
-}
-
 function Fact({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
     <div style={{ display: 'flex', gap: '0.5rem', padding: '0.12rem 0' }}>
@@ -442,43 +397,134 @@ function Fact({ label, value, testId }: { label: string; value: string; testId?:
 }
 
 /**
- * The round's outcome, DELIBERATELY SPARE.
+ * THE ROUND RESULT (open §5.2). Content locked by the spec; the visuals are mine.
  *
- * ⚠⚠ THIS IS NOT §5.2. The round-result screen — the gap message ("you stopped at 38, your
- * cost was 34, so you had 4 ECU of room left"), the counterfactual for a player who
- * dropped out, the replayable history — is CP4b (§9 step 6–7), and building it here would
- * put it on top of a loop whose feel is not yet confirmed. What is here is the minimum
- * that makes eight rounds playable: what happened, and a way onward.
+ * ⚠⚠ THE COUNTERFACTUAL IS THE POINT OF THIS SCREEN, and specifically its second form.
+ * §5.2: *"it tells a player they lost correctly, which is the hardest thing to learn from
+ * losing."* A student who dropped out at 38 with a cost of 34 and watched it go for 36 did
+ * NOT misplay — there were 2 ECU on the table. One who watched it go for 30 played
+ * perfectly and lost, and unless the screen says so they will conclude they were too
+ * timid and bid below cost next round. Both messages are here, and which one fires is
+ * decided by comparing the FINAL PRICE to their own cost.
+ *
+ * ⚠ THE GAP USES THEIR LAST BID, NOT THEIR EXIT PRICE — §5.2's own wording: *"You stopped
+ * at 38. Your cost was 34, so you had 4 ECU of room left."* 38 is what they bid; 36 is
+ * where it settled. They are different numbers and the sentence names the first.
  */
 export function OpenRoundEnd({
   params,
   outcome,
+  auction,
   done,
   onContinue,
 }: {
   params: ProcurementParams
   outcome: NonNullable<ProcurementOpenTurn['roundOutcome']>
+  /** The final auction state, so §5.2's "full bid history for the round" is the real one
+   *  rather than a summary — the same rows the player watched arrive. */
+  auction: ProcurementAuction
   done: boolean
   onContinue: () => void
 }) {
   const c = params.currencyLabel
+  const { yourCost, price, yourLastBid, won } = outcome
+
+  // ── §5.2's gap sentence ────────────────────────────────────────────────────
+  const gap = won && price !== null
+    ? `You won at ${price} with a cost of ${yourCost} — ${price - yourCost} ${c} of profit.`
+    : yourLastBid !== null
+      ? `You stopped at ${yourLastBid}. Your cost was ${yourCost}, so you had `
+        + `${yourLastBid - yourCost} ${c} of room left.`
+      // Not in §5.2's list, because §5.2 assumes they bid. A player who never bid at all
+      // still needs a sentence, and silence would read as a broken screen.
+      : `You never bid. Your cost was ${yourCost}.`
+
+  // ── §5.2's counterfactual, and its two forms ───────────────────────────────
+  const couldHaveWon = price !== null && price > yourCost
+  const counterfactual = price === null
+    ? 'No contract was awarded.'
+    : couldHaveWon
+      ? `The contract went for ${price}. You could profitably have bid down to ${price}.`
+      : `The contract went for ${price}, which was below your cost — there was nothing `
+        + 'more to win here.'
+
   return (
     <div style={{ fontFamily: typography.fontFamily }}>
-      <h1 style={{ fontSize: '1.15rem' }}>Round {outcome.round} — {outcome.won ? 'you won the contract' : 'you did not win'}</h1>
+      <h1 data-testid="proc-open-result-heading" style={{ fontSize: '1.15rem' }}>
+        Round {outcome.round} — {won ? 'you won the contract' : 'you did not win'}
+      </h1>
       <section style={card}>
+        <p data-testid="proc-open-gap" style={{ margin: '0 0 0.7rem', fontSize: '0.95rem' }}>
+          {gap}
+        </p>
         <dl style={{ margin: 0, fontSize: '0.9rem' }}>
-          <Fact label="Final price" value={outcome.price === null ? 'no contract awarded' : ecu(outcome.price, c)} testId="proc-open-final-price" />
-          <Fact label="Your last bid" value={outcome.yourLastBid === null ? 'you never bid' : ecu(outcome.yourLastBid, c)} />
-          <Fact label="Your cost" value={ecu(outcome.yourCost, c)} />
+          <Fact label="Final price" value={price === null ? 'no contract awarded' : ecu(price, c)} testId="proc-open-final-price" />
+          <Fact label="Your last bid" value={yourLastBid === null ? 'you never bid' : ecu(yourLastBid, c)} />
+          <Fact label="Your cost" value={ecu(yourCost, c)} />
+          {/* ⚠ §7's exit price, from the RECORD. For a winner it is CENSORED and the note
+              below says so — the auction ended before anyone pushed them lower. */}
+          <Fact
+            label="Where you stopped"
+            value={outcome.exitPrice === null ? '—' : ecu(outcome.exitPrice, c)}
+            testId="proc-open-exit"
+          />
           <Fact label="Profit this round" value={signedEcu(outcome.profit, c)} testId="proc-open-round-profit" />
           <Fact label="Cumulative profit" value={signedEcu(outcome.profitTotal, c)} />
         </dl>
+
+        {outcome.exitCensored && (
+          <p data-testid="proc-open-censored" style={{ margin: '0.5rem 0 0', fontSize: '0.8rem', color: colors.textSecondary }}>
+            You won, so nobody pushed you any lower — your real limit was somewhere at or
+            below this.
+          </p>
+        )}
+
+        <p data-testid="proc-open-counterfactual" style={{ margin: '0.7rem 0 0', fontSize: '0.9rem' }}>
+          {counterfactual}
+        </p>
+
+        {/* ⚠ The benchmark for THIS round, so "perfect play" is a number they can compare
+            against rather than an abstraction they meet only on the results screen. */}
+        <p data-testid="proc-open-perfect" style={{ margin: '0.4rem 0 0', fontSize: '0.85rem', color: colors.textSecondary }}>
+          {outcome.perfectWon
+            ? `Playing it perfectly — stopping exactly at your cost — would have earned `
+              + `${outcome.perfectProfit} ${c} this round.`
+            : 'Even played perfectly, this round was not winnable at your cost.'}
+        </p>
+
         {outcome.droppedOut && (
-          <p style={{ margin: '0.6rem 0 0', fontSize: '0.85rem', color: colors.textSecondary }}>
+          <p style={{ margin: '0.5rem 0 0', fontSize: '0.85rem', color: colors.textSecondary }}>
             You dropped out, and the remaining suppliers settled it between themselves.
           </p>
         )}
       </section>
+
+      {/* ── §5.2: "full bid history for the round, replayable" ─────────────── */}
+      <section style={card}>
+        <h2 style={{ fontSize: '0.95rem', margin: '0 0 0.5rem' }}>How the round went</h2>
+        <ol data-testid="proc-open-result-history" style={{ margin: 0, padding: 0, listStyle: 'none', fontSize: '0.88rem' }}>
+          {historyRows(auction, params.decrementSchedule, params.reserve, c).map((row, i) => (
+            row.kind === 'open' ? (
+              <li key={`o${i}`} style={{ padding: '0.2rem 0', color: colors.textSecondary }}>
+                Auction opened at {row.amount}
+              </li>
+            ) : row.kind === 'band' ? (
+              <li key={`b${i}`} style={{ padding: '0.3rem 0', color: colors.textSecondary, fontStyle: 'italic' }}>
+                — steps are now {row.step} {c} —
+              </li>
+            ) : (
+              <li key={`r${i}`} style={{
+                padding: '0.2rem 0',
+                fontWeight: row.isYou ? 600 : 400,
+                borderBottom: `1px solid ${colors.borderLight ?? '#eee'}`,
+              }}>
+                {row.label}{row.amount === null ? ' — dropped out' : ` — ${row.amount}`}
+              </li>
+            )
+          ))}
+        </ol>
+      </section>
+
       <p style={{ marginTop: '1rem' }}>
         <button data-testid="proc-open-continue" onClick={onContinue}>
           {done ? 'See your results' : 'Next round'}

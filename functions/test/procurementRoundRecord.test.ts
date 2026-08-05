@@ -45,9 +45,12 @@ function round(over: Partial<StoredRound> = {}): StoredRound {
 describe('§4 no student shape can carry a rival cost', () => {
   it('the history row has EXACTLY these keys — and rival_costs is not one', () => {
     const [row] = toClientHistory([round()])
+    // ⚠ `exitPrice`/`exitCensored` joined the contract at CP4b (open §7). They are the
+    // STUDENT'S OWN stopping point, not a rival figure — and the pin's job is unchanged:
+    // a rival cost cannot appear here without this line failing.
     expect(Object.keys(row).sort()).toEqual(
       ['profit', 'profitTotal', 'price', 'round', 'won', 'yourBid', 'yourCost',
-       'yourEquilibriumBid'].sort(),
+       'yourEquilibriumBid', 'exitPrice', 'exitCensored'].sort(),
     )
   })
 

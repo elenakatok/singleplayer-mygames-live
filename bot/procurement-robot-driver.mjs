@@ -42,6 +42,7 @@
 
 import { createRequire } from 'node:module'
 import { assignStyles } from './procurement-styles.mjs'
+import { assignOpenStyles } from './procurement-open-styles.mjs'
 
 const require = createRequire(import.meta.url)
 const { chromium } = require('playwright')
@@ -113,7 +114,7 @@ function gridCell(index, count, screenW, screenH, colsOverride) {
  * @param label  stable key for the style's deterministic jitter
  * @param think  () => ms to pause between actions, so a watched run is followable
  */
-export async function playOneRobot({ page, style, label, think = () => 0 }) {
+export async function playOneRobot({ page, style, openStyle, label, think = () => 0 }) {
   // ⚠⚠ WAIT FOR THE FLOW TO RENDER BEFORE LOOKING AT IT. The first version went straight
   // to `visible('proc-kc-prompt')`, which is a COUNT — it returns false on a page still
   // bootstrapping its session. Every robot therefore skipped the KC it was sitting on and
@@ -121,7 +122,8 @@ export async function playOneRobot({ page, style, label, think = () => 0 }) {
   // Six robots, six timeouts, and the cause looked like the bidding screen.
   await page.waitForSelector(
     '[data-testid="proc-kc-prompt"], [data-testid="proc-freetext-prompt"], ' +
-    '[data-testid="proc-bid-input"], [data-testid="proc-end-heading"]',
+    '[data-testid="proc-bid-input"], [data-testid="proc-open-bid-input"], ' +
+    '[data-testid="proc-end-heading"]',
     { timeout: 60_000 })
 
   // ── The knowledge check, if this instance asks one ───────────────────────────
@@ -151,7 +153,23 @@ export async function playOneRobot({ page, style, label, think = () => 0 }) {
     await page.locator('[data-testid="proc-freetext-submit"]').click()
   }
 
-  // ── The round loop ──────────────────────────────────────────────────────────
+  // ── WHICH FORMAT AM I IN? ───────────────────────────────────────────────────
+  //
+  // ⚠ READ OFF THE SCREEN, not from config. In a live run this process has a launch URL
+  // and nothing else — no `_test` identity, no bearer token, no way to ask the instance
+  // what format it is. The two bidding screens are structurally different, so which one
+  // rendered IS the answer, and it is available exactly when it is needed.
+  await page.waitForSelector(
+    '[data-testid="proc-bid-input"], [data-testid="proc-open-bid-input"]', { timeout: 60_000 })
+  if (await visible(page, '[data-testid="proc-open-bid-input"]')) {
+    // ⚠ THE OPEN PERSONA, not the sealed one. Every seat is dealt BOTH, because the
+    // format is not knowable until a page has rendered — this process has a launch URL
+    // and nothing else in a live run. Dealing both and picking here is cheaper and more
+    // honest than a probe request, and it keeps `runCohort` format-agnostic.
+    return playOpenRounds({ page, style: openStyle, label, think, kcAnswered })
+  }
+
+  // ── The round loop (SEALED) ─────────────────────────────────────────────────
   await page.waitForSelector('[data-testid="proc-bid-input"]', { timeout: 60_000 })
   const params = await readAuctionParams(page)
   // "Round 1 of 8" — the horizon is public in this game (§2), so reading it is fair.
@@ -191,6 +209,132 @@ export async function playOneRobot({ page, style, label, think = () => 0 }) {
   return { style: style.name, kcAnswered, bids, totalProfit, debriefSubmitted, params, totalRounds }
 }
 
+// ── The OPEN format's round loop ───────────────────────────────────────────────
+
+/**
+ * One robot's rounds in an OPEN instance.
+ *
+ * ⚠⚠ THE TRIGGER IS "MINIMUM NEXT BID < threshold", NEVER "price < threshold", and this
+ * is the bug the open cohort shipped with. At a standing of 48 with a cost of 47 the
+ * PRICE is still above cost — but the next legal bid is 46, already a loss. A robot that
+ * waited for the price to fall below its threshold sat there forever: it never bid, never
+ * dropped out, and THE ROUND NEVER RESOLVED. No round, no exit price, no Tier-3 data.
+ *
+ * ⚠ TWO LEGITIMATE ENDINGS AND BOTH MUST BE HANDLED. A robot may drop out, or it may
+ * simply WIN — its bid stands, no bot can answer, and the round resolves under it with no
+ * drop-out at all. A loop that only looked for its own Drop Out click would hang on every
+ * round its robot won, which is the majority of rounds for `exits below cost`.
+ *
+ * ⚠ IT READS ONLY WHAT THE STUDENT SEES: their own cost, and the screen's own "Minimum
+ * next bid". Nothing here can reach a rival's cost, and the styles do not want one.
+ */
+async function playOpenRounds({ page, style, label, think, kcAnswered }) {
+  const reserve = num(await grab(page, '[data-testid="proc-open-reserve"]'))
+  const totalRounds = num((await grab(page, '[data-testid="proc-open-round"]')).split(/of/i)[1])
+  if (!Number.isFinite(totalRounds) || totalRounds < 1) {
+    throw new Error('could not read the round count — has the open bidding screen changed?')
+  }
+
+  const rounds = []
+  for (let t = 1; t <= totalRounds; t++) {
+    await page.waitForSelector('[data-testid="proc-open-bid-input"]', { timeout: 60_000 })
+    const cost = num(await grab(page, '[data-testid="proc-open-cost"]'))
+    const threshold = style.threshold(cost, `${label}:${t}`)
+    let acted = 0
+    let lastMin = null
+
+    // Drive until the round ends — by our own Drop Out, or by winning.
+    for (let guard = 0; guard < 400; guard++) {
+      if (await visible(page, '[data-testid="proc-open-continue"]')) break
+
+      // ⚠ The screen prints "46 ECU — bids must fall by at least 2 ECU"; the FIRST number
+      // is the minimum next bid. It is absent once the round has resolved.
+      const minText = await grab(page, '[data-testid="proc-open-min"]')
+      const minNextBid = minText === '' ? null : num(minText.split('—')[0])
+
+      if (minNextBid === null || !Number.isFinite(minNextBid)) {
+        // Either the round just ended, or a bot is mid-answer. Give the tick a moment.
+        await page.waitForTimeout(150)
+        continue
+      }
+      lastMin = minNextBid
+
+      if (minNextBid >= threshold) {
+        // ⚠ The one-click button is DISABLED while this robot holds the low bid (it may
+        // not outbid itself, §4.2). That is not a stall: a bot is answering. Wait.
+        const btn = page.locator('[data-testid="proc-open-bid-min"]')
+        if (await btn.count() > 0 && await btn.isEnabled()) {
+          await sleep(think())
+          await btn.click()
+          acted++
+        } else {
+          await page.waitForTimeout(150)
+        }
+        continue
+      }
+
+      // Below threshold — stop. This is the decision the Tier-3 chart plots.
+      await sleep(think())
+      const out = page.locator('[data-testid="proc-open-dropout"]')
+      if (await out.count() > 0 && await out.isEnabled()) {
+        await out.click()
+      } else {
+        await page.waitForTimeout(150)
+      }
+    }
+
+    await page.waitForSelector('[data-testid="proc-open-continue"]', { timeout: 60_000 })
+    rounds.push({
+      round: t,
+      cost,
+      threshold,
+      bids: acted,
+      exitPrice: num(await grab(page, '[data-testid="proc-open-exit"]')),
+      finalPrice: num(await grab(page, '[data-testid="proc-open-final-price"]')),
+    })
+    await page.locator('[data-testid="proc-open-continue"]').click()
+  }
+
+  // ── Results, then the debrief if this instance asks one ─────────────────────
+  await page.waitForSelector('[data-testid="proc-open-end-heading"]', { timeout: 30_000 })
+  const totalProfit = num(await grab(page, '[data-testid="proc-open-end-profit"]'))
+
+  // ⚠⚠ THE CONTINUE BUTTON DOES NOT MEAN THERE IS A DEBRIEF. The results screen is a step
+  // in the sequence, so it carries a Continue whether or not a debrief question follows —
+  // and an instance with the whole question pool switched off has none. The first version
+  // clicked Continue and then waited 30s for a free-text box that was never going to
+  // appear, which failed every robot in a KC-disabled instance. Wait for EITHER outcome.
+  let debriefSubmitted = false
+  if (await visible(page, '[data-testid="proc-open-end-continue"]')) {
+    await sleep(think())
+    await page.locator('[data-testid="proc-open-end-continue"]').click()
+    await page.waitForSelector(
+      '[data-testid="proc-freetext-input"], [data-testid="proc-open-end-heading"]',
+      { timeout: 30_000 })
+    if (await visible(page, '[data-testid="proc-freetext-input"]')) {
+      await page.locator('[data-testid="proc-freetext-input"]')
+        .fill(`(Robot seat — ${style.name}. Not a student answer.)`)
+      await page.locator('[data-testid="proc-freetext-submit"]').click()
+      await page.waitForSelector('[data-testid="proc-open-end-heading"]', { timeout: 30_000 })
+      debriefSubmitted = true
+    }
+  }
+
+  return {
+    format: 'open_descending',
+    style: style.name,
+    kcAnswered,
+    rounds,
+    // ⚠ `bids` is kept under the same key the sealed path uses so the dry run and the
+    // launcher's log do not need to know which format they are summarising.
+    bids: rounds.map(r => ({ round: r.round, cost: r.cost, bid: r.exitPrice })),
+    totalProfit,
+    debriefSubmitted,
+    params: { reserve },
+    totalRounds,
+  }
+}
+
 /**
  * Run a whole cohort.
  *
@@ -199,6 +343,10 @@ export async function playOneRobot({ page, style, label, think = () => 0 }) {
  */
 export async function runCohort({ urlFor, students, headed = false, think = () => 0, screen, cols }) {
   const styles = assignStyles(students)
+  // ⚠ BOTH SETS, dealt in parallel. The sealed personas vary by markup relative to β and
+  // the open ones by exit threshold; they are not the same list under two names, and
+  // neither ports to the other format (procurement-open-styles.mjs's header says why).
+  const openStyles = assignOpenStyles(students)
 
   // ⚠⚠ ONE BROWSER PER ROBOT WHEN HEADED, NOT ONE BROWSER WITH N CONTEXTS.
   //
@@ -238,7 +386,7 @@ export async function runCohort({ urlFor, students, headed = false, think = () =
       const { name, url } = await urlFor(i, pid)
       await page.goto(url, { waitUntil: 'domcontentloaded' })
       try {
-        const r = await playOneRobot({ page, style, label: pid, think })
+        const r = await playOneRobot({ page, style, openStyle: openStyles[i], label: pid, think })
         console.log(`  ✓ ${name} [${style.name}] — ${r.bids.length} rounds, ${r.totalProfit} total`)
         return { pid: name, ...r }
       } catch (err) {
@@ -322,6 +470,16 @@ async function main() {
 
   const done = results.filter(r => !r.error)
   console.log(`\n${done.length}/${results.length} robots finished their game.`)
+
+  // ⚠ NAME THE PERSONAS THAT ACTUALLY RAN. Two audiences need this and neither can get it
+  // anywhere else: Elena, reading the launcher log while deciding what the chart she is
+  // about to project will contain, and the browser harness, which asserts the cohort
+  // really was dealt all four open styles rather than trusting the assignment code it
+  // would otherwise be re-reading rather than testing.
+  const byStyle = new Map()
+  for (const r of done) byStyle.set(r.style, (byStyle.get(r.style) ?? 0) + 1)
+  for (const [name, n] of byStyle) console.log(`  ${n} × ${name}`)
+
   if (done.length === 0) process.exitCode = 1
 
   // Live runs keep the windows up until Elena closes them; a dry run must exit or its

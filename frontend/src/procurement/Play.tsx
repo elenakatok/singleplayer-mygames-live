@@ -5,7 +5,8 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 import { PageShell } from '../shared/PageShell'
 import { SequenceRunner, loopScreen, type SequenceScreen } from '../shared/sequence'
 import { PlaceBid, RoundResult } from './RoundScreen'
-import { OpenBidScreen, OpenRoundEnd, OpenAllRoundsDone } from './OpenBidScreen'
+import { OpenBidScreen, OpenRoundEnd } from './OpenBidScreen'
+import { OpenEndScreen } from './OpenEndScreen'
 import { KcScreen } from './KcScreen'
 import { FreeTextScreen } from './FreeTextScreen'
 import { EndScreen } from './EndScreen'
@@ -215,11 +216,16 @@ export default function Play() {
   // (open §7 replaces it with the exit-price scatter, which is CP4b). Drawing it here
   // would assert a line these rounds were never played against.
   const results = (onContinue?: () => void) => isOpen ? (
-    <OpenAllRoundsDone
+    <OpenEndScreen
       params={loaded.params}
-      roundsPlayed={history.length}
-      roundsWon={totals.wins}
+      history={history}
       totalProfit={totals.profit}
+      totalPerfectProfit={totals.benchmark}
+      roundsWon={totals.wins}
+      // ⚠ THE BOT SERIES' x AND y ARE BOTH THE BOT'S COST — §7: they stop precisely at
+      // cost, so they sit exactly ON the 45° line and the benchmark is SHOWN BEING PLAYED
+      // rather than asserted. Null until the server stamps `finished_at`.
+      botCosts={rivalPoints === null ? null : rivalPoints.map(p => p.cost)}
       onContinue={onContinue}
     />
   ) : (
@@ -237,7 +243,14 @@ export default function Play() {
   /** Everything a turn's response says about where the student now stands. */
   const applyTurn = (turn: ProcurementOpenTurn) => {
     setHistory(turn.history)
-    setTotals({ profit: turn.totalProfit, benchmark: 0, wins: turn.roundsWon })
+    // ⚠ `benchmark` IS REAL NOW. CP4a wrote 0 here because the open format had no
+    // benchmark; it has one (perfect play, replayed per round), the server sums it into
+    // `totalEquilibriumProfit` exactly as it does for the sealed format, and §5.3 prints it.
+    setTotals({
+      profit: turn.totalProfit,
+      benchmark: turn.totalEquilibriumProfit,
+      wins: turn.roundsWon,
+    })
   }
 
   // ── THE OPEN LOOP (open §4.6, §5.1) ────────────────────────────────────────
@@ -263,6 +276,17 @@ export default function Play() {
             onRoundEnd={turn => {
               applyTurn(turn)
               setAuction(turn.auction)
+              // ⚠⚠ THE GAME JUST ENDED, so `finished_at` now exists and the server will
+              // finally release the simulated suppliers' costs — §5.3's benchmark series.
+              // The state call that seeded this page was made BEFORE the stamp and was
+              // correctly refused, so without this re-fetch `botCosts` stays null forever
+              // and the toggle never appears. The sealed loop has had this since CP3b;
+              // the open loop did not, and the browser harness is what found it.
+              if (turn.gameOver) {
+                void procurementGetState()
+                  .then(st => setRivalPoints(st.revealRivalPoints))
+                  .catch(() => { /* the scatter still renders without the bot series */ })
+              }
               onResult(turn, turn.gameOver)
             }}
           />
@@ -272,6 +296,7 @@ export default function Play() {
       <OpenRoundEnd
         params={loaded.params}
         outcome={result.roundOutcome!}
+        auction={result.auction}
         done={done}
         onContinue={() => {
           if (done) { onContinue(); return }

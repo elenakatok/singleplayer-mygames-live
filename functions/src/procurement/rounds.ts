@@ -93,6 +93,22 @@ export interface StoredRound {
    *  player would have earned X from your draws" (§9). */
   eq_profit: number
   /**
+   * OPEN FORMAT ONLY — the player's EXIT PRICE, and whether it is censored (§7).
+   *
+   * ⚠⚠ RECORDED AT ROUND END, NEVER RECONSTRUCTED (§7). `exit_censored` is stored rather
+   * than inferred downstream even though it equals `won` today, and that is deliberate:
+   * the two are different FACTS that happen to coincide under the current mechanism.
+   * "Did they win" is an outcome; "is this stopping point observed or only bounded" is a
+   * statement about what the datum means. A chart that inferred one from the other would
+   * silently start lying the first time a round could end some other way — and the whole
+   * point of §7's distinction is that a winner's exit is NOT a revealed stopping point.
+   *
+   * ⚠ `exit_price` is null only when a round somehow recorded no standing price at all.
+   * A player who never bid still HAS an exit price: the standing they walked away from.
+   */
+  exit_price?: number | null
+  exit_censored?: boolean
+  /**
    * OPEN FORMAT ONLY — every bid and drop-out of the round, in order.
    *
    * ⚠ ABSENT ON EVERY SEALED ROUND, and that is the shape rather than a gap: a sealed
@@ -166,6 +182,17 @@ export interface ClientRound {
    * re-deriving β on the client, where it would drift from the server's.
    */
   yourEquilibriumBid: number | null
+  /**
+   * OPEN FORMAT ONLY — where this student stopped, and whether that is observed or only
+   * bounded (§7). Null on every sealed round: a sealed bid is not a stopping point.
+   *
+   * ⚠ THE STUDENT'S OWN NUMBER, so it is safe on their own screen — and it is the y-axis
+   * of both the student's §5.3 chart and the instructor's Tier-3 class chart.
+   */
+  exitPrice: number | null
+  /** ⚠ TRUE IFF THEY WON. Carried from the record, NOT re-derived from `won` — see the
+   *  stored field's note. A winner sits above the 45° line even playing perfectly. */
+  exitCensored: boolean
 }
 
 /**
@@ -210,6 +237,11 @@ export function parseStoredRounds(raw: unknown): StoredRound[] {
       eq_bid: num(r.eq_bid) ? r.eq_bid : null,
       eq_won: r.eq_won === true,
       eq_profit: num(r.eq_profit) ? r.eq_profit : 0,
+      // ⚠ Round-tripped like `open_history`, and for the same reason: `rounds` is
+      // rewritten as a WHOLE ARRAY on every submit, so a field the parser dropped would
+      // be deleted from every earlier round the next time the student played one.
+      ...(num(r.exit_price) ? { exit_price: r.exit_price } : {}),
+      ...(typeof r.exit_censored === 'boolean' ? { exit_censored: r.exit_censored } : {}),
       // ⚠ Round-tripped, never dropped — see the field's note. `undefined` on a sealed
       // round, and Firestore is told to ignore undefined properties (index.ts), so an
       // absent history stays absent rather than becoming a null.
@@ -490,6 +522,8 @@ export function toClientHistory(rounds: readonly StoredRound[]): ClientRound[] {
       profit: r.profit,
       profitTotal,
       yourEquilibriumBid: r.eq_bid,
+      exitPrice: r.exit_price ?? null,
+      exitCensored: r.exit_censored === true,
     }
   })
 }

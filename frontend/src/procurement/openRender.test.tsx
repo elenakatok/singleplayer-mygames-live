@@ -7,7 +7,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 // Nothing is CALLED here: `renderToStaticMarkup` does not run effects, so the screen's
 // advance tick never fires and no control is ever pressed.
 vi.mock('../firebase', () => ({ auth: {}, db: {}, functions: {} }))
-import { OpenBidScreen, OpenRoundEnd, OpenAllRoundsDone } from './OpenBidScreen'
+import { OpenBidScreen, OpenRoundEnd } from './OpenBidScreen'
+import { OpenEndScreen } from './OpenEndScreen'
 import type { ProcurementAuction, ProcurementParams } from './api'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -300,9 +301,10 @@ describe('the round end is deliberately spare — §5.2 is CP4b', () => {
   const outcome = {
     round: 3, yourCost: 34, yourLastBid: 38, won: false,
     price: 36, profit: 0, profitTotal: 12, droppedOut: false,
+    exitPrice: 36, exitCensored: false, perfectProfit: 2, perfectWon: true,
   }
   const html = renderToStaticMarkup(
-    <OpenRoundEnd params={PARAMS} outcome={outcome} done={false} onContinue={() => {}} />)
+    <OpenRoundEnd params={PARAMS} outcome={outcome} auction={auction()} done={false} onContinue={() => {}} />)
 
   it('says what happened and what it earned', () => {
     expect(html).toContain('Round 3 — you did not win')
@@ -310,31 +312,102 @@ describe('the round end is deliberately spare — §5.2 is CP4b', () => {
     expect(textOf(html, 'proc-open-round-profit')).toBe('0 ECU')
   })
 
-  it('⚠ and does NOT yet carry §5.2\'s gap message or counterfactual', () => {
-    // Named so the absence reads as scope rather than as an oversight when CP4b lands.
-    expect(html).not.toMatch(/room left|could profitably have bid/i)
+  it('⚠ §5.2 the GAP sentence — their last bid, their cost, and the room left', () => {
+    // The spec's own wording: "You stopped at 38. Your cost was 34, so you had 4 ECU of
+    // room left." ⚠ It names their LAST BID (38), not their exit price (36) — different
+    // numbers, and the sentence is about the decision they made, not where it settled.
+    expect(textOf(html, 'proc-open-gap'))
+      .toBe('You stopped at 38. Your cost was 34, so you had 4 ECU of room left.')
+  })
+
+  it('⚠⚠ §5.2 the counterfactual, when there WAS more to win', () => {
+    expect(textOf(html, 'proc-open-counterfactual'))
+      .toBe('The contract went for 36. You could profitably have bid down to 36.')
+  })
+
+  it('⚠⚠ §5.2 and the OTHER form — "you lost correctly", which is the important one', () => {
+    // §5.2: "it tells a player they lost correctly, which is the hardest thing to learn
+    // from losing." Without it a student who played perfectly and lost concludes they
+    // were too timid, and bids below cost next round.
+    const lostRight = renderToStaticMarkup(
+      <OpenRoundEnd params={PARAMS} done={false} onContinue={() => {}} auction={auction()}
+        outcome={{ ...outcome, price: 30, perfectWon: false, perfectProfit: 0 }} />)
+    expect(textOf(lostRight, 'proc-open-counterfactual')).toBe(
+      'The contract went for 30, which was below your cost — there was nothing more to win here.')
+    expect(textOf(lostRight, 'proc-open-perfect'))
+      .toBe('Even played perfectly, this round was not winnable at your cost.')
+  })
+
+  it('⚠ a WINNER is told their exit price is an upper bound', () => {
+    const won = renderToStaticMarkup(
+      <OpenRoundEnd params={PARAMS} done={false} onContinue={() => {}} auction={auction()}
+        outcome={{ ...outcome, won: true, price: 46, profit: 12, yourLastBid: 46,
+          exitPrice: 46, exitCensored: true }} />)
+    expect(textOf(won, 'proc-open-gap'))
+      .toBe('You won at 46 with a cost of 34 — 12 ECU of profit.')
+    expect(textOf(won, 'proc-open-censored')).toMatch(/nobody pushed you any lower/i)
+  })
+
+  it('§5.2 the full bid history for the round is replayed', () => {
+    expect(textOf(html, 'proc-open-result-history')).toContain('Bot 3 — 48')
+    expect(textOf(html, 'proc-open-result-history')).toContain('Auction opened at 110 ECU')
   })
 
   it('a winning round prints a positive profit with its sign', () => {
     const won = renderToStaticMarkup(
-      <OpenRoundEnd params={PARAMS} done={false} onContinue={() => {}}
-        outcome={{ ...outcome, won: true, price: 46, profit: 12 }} />)
+      <OpenRoundEnd params={PARAMS} done={false} onContinue={() => {}} auction={auction()}
+        outcome={{ ...outcome, won: true, price: 46, profit: 12, yourLastBid: 46,
+          exitPrice: 46, exitCensored: true }} />)
     expect(won).toContain('Round 3 — you won the contract')
     expect(textOf(won, 'proc-open-round-profit')).toBe('+12 ECU')
   })
 })
 
-describe('the end of the loop does not borrow the sealed format\'s results screen', () => {
+describe('§5.3 the open results screen', () => {
+  const rows = [
+    { round: 1, yourCost: 34, yourBid: 38, won: false, price: 36, profit: 0, profitTotal: 0,
+      yourEquilibriumBid: null, exitPrice: 36, exitCensored: false },
+    { round: 2, yourCost: 20, yourBid: 46, won: true, price: 46, profit: 26, profitTotal: 26,
+      yourEquilibriumBid: null, exitPrice: 46, exitCensored: true },
+  ]
   const html = renderToStaticMarkup(
-    <OpenAllRoundsDone params={PARAMS} roundsPlayed={8} roundsWon={3}
-      totalProfit={41} onContinue={() => {}} />)
+    <OpenEndScreen params={PARAMS} history={rows} totalProfit={26} totalPerfectProfit={34}
+      roundsWon={1} botCosts={[47, 88, 21, 63]} onContinue={() => {}} />)
 
-  it('reports the totals', () => {
-    expect(html).toContain('That is all 8 auctions')
-    expect(textOf(html, 'proc-open-total')).toBe('+41 ECU')
+  it('reports the totals and the perfect-play benchmark', () => {
+    expect(html).toContain('Your 2 auctions')
+    expect(textOf(html, 'proc-open-end-profit')).toBe('+26 ECU')
+    expect(textOf(html, 'proc-open-end-perfect')).toBe('+34 ECU')
   })
 
-  it('⚠ and asserts NO optimal line — β is the sealed mechanism\'s benchmark (§7)', () => {
-    expect(html).not.toMatch(/optimal|equilibrium|perfect player/i)
+  it('⚠⚠ the per-round table shows EXIT PRICE, and no optimal-bid column', () => {
+    const table = textOf(html, 'proc-open-end-table') ?? ''
+    expect(table).toContain('Where you stopped')
+    expect(table).not.toMatch(/optimal/i)
+    expect(table).not.toMatch(/equilibrium/i)
+  })
+
+  it('⚠ and marks the winning round\'s exit as censored, in the TABLE as well as the chart', () => {
+    // A table that hid the distinction would undo the chart\'s careful separation one
+    // column over.
+    expect(textOf(html, 'proc-open-end-table')).toMatch(/46\s*↑/)
+  })
+
+  it('⚠⚠ draws the 45° line and NO β line — the refusal this screen exists for', () => {
+    expect(html).toContain('data-testid="proc-exit-45"')
+    expect(html).not.toMatch(/optimal bid at each cost|β/i)
+    expect(html).not.toMatch(/0\.8c \+ 22/)
+  })
+
+  it('winners and losers are SEPARATE SERIES, and the caption says why (§7)', () => {
+    expect(html).toContain('data-testid="proc-exit-won"')
+    expect(html).toContain('data-testid="proc-exit-lost"')
+    expect(textOf(html, 'proc-exit-censored-note'))
+      .toMatch(/plotted separately because their exit price is not a\s+stopping point/i)
+  })
+
+  it('⚠ the bot series is DEFAULT OFF (§7)', () => {
+    expect(html).not.toContain('data-testid="proc-exit-bot"')
+    expect(html).toContain('data-testid="proc-open-end-show-bots"')
   })
 })

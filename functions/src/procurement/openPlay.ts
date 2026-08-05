@@ -9,16 +9,17 @@ import { loadInstance } from './instance'
 import { PLAYER_ID } from './round'
 import { nextOpenRoundPatch } from './openRound'
 import {
-  parseStoredRounds, toClientHistory, totalProfit, roundsWon,
+  parseStoredRounds, toClientHistory, totalProfit, totalEquilibriumProfit, roundsWon,
   type StoredRound,
 } from './rounds'
 import { phaseOf } from './clientState'
 import {
   advanceOne, playerBid, playerDropOut, lastPlayerBid, lastBotBids,
+  playerExit, replayPerfectPlay,
   type OpenSettings, type OpenState,
 } from './auction/openAuction'
 import {
-  ensureRoundOpen, serializeAuction, playedAtNow,
+  ensureRoundOpen, serializeAuction, playedAtNow, benchmarkSettingsFor,
   botCostsDocId, botCostsPatch, drawBotCosts,
 } from './openAuctionStore'
 import { toClientAuction, type ClientAuction } from './openView'
@@ -61,8 +62,7 @@ export interface OpenTurnResponse {
   yourCost: number
   /** Set when the bid was refused. The auction above is the CURRENT truth either way. */
   rejected: string | null
-  /** Set by the action that ENDED the round. Deliberately spare — §5.2's round-result
-   *  screen is CP4b and is not built here. */
+  /** Set by the action that ENDED the round — everything §5.2's round result needs. */
   roundOutcome: {
     round: number
     yourCost: number
@@ -72,9 +72,21 @@ export interface OpenTurnResponse {
     profit: number
     profitTotal: number
     droppedOut: boolean
+    /** ⚠ §7's pair, from the RECORD. `exitCensored` is not re-derived from `won`. */
+    exitPrice: number | null
+    exitCensored: boolean
+    /** What perfect play would have earned from these same draws (§5.2's counterfactual,
+     *  and the "you lost correctly" message when it is zero). */
+    perfectProfit: number
+    perfectWon: boolean
   } | null
   history: ReturnType<typeof toClientHistory>
   totalProfit: number
+  /** ⚠ THE OPEN FORMAT'S BENCHMARK TOTAL — "a perfect player would have earned X from your
+   *  draws" (§5.3). Same field and same summation as the sealed format's, because
+   *  `eq_profit` carries the same concept in both (see `resolvedRoundRecord`). It was
+   *  missing from this response until the production build caught the client reading it. */
+  totalEquilibriumProfit: number
   roundsWon: number
   roundsPlayed: number
   nextRound: number | null
@@ -85,15 +97,13 @@ export interface OpenTurnResponse {
 /**
  * The resolved round, as stored.
  *
- * ⚠ `eq_bid`/`eq_won`/`eq_profit` ARE NULL/FALSE/0 FOR EVERY OPEN ROUND, and that is the
- * shape rather than a stub. β is the SEALED first-price equilibrium (Part 1 §5.1); there
- * is no equivalent closed form for this mechanism, and the open format's benchmark is the
- * Tier-3 exit-price scatter (§7) instead. Writing β here would put a number the student
- * could not have used into a column labelled "what you should have bid".
+ * ⚠ `eq_bid` IS NULL ON EVERY OPEN ROUND and that is the shape, not a stub: β is the
+ * SEALED first-price equilibrium (Part 1 §5.1), there is one bid to compare it against
+ * there, and here there is no single benchmark bid to name. `eq_won` and `eq_profit` ARE
+ * filled, from the perfect-play replay — see below for why those two names are reused.
  *
- * ⚠ NO EXIT PRICE. §9 step 6 (CP4b) owns exit-price capture including the winner-censoring
- * distinction. `open_history` below is the record it will derive one from for any round
- * played before then. See BUILD_NOTES.
+ * ⚠⚠ EXIT PRICE AND ITS CENSORING FLAG ARE CAPTURED HERE, at round end, never
+ * reconstructed later (§7). `playerExit` is the single derivation.
  */
 function resolvedRoundRecord(
   round: number,
@@ -101,8 +111,28 @@ function resolvedRoundRecord(
   botCosts: readonly number[],
   state: OpenState,
   s: OpenSettings,
+  /** ⚠ A SEPARATELY KEYED settings object for the benchmark replay — see the call site.
+   *  Passing it in keeps this function free of any notion of seeds or streams. */
+  benchmark: OpenSettings,
 ): StoredRound {
   const won = state.winnerId === PLAYER_ID
+  const exit = playerExit(state, s)
+
+  // ── the open format's benchmark (§7, CP4b Item 1) ──────────────────────────
+  //
+  // ⚠⚠ `eq_won` AND `eq_profit` ARE REUSED RATHER THAN GIVEN NEW `perfect_*` NAMES, and
+  // the reason is that the CONCEPT is the same sentence in both formats: "what a player
+  // following the optimal strategy would have earned from your draws". In the open format
+  // that strategy — undercut while the price is above your cost, then stop — IS the
+  // equilibrium and the spec calls it the dominant strategy (§1), so `eq_` is accurate
+  // rather than borrowed. Reusing them also means `totalEquilibriumProfit()` and the
+  // student's "a perfect player would have earned X" line work unchanged across formats
+  // instead of forking on `format` in three more places.
+  //
+  // ⚠ WHAT DOES NOT CARRY OVER IS `eq_bid`. It stays null here, and the instructor's
+  // "Optimal" column is format-gated away (Item 3) rather than shown as a row of dashes.
+  const perfect = replayPerfectPlay(benchmark, cost)
+  const perfectWon = perfect.winnerId === PLAYER_ID
   return {
     round,
     cost,
@@ -125,8 +155,12 @@ function resolvedRoundRecord(
     tie: false,
     tied_and_lost: false,
     eq_bid: null,
-    eq_won: false,
-    eq_profit: 0,
+    eq_won: perfectWon,
+    // ⚠ A LOSER EARNS ZERO, never negative (Part 1 §7 step 5) — and perfect play never
+    // bids below its own cost, so this can only be positive or zero.
+    eq_profit: perfectWon && perfect.price !== null ? perfect.price - cost : 0,
+    exit_price: exit.exitPrice,
+    exit_censored: exit.censored,
     open_history: serializeAuction(round, state).open_auction.history,
   }
 }
@@ -220,6 +254,7 @@ async function runOpenTurn(
         roundOutcome: null,
         history: toClientHistory(stored),
         totalProfit: totalProfit(stored),
+        totalEquilibriumProfit: totalEquilibriumProfit(stored),
         roundsWon: roundsWon(stored),
         roundsPlayed: stored.length,
         nextRound: round,
@@ -229,7 +264,13 @@ async function runOpenTurn(
     }
 
     // ── the round ENDED: append it, and open the next one's draws ───────────
-    const record = resolvedRoundRecord(round, cost, opened.botCosts, next, settings)
+    // ⚠ THE BENCHMARK REPLAY GETS ITS OWN STREAM, keyed `benchmark`, exactly as the sealed
+    // format's counterfactual does (round.ts). Sharing the play stream would make the real
+    // auction's bot ordering depend on whether a benchmark was computed — the coupling the
+    // positional-draw convention exists to prevent (rng.ts).
+    const record = resolvedRoundRecord(
+      round, cost, opened.botCosts, next, settings,
+      benchmarkSettingsFor(config, opened.botCosts, seed, participantId, round))
     const all = [...stored, record]
     const finished = all.length >= config.rounds
 
@@ -278,9 +319,17 @@ async function runOpenTurn(
         profit: record.profit,
         profitTotal: totalProfit(all),
         droppedOut: next.playerOut,
+        // ⚠ READ BACK OFF THE RECORD, not recomputed from `next`. The record is what the
+        // reports and the results screen will read forever after; if the screen computed
+        // its own copy the two could disagree and only the screen would be visible.
+        exitPrice: record.exit_price ?? null,
+        exitCensored: record.exit_censored === true,
+        perfectProfit: record.eq_profit,
+        perfectWon: record.eq_won,
       },
       history: toClientHistory(all),
       totalProfit: totalProfit(all),
+      totalEquilibriumProfit: totalEquilibriumProfit(all),
       roundsWon: roundsWon(all),
       roundsPlayed: all.length,
       nextRound: finished ? null : round + 1,

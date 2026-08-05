@@ -609,6 +609,141 @@ Case 7 now asserts `stopped.length === 4` (server-side truth) plus an unchanged
 
 ---
 
+## 6i. Checkpoint 4b — exit capture, open reports, open end screen, open robots (2026-08-04)
+
+### ⚠⚠ The live bug it opened with: a missing FORMAT GATE
+
+`Reports.tsx` read `data.format` in **exactly one place** — to print a label — and rendered
+`ClassScatterSVG` unconditionally. On an open instance that drew CASCADE BIDS against cost,
+put β through them as "the optimal line", and captioned itself *"the rivals bid the optimal
+markup for their own cost every time"* over rival dots at (cost 65, bid 100) that plainly
+did not. **The chart contradicted its own caption in front of a room.**
+
+The student side had refused correctly ("results are still being built"); the instructor
+side had no such refusal. The lesson is that a format gate is not one `if` — it is an
+inventory. Every format-dependent surface, enumerated before building:
+
+| Surface | Was | Now |
+|---|---|---|
+| Tier 3 modal | sealed scatter, β, false caption | `OpenClassScatterSVG` — exit price vs cost, 45° line |
+| Tier 3 tile | "N student bids · M rival bids" | "N student exits · M supplier exits" |
+| Tier 1b modal | cost/bid/**Optimal**/price | cost/**exit price**/final price/won/profit |
+| Tier 1b caption | explains β | rewritten, explains censoring |
+| Tier 1a roster | name/status/rounds/won/profit | **unchanged — already format-neutral** |
+| Student §5.3 | `OpenAllRoundsDone` placeholder | `OpenEndScreen` |
+| Student §5.2 | spare CP4a panel | gap sentence + both counterfactual forms + replay |
+| Report header, Dashboard | already printed `FORMAT_LABEL` | unchanged |
+
+⚠ **The chart is a different COMPONENT, not a prop.** The y axis is a different quantity
+and the benchmark is a different line; a `variant` prop would have invited exactly the
+half-converted chart that caused the bug.
+
+### The field names (Item 1 asked me to report them)
+
+| Field | Meaning |
+|---|---|
+| `exit_price` | where the player stopped (§7) |
+| `exit_censored` | true iff they WON |
+| `eq_profit` | **reused** — what perfect play earns from these draws |
+| `eq_won` | **reused** — would perfect play have won |
+| `eq_bid` | **stays null on open rounds** |
+
+⚠ **`eq_*` is reused rather than given a `perfect_*` twin, deliberately.** The concept is
+the same sentence in both formats — "what a player following the optimal strategy would
+have earned from your draws" — and in the open format that strategy *is* the equilibrium
+(§1 calls it the dominant strategy), so the prefix is accurate rather than borrowed.
+Reusing it also means `totalEquilibriumProfit()` and the student's "a perfect player would
+have earned X" line work unchanged instead of forking on `format` in three more places.
+`eq_bid` does not carry over: there is no single benchmark bid in a descending auction, and
+the column that showed it is format-gated away rather than shown as a row of dashes.
+
+⚠ **`exit_censored` is STORED, not inferred from `won` downstream.** They coincide today.
+They are different *facts*: one is an outcome, the other is a statement about what the
+datum means. A chart that inferred one from the other would start lying the first time a
+round could end another way — and §7's entire point is that a winner's exit is not a
+revealed stopping point.
+
+### ⚠ A correction to the prompt: perfect-play profit is NOT exactly computable
+
+The prompt says it is, "since bot behaviour is deterministic given bot costs". Each bot's
+RULE is deterministic; **the auction is not.** Response ordering is seeded-random (§4.3),
+and BUILD_NOTES §2 measured that moving the halt price by up to 10 ECU (15.7% of draws
+exceed one step). So `replayPerfectPlay` is **one sample** from that distribution, computed
+once at round end on a separately-keyed stream and recorded — so it never re-derives and a
+student never sees it change, but it carries the same ±0–10 noise the round itself did.
+
+A test asserts the variation exists, so that if ordering is ever made deterministic
+somewhere this claim fails loudly rather than silently becoming true. **Averaging over N
+orderings would de-noise it and is a one-line change — Elena's call, not taken.**
+
+### Item 2 — the personas, and why the sealed six do not port
+
+The sealed six vary by **markup relative to β**, and open has no markup. `cost-bidder` and
+`equilibrium` **collapse into one behaviour** (undercutting to your cost IS the dominant
+strategy), and `under-marker` has no analogue short of loss-making. So the open cohort is
+defined by **exit threshold**, which is the quantity §7's chart actually plots. The labels
+that appear in Elena's reports: **exits at cost · exits early · exits below cost · random
+exit.**
+
+⚠⚠ **The trigger is `minimum next bid < threshold`, never `price < threshold`.** At a
+standing of 48 with a cost of 47 the price is still above cost while the next legal bid is
+46 — already a loss. A robot waiting on the price sits forever, the round never resolves,
+and Item 3 has nothing to chart. That was the shipped behaviour before CP4b.
+
+Every seat is dealt BOTH a sealed and an open persona, because the format is not knowable
+until a page has rendered — a live driver holds a launch URL and nothing else.
+
+### Three bugs the harnesses found, all in code I had just written
+
+1. **The open loop never re-fetched the bot series after the last round.** `finished_at` is
+   stamped by the final round's commit, so the page's original `getState` was correctly
+   refused the rival costs; the sealed loop has re-fetched since CP3b and the open one did
+   not. The §5.3 toggle would never have appeared. Found by the browser harness.
+2. **The robot driver assumed a debrief question exists.** The results screen carries a
+   Continue whether or not one follows, so in a KC-disabled instance the driver clicked it
+   and waited 30s for a free-text box that was never coming. Now waits for either outcome.
+3. **A spawn check that swallowed the child's stdout.** The whole point of spawning rather
+   than importing (§6f) is to see what the launcher sees; the failure printed only an exit
+   code. It now dumps the tail of the child's output on failure.
+
+### ⚠ And one of my own vacuous controls, for §3's collection
+
+**"Winners and losers are separate series"** asserted only that both selectors existed. The
+cohort it ran against contained no wins — so zero winner dots was *correct behaviour* and a
+failed assertion, and had the cohort gone the other way it would have passed while proving
+nothing about the split. Replaced with **exact counts derived from the report API** (a
+different source from the DOM under test) plus an assertion that the cohort contains both
+outcomes at all, and the instance seeded so that is a fact rather than a coin flip.
+
+⚠ Seeding it does not re-introduce §6e's trap. The unseeded classroom shape is exercised
+end to end by the emulator harness's §15; what is under test here is the chart, and its
+input needs to be known.
+
+### ⚠⚠ `npx tsc --noEmit` IN `frontend/` TYPECHECKS NOTHING — a fifth harness-trap entry
+
+`frontend/tsconfig.json` is `{ "files": [], "references": [...] }`. A bare `tsc --noEmit`
+against it therefore compiles **zero files and exits 0**. Every "TS OK" it printed during
+this build was vacuous, and it stayed vacuous through several rounds of real edits.
+
+What caught the resulting bug was `npm run build` (`tsc -b && vite build`): the client read
+`turn.totalEquilibriumProfit` off a response that did not carry it, so §5.3's
+"perfect play would have earned" would have rendered **NaN** in front of a class.
+
+⚠ **Typecheck the frontend with `npm run build` or `npx tsc -b`, never `npx tsc --noEmit`.**
+This is the same family as §6e's table — `emulators:exec` serving a stale `lib`, the
+maskless REST `PATCH`, every instance carrying a seed, `startVite` accepting a server it did
+not start — *a tool believed to be checking something it was not touching.*
+
+### A §7 reading recorded rather than left to be rediscovered
+
+**The bot series plots each bot's COST, not the standing price it actually stopped at.**
+§7 asks for exactly this — *"sitting exactly on the 45° line, since bots stop precisely at
+cost"* — and it is the bot's *limit*. Its observed stopping standing would sit slightly
+ABOVE the line (it declines a bid one step below where it stands), and the series would
+stop being the clean benchmark the chart exists to show.
+
+---
+
 ## 7. Which hosting targets a frontend change needs — the standing rule
 
 Read off `frontend/vite.config.ts` and `firebase.json`, not off convention.

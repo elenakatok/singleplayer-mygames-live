@@ -103,8 +103,21 @@ export type ProcurementPlayedRow = {
   profit: number
   profitTotal: number
   /** What β would have bid at this student's own cost (§8). Null when their cost was
-   *  above the reserve. The SERVER's number — never re-derived on the client. */
+   *  above the reserve. The SERVER's number — never re-derived on the client.
+   *  ⚠ NULL ON EVERY OPEN ROUND — there is no single benchmark bid in a descending
+   *  auction, and the open surfaces show exit price instead. */
   yourEquilibriumBid: number | null
+  /**
+   * OPEN FORMAT ONLY (§7) — where this student stopped, and whether that is OBSERVED or
+   * only BOUNDED. Null on every sealed round: a sealed bid is not a stopping point.
+   *
+   * ⚠⚠ `exitCensored` IS TRUE IFF THEY WON, and it comes from the server's record — it is
+   * never re-derived from `won` on the client. A winner was never pushed to their limit,
+   * so their exit price is an upper bound, and they sit ABOVE the 45° line even playing
+   * perfectly. Every surface that shows the number must carry the flag with it.
+   */
+  exitPrice: number | null
+  exitCensored: boolean
 }
 
 /** One rival's (cost, bid) pair, for the §9 scatter's bot series.
@@ -283,9 +296,19 @@ export type ProcurementOpenTurn = {
     profit: number
     profitTotal: number
     droppedOut: boolean
+    /** ⚠ §7's pair, read back off the stored record rather than recomputed. */
+    exitPrice: number | null
+    exitCensored: boolean
+    /** What perfect play — stopping exactly at cost — would have earned from these same
+     *  draws. Drives §5.2's "there was nothing more to win here". */
+    perfectProfit: number
+    perfectWon: boolean
   } | null
   history: ProcurementPlayedRow[]
   totalProfit: number
+  /** "A perfect player would have earned X from your draws" (§5.3), summed over the
+   *  per-round perfect-play replays. Same field name as the sealed format's. */
+  totalEquilibriumProfit: number
   roundsWon: number
   roundsPlayed: number
   nextRound: number | null
