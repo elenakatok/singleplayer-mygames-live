@@ -65,19 +65,25 @@ interface StoredAuction {
   sequence: number
   decisions: number
   next_bot_at_ms: number | null
+  /** ⚠ RECORDED AT THE MOMENT THE PLAYER LEFT, never re-derived from the settled state —
+   *  see `OpenState.playerExitPrice`. This is the CP4b defect's fix, persisted. */
+  player_exit_price: number | null
+  player_exit_kind: 'dropOut' | 'autoDrop' | null
   winner_id: string | null
   price: number | null
 }
 
 const toRecord = (e: OpenEvent): OpenEventRecord =>
-  e.kind === 'dropOut'
-    ? { kind: 'dropOut', bidder_id: e.bidderId, is_player: true }
-    : { kind: 'bid', bidder_id: e.bidderId, amount: e.amount, is_player: e.isPlayer }
+  e.kind === 'bid'
+    ? { kind: 'bid', bidder_id: e.bidderId, amount: e.amount, is_player: e.isPlayer }
+    // ⚠ BOTH NON-BID KINDS ARE THE PLAYER'S — a bot emits nothing but a bid, and that
+    // invariant is what lets the history stay fully public (see `OpenEvent`).
+    : { kind: e.kind, bidder_id: e.bidderId, is_player: true }
 
 const fromRecord = (e: OpenEventRecord): OpenEvent =>
-  e.kind === 'dropOut'
-    ? { kind: 'dropOut', bidderId: e.bidder_id }
-    : { kind: 'bid', bidderId: e.bidder_id, amount: e.amount ?? 0, isPlayer: e.is_player }
+  e.kind === 'bid'
+    ? { kind: 'bid', bidderId: e.bidder_id, amount: e.amount ?? 0, isPlayer: e.is_player }
+    : { kind: e.kind, bidderId: e.bidder_id }
 
 /** The state, written for `round`. ⚠ The round number travels WITH it — a state without
  *  one is a state that could be applied to the wrong round. */
@@ -94,6 +100,8 @@ export function serializeAuction(round: number, state: OpenState): { open_auctio
       sequence: state.sequence,
       decisions: state.decisions,
       next_bot_at_ms: state.nextBotAtMs,
+      player_exit_price: state.playerExitPrice,
+      player_exit_kind: state.playerExitKind,
       winner_id: state.winnerId,
       price: state.price,
     },
@@ -122,7 +130,7 @@ export function parseAuction(raw: unknown, round: number): OpenState | null {
   for (const el of a.history) {
     if (typeof el !== 'object' || el === null) return null
     const e = el as Record<string, unknown>
-    if (e.kind !== 'bid' && e.kind !== 'dropOut') return null
+    if (e.kind !== 'bid' && e.kind !== 'dropOut' && e.kind !== 'autoDrop') return null
     if (typeof e.bidder_id !== 'string') return null
     if (e.kind === 'bid' && !int(e.amount)) return null
     history.push(fromRecord({
@@ -143,6 +151,10 @@ export function parseAuction(raw: unknown, round: number): OpenState | null {
     sequence: a.sequence,
     decisions: a.decisions,
     nextBotAtMs: int(a.next_bot_at_ms) ? a.next_bot_at_ms : null,
+    playerExitPrice: int(a.player_exit_price) ? a.player_exit_price : null,
+    playerExitKind: a.player_exit_kind === 'dropOut' || a.player_exit_kind === 'autoDrop'
+      ? a.player_exit_kind
+      : null,
     winnerId: typeof a.winner_id === 'string' ? a.winner_id : null,
     price: int(a.price) ? a.price : null,
   }
@@ -215,6 +227,9 @@ export function openSettingsFor(
   seed: string | null,
   participantId: string,
   round: number,
+  /** ⚠ THE MACHINE NEEDS THE PLAYER'S COST NOW — no bidder may bid below their own
+   *  (Elena, 2026-08-04). It also drives auto-drop. See `OpenSettings.playerCost`. */
+  playerCost: number,
 ): OpenSettings {
   const bots: OpenBot[] = botCosts.map((cost, i) => ({ bidderId: rivalId(i), cost }))
   return {
@@ -222,6 +237,7 @@ export function openSettingsFor(
     schedule: config.decrementSchedule,
     delaySchedule: config.delaySchedule,
     playerId: PLAYER_ID,
+    playerCost,
     bots,
     rngAt: (decision: number) =>
       makeRng(seed, `${participantId}:openOrder:${round}:${decision}`),
@@ -322,7 +338,7 @@ export function ensureRoundOpen(
   }
 
   const botCosts = resolveBotCosts(tx, truthRef, truthData, round, seed, participantId, config)
-  const settings = openSettingsFor(config, botCosts, seed, participantId, round)
+  const settings = openSettingsFor(config, botCosts, seed, participantId, round, cost)
 
   let state = parseAuction(pData.open_auction, round)
   if (state === null) {

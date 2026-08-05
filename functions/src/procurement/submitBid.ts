@@ -48,8 +48,11 @@ import { openSubmitBid } from './openPlay'
 // cost in, and now no second derivation to disagree with the first.
 //
 // ⚠ VALIDATION AT SUBMIT, WITH A VISIBLE REASON (Part 1 §6.2, §13.5): whole numbers at
-// or below the reserve. BELOW ONE'S OWN COST IS ALLOWED — see validateBid, that is §6.2
-// and not an oversight.
+// or below the reserve — and, since 2026-08-04, AT OR ABOVE THE STUDENT'S OWN COST.
+// ⚠⚠ THAT SUPERSEDES §6.2's "below own cost … Allowed". Open §4.3 already forbade a bot
+// from bidding below its own cost, so the player was the only bidder in the auction
+// allowed to do what no other could; it is now one rule for everybody. The check runs
+// INSIDE the transaction because it needs the recorded cost — and still draws nothing.
 //
 // ⚠ THERE IS NO DROP OUT AND NO "DO NOT BID" IN THE SEALED FORMAT (§6.3). A bid is
 // required once the bidding screen is reached; a student who abandons has an unfinished
@@ -151,6 +154,14 @@ export const procurementSubmitBid = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, a
     // student whose first getState failed.
     const playerCost = openCostFor(pData, roundNumber)
       ?? drawPlayerCost(seed, participantId, roundNumber, config)
+
+    // ⚠⚠ THE BELOW-COST CHECK RUNS HERE, not with the shape checks above, because it is
+    // the one rule that needs a READ — and it still costs NO DRAW. `resolveRound` opens
+    // the rival stream on the next line but is not reached: throwing inside the
+    // transaction aborts it, so a refused bid writes nothing and draws nothing, exactly
+    // as the reserve gate does. (Elena, 2026-08-04 — supersedes §6.2's "allowed".)
+    const costCheck = validateBid(bid, config, playerCost)
+    if (!costCheck.ok) throw new HttpsError('invalid-argument', costCheck.reason)
 
     // ⚠ THEN the rivals, from their own stream, with the bid already in hand. Recording
     // the player's own cost early does NOT pull this forward — see openRound.ts.

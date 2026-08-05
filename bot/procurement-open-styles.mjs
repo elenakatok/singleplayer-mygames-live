@@ -9,16 +9,22 @@
 //   • `cost-bidder` and `equilibrium` COLLAPSE INTO ONE BEHAVIOUR here — undercutting
 //     while the price is above your cost and stopping at it IS the dominant strategy
 //     (§1), so "bid your cost" and "play the equilibrium" are the same robot.
-//   • `under-marker` has no analogue short of loss-making, because there is nothing to
-//     shave off: the only way to be more aggressive than optimal is to bid below cost.
+//   • `under-marker` has no analogue AT ALL: the only way to be more aggressive than
+//     optimal is to bid below cost, and no bidder may now do that.
 //
 // So the open cohort is defined by EXIT THRESHOLD instead, which is the quantity the
-// Tier-3 scatter actually plots (§7). Four styles, named for what they do:
+// Tier-3 scatter actually plots (§7). THREE styles, named for what they do:
 //
 //   exits at cost      threshold = cost            → ON the 45° line: the benchmark
 //   exits early        threshold = cost + 8..15    → ABOVE it: money left on the table
-//   exits below cost   threshold = cost − 3..8     → BELOW it: wins at a loss
 //   random exit        threshold = cost + 0..20    → the noise a real class contains
+//
+// ⚠⚠ THERE WAS A FOURTH — `exits below cost` — AND IT IS DELETED, NOT LEFT DEAD (Elena,
+// 2026-08-04). It stopped 3–8 BELOW its own cost to populate the region under the 45°
+// line by winning at a loss. **No bidder may bid below their own cost any more**, in
+// either format: the machine refuses the bid and auto-drops a player the price has passed.
+// That region cannot be populated by anybody, so a persona whose only job was to populate
+// it would produce a cohort of refused clicks rather than a chart.
 //
 // ⚠⚠ THE GOAL IS SPREAD IN EXIT PRICES. A cohort that all exited at cost would produce a
 // single dot on the 45° line and prove nothing about the chart. Elena points at this
@@ -68,11 +74,6 @@ export const OPEN_STYLES = [
     threshold: (cost, key) => cost + Math.round(band(key, 8, 15)),
   },
   {
-    name: 'exits below cost',
-    note: 'stops 3–8 BELOW cost — wins the contract at a loss, the points below the line',
-    threshold: (cost, key) => Math.max(0, cost - Math.round(band(key, 3, 8))),
-  },
-  {
     name: 'random exit',
     note: 'no policy at all — stops anywhere from cost to cost + 20',
     threshold: (cost, key) => cost + Math.round(band(key, 0, 20)),
@@ -86,9 +87,9 @@ export const OPEN_STYLE_NAMES = OPEN_STYLES.map(s => s.name)
 /**
  * Deal styles round-robin across a cohort.
  *
- * ⚠ ROUND-ROBIN, NOT RANDOM. With four styles and eight seats a random deal leaves some
- * style unrepresented about 10% of the time, and the chart it is meant to demonstrate
- * then quietly lacks one of its four features — on the run somebody is watching.
+ * ⚠ ROUND-ROBIN, NOT RANDOM. With three styles and eight seats a random deal leaves one
+ * unrepresented often enough to matter, and the chart it is meant to demonstrate then
+ * quietly lacks one of its features — on the run somebody is watching.
  */
 export function assignOpenStyles(count) {
   return Array.from({ length: Math.max(0, count | 0) },

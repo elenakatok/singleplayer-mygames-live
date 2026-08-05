@@ -52,7 +52,7 @@ export function bidderLabel(bidderId: string): string {
 }
 
 export interface ClientAuctionEvent {
-  kind: 'bid' | 'dropOut'
+  kind: 'bid' | 'dropOut' | 'autoDrop'
   label: string
   /** Null on a drop-out. ⚠ There is no cost field here and there must never be one. */
   amount: number | null
@@ -87,6 +87,15 @@ export interface ClientAuction {
    *  Null once resolved. ⚠ A DEFAULT, NOT A CONSTRAINT: jump bidding stays fully available
    *  (§4.2) and the box is freely editable. */
   minNextBid: number | null
+  /**
+   * ⚠⚠ CAN THE PLAYER STILL BID AT ALL? False once the minimum next bid would fall below
+   * their own cost — no bidder in this auction may bid below their own cost (Elena,
+   * 2026-08-04), so at that point Drop Out is their only move and the screen says why.
+   *
+   * Computed SERVER-SIDE against the cost the server holds, so the button state and the
+   * rule that would refuse the bid cannot disagree.
+   */
+  canBid: boolean
   history: ClientAuctionEvent[]
   /**
    * The total number of bidders — ⚠ THE OPENING PARAMETER, AND IT NEVER MOVES.
@@ -121,21 +130,27 @@ export function toClientAuction(
     nextBotAtMs: state.nextBotAtMs,
     step: stepAt(state.standing, s.schedule),
     minNextBid: resolved ? null : maxLegalBid(state.standing, s.schedule),
-    history: state.history.map(e => e.kind === 'dropOut'
+    canBid: !resolved && !state.playerOut
+      && maxLegalBid(state.standing, s.schedule) >= s.playerCost
+      && state.holder !== PLAYER_ID,
+    history: state.history.map(e => e.kind === 'bid'
       ? {
-        kind: 'dropOut' as const,
-        label: bidderLabel(e.bidderId),
-        amount: null,
-        // ⚠ DERIVED, not hardcoded `true`. Only the player can drop out (see `OpenEvent`),
-        // so this is always true today — writing it as a derivation means the day that
-        // stops being so, this row does not silently claim a bot's exit was the player's.
-        isYou: e.bidderId === PLAYER_ID,
-      }
-      : {
         kind: 'bid' as const,
         label: bidderLabel(e.bidderId),
         amount: e.amount,
         isYou: e.isPlayer,
+      }
+      : {
+        // ⚠ `dropOut` and `autoDrop` are DIFFERENT ROWS and the screen must not conflate
+        // them: one says the student left, the other says the price left them behind.
+        kind: e.kind,
+        label: bidderLabel(e.bidderId),
+        amount: null,
+        // ⚠ DERIVED, not hardcoded `true`. Only the player produces a non-bid event (see
+        // `OpenEvent`), so this is always true today — writing it as a derivation means
+        // the day that stops being so, this row does not silently claim a bot's exit was
+        // the player's.
+        isYou: e.bidderId === PLAYER_ID,
       }),
     totalBidders: totalBidderCount(s),
     winnerLabel: state.winnerId === null ? null : bidderLabel(state.winnerId),

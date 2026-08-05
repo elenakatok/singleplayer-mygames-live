@@ -174,8 +174,10 @@ export function ExitScatterCaption({ subject }: { subject: 'class' | 'you' }) {
         <strong>The dashed line is exit price = cost.</strong> Stopping exactly there is
         perfect play: {they} keep undercutting while the next legal bid still clears
         {subject === 'class' ? ' their' : ' your'} cost, and stop when it does not.
-        Points <strong>above</strong> the line quit early and left money unclaimed. Points
-        <strong> below</strong> it were willing to supply below cost.
+        Points <strong>above</strong> the line quit early and left money unclaimed.
+        {' '}<strong>Nothing can sit below it:</strong> no bidder in this auction may bid
+        below their own cost, so the region under the line is unreachable by construction
+        rather than merely empty.
       </p>
       <p data-testid="proc-exit-censored-note" style={{ margin: 0 }}>
         ⚠ <strong>Winners are plotted separately because their exit price is not a

@@ -47,6 +47,8 @@ const base = (over: Partial<OpenSettings> = {}): OpenSettings => ({
   schedule: SCHEDULE,
   delaySchedule: DELAYS,
   playerId: 'player',
+  // ⚠ THE MACHINE IS TOLD THE COST NOW — no bidder may bid below their own (2026-08-04).
+  playerCost: 34,
   bots: BOTS,
   rngAt: () => Math.random,
   jitterAt: () => 0,
@@ -72,28 +74,77 @@ const bid = (st: OpenState, s: OpenSettings, amount: number): OpenState => {
 
 // ── the two kinds of exit ─────────────────────────────────────────────────────
 
-describe('§7 a LOSER\'s exit price is their revealed stopping point', () => {
-  it('the §8.2 duel: the player stops at 38, the price settles at 36, exit is 36', () => {
+describe("§7 a LOSER's exit price is what they COMMITTED to, not where it ended", () => {
+  it('the §8.2 duel: they stop at 38, the bots settle to 36, exit is 38', () => {
+    // ⚠⚠ THIS ASSERTION IS INVERTED FROM CP4b's, AND THE OLD ONE WAS THE BUG. It read
+    // `exitPrice === 36` — the standing they DECLINED, taken off the settled state — and
+    // 36 also happened to be the final price, so it looked right. Exit is now their LAST
+    // BID: 38 is the lowest price they actually committed to.
     const s = base()
     let st = run(openAuction(s, 0), s)
     for (const amount of [46, 42, 38]) st = bid(st, s, amount)
     const done = playerDropOut(st, s, 0)
 
     const exit = playerExit(done, s)
-    // ⚠ THE STANDING THEY DECLINED TO BEAT — not their own last bid of 38. They were
-    // looking at 36 and walked away; 36 is what was observed about their limit.
     expect(done.price).toBe(36)
-    expect(exit.exitPrice).toBe(36)
+    expect(exit.exitPrice).toBe(38)
     expect(exit.censored).toBe(false)
   })
 
-  it('a player who never bids at all still has one — the price they walked away from', () => {
+  it('⚠⚠ THE REGRESSION PIN: when the settle moves the price, exit !== price', () => {
+    // ⚠⚠ THE FIXTURE IS THE POINT AND IT IS BUILT DELIBERATELY. Every CP4b test used the
+    // reference field 47/88/21/63, where after the player leaves the CHEAPEST bot already
+    // holds and cannot undercut itself — the settle is a NO-OP, the price does not move,
+    // and exit legitimately equals final. That is why `exit_price === price` in 100% of
+    // rounds went unnoticed through two checkpoints.
+    //
+    // TWO CHEAP BOTS is what the live case had (cost 46, exit reported as 17): they duel
+    // each other all the way down after the student is gone, so the final price ends far
+    // below anything the student ever saw.
+    const s = base({
+      playerCost: 46,
+      bots: [
+        { bidderId: 'rival1', cost: 12 },
+        { bidderId: 'rival2', cost: 14 },
+        { bidderId: 'rival3', cost: 88 },
+        { bidderId: 'rival4', cost: 63 },
+      ],
+    })
+
+    // Advance to a standing where 50 is still a legal bid for this player, then bid and
+    // leave — a student who quits while there is still room, which is the case the chart
+    // is meant to catch.
+    let st = openAuction(s, 0)
+    for (let i = 0; i < 60 && maxLegalBid(st.standing, SCHEDULE) > 50; i++) {
+      const r = advanceOne(st, s, st.nextBotAtMs ?? 0)
+      if (!r.committed) break
+      st = r.state
+    }
+    const r = playerBid(st, s, 50, st.sequence, 0)
+    expect(r.ok, 'the fixture must let the player bid before the price passes their cost').toBe(true)
+    const done = playerDropOut((r as { state: OpenState }).state, s, 0)
+
+    // The settle really did move the price — the scenario contains the condition.
+    expect(done.winnerId).not.toBe('player')
+    expect(done.price!).toBeLessThan(20)
+
+    const exit = playerExit(done, s)
+    expect(exit.exitPrice).toBe(50)
+    // ⚠ THE ASSERTION NOTHING MADE BEFORE. Under the old code this was `17 === 17`.
+    expect(exit.exitPrice).not.toBe(done.price)
+    expect(exit.exitPrice!).toBeGreaterThan(done.price!)
+  })
+
+  it('a player who never bids has NO exit price — null, not the price they walked from', () => {
+    // They committed to nothing, so there is no revealed stopping point to record. Null
+    // is omitted from the charts and counted separately; inventing a number here would
+    // assert something never observed.
     const s = base()
     const halted = run(openAuction(s, 0), s)
     const done = playerDropOut(halted, s, 0)
     const exit = playerExit(done, s)
     expect(done.history.some(e => e.kind === 'bid' && e.isPlayer)).toBe(false)
-    expect(exit.exitPrice).toBe(48)
+    expect(exit.exitPrice).toBeNull()
     expect(exit.censored).toBe(false)
   })
 })
@@ -133,7 +184,7 @@ describe('⚠⚠ §7 a WINNER\'s exit price is CENSORED', () => {
     let wins = 0, losses = 0
     for (let i = 0; i < 200; i++) {
       const playerCost = 12 + (i % 49)
-      const s = base({ order: 'random', rngAt: () => Math.random })
+      const s = base({ playerCost, order: 'random', rngAt: () => Math.random })
       let st = run(openAuction(s, 0), s)
       for (let k = 0; k < 60 && st.status === 'waiting'; k++) {
         const next = maxLegalBid(st.standing, SCHEDULE)
@@ -266,7 +317,7 @@ describe('⚠⚠ a real player CAN exceed the closed form, by less than one endg
     for (let i = 0; i < 300; i++) {
       const playerCost = 10 + (i % 45)
       const botCosts = [17 + (i * 7) % 80, 23 + (i * 13) % 70, 11 + (i * 29) % 90, 31 + (i * 3) % 60]
-      const s = base({ bots: botCosts.map((cost, k) => ({ bidderId: `rival${k + 1}`, cost })),
+      const s = base({ playerCost, bots: botCosts.map((cost, k) => ({ bidderId: `rival${k + 1}`, cost })),
         order: 'random', rngAt: () => Math.random })
 
       let st = run(openAuction(s, 0), s)
@@ -307,5 +358,124 @@ describe('⚠⚠ a real player CAN exceed the closed form, by less than one endg
     // eslint-disable-next-line no-console
     console.log(`      [measured] ${beat}/${wins} winning rounds beat the closed form; `
       + `worst excess ${worstExcess} ECU (band bound there: ${worstBound})`)
+  })
+})
+
+// ── PART 1/2 — THE COST FLOOR AND AUTO-DROP ──────────────────────────────────
+//
+// ⚠⚠ NO BIDDER MAY BID BELOW THEIR OWN COST (Elena, 2026-08-04). §4.3 already bound the
+// bots; the player was the only bidder in the auction allowed to do what none of the
+// others could. It SUPERSEDES §8.3 case 4 ("legal and allowed … never blocked").
+
+describe('§4.3 (extended) the player may not bid below their own cost', () => {
+  it('a below-cost bid is REFUSED, with both numbers named', () => {
+    const s = base({ playerCost: 34 })
+    const st = run(openAuction(s, 0), s)
+    const r = playerBid(st, s, 33, st.sequence, 0)
+    expect(r.ok).toBe(false)
+    expect((r as { reason: string }).reason).toBe(
+      'Your cost is 34. A bid of 33 would be below it, and no bidder in this auction may '
+      + 'bid below their own cost.')
+    // A refused bid changes nothing.
+    expect(st.standing).toBe(48)
+  })
+
+  it('a bid exactly AT cost is allowed — the rule is `>=`, as it is for the bots', () => {
+    // §4.3's `>=` for bots read inclusively: a bot bids at cost for zero profit. The
+    // player is bound by the same character, not a stricter one.
+    const s = base({ playerCost: 46 })
+    const st = run(openAuction(s, 0), s)
+    expect(playerBid(st, s, 46, st.sequence, 0).ok).toBe(true)
+  })
+})
+
+describe('⚠⚠ AUTO-DROP — the price passes the player, and it must never steal a win', () => {
+  it('fires when a BOT bid lands below the cost, and the exit is the COST', () => {
+    // ⚠ THE EXIT IS COST, NOT THE LAST BID. A passive player who bid 50 and then watched
+    // the bots walk past them has a last bid of 50, which would read as "quit early, left
+    // 4 unclaimed". Nothing they did says that: the auction went below what they were
+    // allowed to pay, and their cost is exactly that boundary.
+    const s = base({
+      playerCost: 46,
+      bots: [
+        { bidderId: 'rival1', cost: 12 },
+        { bidderId: 'rival2', cost: 14 },
+        { bidderId: 'rival3', cost: 88 },
+        { bidderId: 'rival4', cost: 63 },
+      ],
+    })
+    let st = openAuction(s, 0)
+    for (let i = 0; i < 60 && maxLegalBid(st.standing, SCHEDULE) > 50; i++) {
+      st = advanceOne(st, s, st.nextBotAtMs ?? 0).state
+    }
+    st = (playerBid(st, s, 50, st.sequence, 0) as { state: OpenState }).state
+    expect(st.playerOut).toBe(false)
+
+    // Let the bots run. The first one to land below 46 removes the player.
+    const done = run(st, s)
+    expect(done.playerOut).toBe(true)
+    expect(done.playerExitKind).toBe('autoDrop')
+    expect(done.playerExitPrice).toBe(46)
+    expect(playerExit(done, s).exitPrice).toBe(46)
+    // ⚠ NOT CLAMPED to the last bid of 50, and not left AS the last bid either.
+    expect(playerExit(done, s).exitPrice).not.toBe(50)
+    // And the history says what happened, in its own kind.
+    expect(done.history.some(e => e.kind === 'autoDrop')).toBe(true)
+    expect(done.history.some(e => e.kind === 'dropOut')).toBe(false)
+  })
+
+  it('⚠⚠ NEVER fires on a player holding at their own cost with every bot stopped — '
+    + 'that is the normal WINNING path', () => {
+    // The case Elena singled out. The player holds the low bid AT their cost; no bot can
+    // beat it; nobody bids; the player WINS. Auto-drop firing here would steal the round.
+    //
+    // ⚠ IT IS STRUCTURAL, not a guard somebody has to remember: auto-drop runs only on a
+    // BOT bid, so the holder is that bot — and a player who holds is standing at their own
+    // bid, which cannot be below their own cost. Asserted anyway, because "cannot happen"
+    // is what every stolen round is made of.
+    const s = base({
+      playerCost: 34,
+      bots: [{ bidderId: 'rival1', cost: 47 }, { bidderId: 'rival2', cost: 63 }],
+    })
+    let st = run(openAuction(s, 0), s)
+    // Walk down to exactly 34 — the dominant strategy, bidding at cost for zero margin.
+    for (let k = 0; k < 60 && st.status === 'waiting'; k++) {
+      const next = maxLegalBid(st.standing, SCHEDULE)
+      if (next < 34) break
+      st = bid(st, s, next)
+    }
+    expect(st.status).toBe('resolved')
+    expect(st.winnerId).toBe('player')
+    expect(st.playerOut).toBe(false)
+    expect(st.playerExitKind).toBeNull()
+    // The win is theirs and it is CENSORED — nobody pushed them lower.
+    const exit = playerExit(st, s)
+    expect(exit.censored).toBe(true)
+    expect(exit.exitPrice).toBe(st.price)
+    expect(st.history.some(e => e.kind === 'autoDrop')).toBe(false)
+  })
+
+  it('⚠ and never fires across a wide sweep whenever the player is the winner', () => {
+    // ⚠ TRIAL COUNT: 150 unseeded rounds with the player playing the dominant strategy.
+    // A win happens whenever their cost is lowest — roughly 39% of draws — so the sweep
+    // contains plenty, asserted below rather than assumed.
+    let wins = 0
+    for (let i = 0; i < 150; i++) {
+      const playerCost = 10 + (i % 50)
+      const s = base({ playerCost, order: 'random', rngAt: () => Math.random })
+      let st = run(openAuction(s, 0), s)
+      for (let k = 0; k < 80 && st.status === 'waiting'; k++) {
+        const next = maxLegalBid(st.standing, SCHEDULE)
+        if (next < playerCost) break
+        st = bid(st, s, next)
+      }
+      if (st.status !== 'resolved') st = playerDropOut(st, s, 0)
+      if (st.winnerId === 'player') {
+        wins++
+        expect(st.playerExitKind, `round ${i}: a winner must not be auto-dropped`).toBeNull()
+        expect(st.playerOut, `round ${i}`).toBe(false)
+      }
+    }
+    expect(wins, 'the sweep must actually contain wins').toBeGreaterThan(15)
   })
 })

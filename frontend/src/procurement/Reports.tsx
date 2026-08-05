@@ -201,7 +201,7 @@ function StudentRounds({ row, currency, isOpen }: {
                   <td style={td} data-testid={`proc-rep-exit-${x.round}`}>
                     {x.exitPrice ?? '\u2014'}
                     {/* The censoring marker travels with the number wherever it is shown. */}
-                    {x.exitCensored && <span title="won \u2014 nobody pushed them lower"> \u2191</span>}
+                    {x.exitCensored && <span title="won — nobody pushed them lower"> ↑</span>}
                   </td>
                 )
                 : (

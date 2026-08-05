@@ -72,6 +72,9 @@ export interface OpenTurnResponse {
     profit: number
     profitTotal: number
     droppedOut: boolean
+    /** ⚠ HOW they left, so §5.2 can tell a student the auction went below their cost
+     *  rather than implying they quit. Null when they won. */
+    exitKind: 'dropOut' | 'autoDrop' | null
     /** ⚠ §7's pair, from the RECORD. `exitCensored` is not re-derived from `won`. */
     exitPrice: number | null
     exitCensored: boolean
@@ -315,6 +318,7 @@ async function runOpenTurn(
         profit: record.profit,
         profitTotal: totalProfit(all),
         droppedOut: next.playerOut,
+        exitKind: next.playerExitKind,
         // ⚠ READ BACK OFF THE RECORD, not recomputed from `next`. The record is what the
         // reports and the results screen will read forever after; if the screen computed
         // its own copy the two could disagree and only the screen would be visible.

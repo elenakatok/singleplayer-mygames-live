@@ -52,6 +52,7 @@ const base = (over: Partial<OpenSettings> = {}): OpenSettings => ({
   schedule: SCHEDULE,
   delaySchedule: DELAYS,
   playerId: 'player',
+  playerCost: 34,
   bots: BOTS,
   // ⚠ BLANK SEED — the classroom shape. See procurementOpenAuction.test.ts's header.
   rngAt: () => Math.random,
@@ -75,7 +76,7 @@ const sameKeys = (obj: object, keys: string[]) =>
 
 const AUCTION_KEYS = [
   'round', 'status', 'standing', 'holderLabel', 'youHold', 'yourLastBid', 'youAreOut',
-  'sequence', 'nextBotAtMs', 'step', 'minNextBid', 'history',
+  'sequence', 'nextBotAtMs', 'step', 'minNextBid', 'canBid', 'history',
   'totalBidders', 'winnerLabel', 'youWon', 'price',
 ]
 const EVENT_KEYS = ['kind', 'label', 'amount', 'isYou']
@@ -217,11 +218,12 @@ describe('⚠⚠ the invariant that lets the bid history stay fully public', () 
         if (st.stopped.length > 0) sawStoppedBots = true
         for (const e of st.history) {
           events++
-          if (e.kind === 'dropOut') {
-            // The ONLY drop-out in the system is the player's.
+          if (e.kind !== 'bid') {
+            // ⚠ TWO NON-BID KINDS NOW: `dropOut` (they left) and `autoDrop` (the price
+            // went below their cost and they were removed). BOTH are the player's — the
+            // invariant this test exists for is that a BOT emits nothing but a bid.
+            expect(['dropOut', 'autoDrop']).toContain(e.kind)
             expect(e.bidderId).toBe('player')
-          } else {
-            expect(e.kind).toBe('bid')
           }
         }
       }
@@ -236,10 +238,10 @@ describe('⚠⚠ the invariant that lets the bid history stay fully public', () 
     const st = playerDropOut(run(openAuction(s, 0), s), s, 0)
     const view = toClientAuction(1, st, s)
     expect(view.history.length).toBeGreaterThan(0)
-    const dropOuts = view.history.filter(e => e.kind === 'dropOut')
-    expect(dropOuts.length).toBe(1)
-    expect(dropOuts[0].isYou).toBe(true)
-    expect(dropOuts[0].label).toBe('You')
+    const exits = view.history.filter(e => e.kind !== 'bid')
+    expect(exits.length).toBe(1)
+    expect(exits[0].isYou).toBe(true)
+    expect(exits[0].label).toBe('You')
     expect(view.history.filter(e => e.kind === 'bid').every(e => typeof e.amount === 'number'))
       .toBe(true)
   })

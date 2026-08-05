@@ -101,6 +101,15 @@ async function makeInstance({
   // make the client's tick indistinguishable from a synchronous loop, and the tick is the
   // one piece of this screen that static render tests cannot reach.
   delayMs = null, delayJitterMs = null,
+  /** ⚠ A FULL BAND SCHEDULE, for the sections that must run at SHIPPED pacing. */
+  delaySchedule = null,
+  // ⚠⚠ THE PLAYER COST RANGE IS PARAMETERISED, and it must be. A passive student is
+  // AUTO-DROPPED the moment the price falls below their cost (2026-08-04), so the round
+  // RESOLVES mid-cascade and never reaches `waiting`. A section that drives the manual
+  // path — bid, refusal, Drop Out — has to draw a student the cascade will not pass, or
+  // it goes red on whichever draw it happened to get. That is exactly how this section
+  // failed on its first headed run while passing headless.
+  playerCostMin = 10, playerCostMax = 60,
 }) {
   const gid = `pwproc-${++seq}-${Date.now()}`
   await putDoc(`procurement_game_instances/${gid}/config/main`, {
@@ -109,13 +118,17 @@ async function makeInstance({
     rivalCount: intVal(4),
     reserve: intVal(reserve),
     rivalCostDist: distVal(10, 110),
-    playerCostDist: distVal(10, 60),
+    playerCostDist: distVal(playerCostMin, playerCostMax),
     bidIncrementUnit: intVal(1),
     currencyLabel: strVal('ECU'),
     kcEnabled: boolVal(kcVisible.length > 0),
     kcVisible: arrVal(kcVisible.map(strVal)),
     ...(delayMs === null ? {} : {
       delaySchedule: arrVal([mapVal({ above: intVal(0), delayMs: intVal(delayMs) })]),
+    }),
+    ...(delaySchedule === null ? {} : {
+      delaySchedule: arrVal(delaySchedule.map(b =>
+        mapVal({ above: intVal(b.above), delayMs: intVal(b.delayMs) }))),
     }),
     ...(delayJitterMs === null ? {} : { delayJitterMs: intVal(delayJitterMs) }),
   })
@@ -661,6 +674,9 @@ async function main() {
     const gidO = await makeInstance({
       rounds: 2, reserve: RESERVE, seed: null, kcVisible: [],
       format: 'open_descending', delayMs: 120, delayJitterMs: 0,
+      // ⚠ A CHEAP STUDENT: the cascade halts ABOVE them, so the round waits for a decision
+      // and this section exercises the MANUAL path. See makeInstance's note.
+      playerCostMin: 10, playerCostMax: 12,
     })
     const pidO = 'pw-open'
     const op = await browser.newPage()
@@ -830,9 +846,22 @@ async function main() {
     // The unseeded classroom shape is exercised end to end by the emulator harness's §15,
     // which is where that property belongs; what is under test HERE is the chart, and its
     // input needs to be known.
+    // ⚠⚠ SHIPPED PACING, NOT ZERO (Elena, 2026-08-04). The earlier cohort ran at
+    // `delayMs: 0`, which zeroed the pacing exactly where the stall lived: the open loop
+    // budgeted by ITERATIONS (400 × 150 ms ≈ 60–80 s), and at the real schedule
+    // — 800/1200/2500/3000 — a long endgame exceeded it, fell out of the loop and then
+    // timed out waiting for a Continue that was never coming. Two of eight stuck.
+    //
+    // The budget is wall-clock now, and this instance uses the SHIPPED delay schedule so
+    // the fix is verified against the thing that broke rather than beside it.
     const robotGidO = await makeInstance({
       rounds: 4, reserve: RESERVE, seed: 'pw-open-robots', kcVisible: [],
-      format: 'open_descending', delayMs: 0, delayJitterMs: 0,
+      format: 'open_descending',
+      delaySchedule: [
+        { above: 80, delayMs: 800 }, { above: 50, delayMs: 1200 },
+        { above: 30, delayMs: 2500 }, { above: 0, delayMs: 3000 },
+      ],
+      delayJitterMs: 250,
     })
     const robotOpen = await new Promise((resolve) => {
       const child = spawn(process.execPath, [
@@ -851,12 +880,21 @@ async function main() {
     if (robotOpen.code !== 0) console.error(robotOpen.out.slice(-4000))
     check(robotOpen.code === 0,
       `⚠⚠ [open robots] the driver runs to completion against an OPEN instance (exit ${robotOpen.code})`)
+    // ⚠ ECHO THE MARGIN ON SUCCESS, not only on failure. A wall-clock budget nobody can
+    // see the headroom on is a budget nobody can trust — and the number only exists in a
+    // run at SHIPPED pacing, which is this one.
+    const marginLine = (robotOpen.out.match(/ {2}longest round observed:.*/) ?? [''])[0].trim()
+    if (marginLine) console.log(`  ↳ ${marginLine}`)
+    check(/longest round observed/.test(robotOpen.out),
+      `⚠ [open robots] the driver reports its wall-clock margin — ${marginLine || 'MISSING'}`)
     check(/4\/4 robots finished/.test(robotOpen.out),
       '⚠⚠ [open robots] and all four finished — rounds RESOLVE, which they did not before')
 
     // ⚠ THE PERSONA LABELS ELENA WILL SEE. Asserted from the driver's own output rather
     // than from the styles module, so a rename that missed the driver shows up here.
-    for (const label of ['exits at cost', 'exits early', 'exits below cost', 'random exit']) {
+    // ⚠ THREE PERSONAS NOW, not four. `exits below cost` is DELETED: no bidder may bid
+    // below their own cost, so the region it existed to populate cannot be populated.
+    for (const label of ['exits at cost', 'exits early', 'random exit']) {
       check(robotOpen.out.includes(label),
         `[open robots] the cohort contains "${label}"`)
     }
@@ -882,8 +920,11 @@ async function main() {
     const spread = Math.max(...gaps) - Math.min(...gaps)
     check(spread >= 8,
       `⚠⚠ [open robots] the exit prices SPREAD around the 45° line (range ${spread} ECU)`)
-    check(gaps.some(g => g < 0),
-      '[open robots] and at least one robot exited BELOW cost — the points under the line')
+    // ⚠⚠ INVERTED. Nothing may sit below the 45° line any more — the mechanism forbids a
+    // bid below cost and auto-drops a player the price has passed, whose exit is recorded
+    // AT their cost. A single point under the line would mean the floor leaked.
+    check(gaps.every(g => g >= 0),
+      '⚠⚠ [open robots] NO exit sits below cost — the region under the line is unreachable')
 
     // ⚠ AND THE BENCHMARK IS REAL: perfect play is never worse than what a robot managed.
     check(robotRepO.rows.every(r => r.rounds.every(x => x.profit <= 1e9)),

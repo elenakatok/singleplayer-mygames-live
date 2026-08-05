@@ -174,6 +174,7 @@ export function resolveRound(
 export function validateBid(
   raw: unknown,
   config: ProcurementConfig,
+  playerCost: number | null = null,
 ): { ok: true; bid: number } | { ok: false; reason: string } {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) {
     return { ok: false, reason: 'Enter a whole number of ECU.' }
@@ -191,7 +192,24 @@ export function validateBid(
       reason: `Bids above the reserve price of ${config.reserve} will not be accepted.`,
     }
   }
-  // ⚠ BELOW OWN COST IS DELIBERATELY NOT CHECKED (§6.2). Losing money is a legitimate
-  // mistake and part of the lesson; the lecture's own scatter shows students doing it.
+  // ⚠⚠ BELOW YOUR OWN COST IS REFUSED (Elena, 2026-08-04) — and this SUPERSEDES Part 1
+  // §6.2's "Bid < own cost | **Allowed.** Losing money is a legitimate mistake and part of
+  // the lesson", which is being corrected in the spec.
+  //
+  // The reason is uniformity, not protection: open §4.3 already forbids a BOT from bidding
+  // below its own cost, so the player was the only bidder in the auction permitted to do
+  // something none of the others could. It is now ONE mechanism rule.
+  //
+  // ⚠ THE COST IS OPTIONAL HERE ON PURPOSE. `submitBid` runs the cheap shape and reserve
+  // checks BEFORE its transaction, where the recorded cost is not yet in hand, and calls
+  // again with the cost inside — the check that needs a read stays with the read. Passing
+  // `null` therefore means "not yet known", never "no limit".
+  if (playerCost !== null && raw < playerCost) {
+    return {
+      ok: false,
+      reason: `Your cost is ${playerCost}. A bid of ${raw} would be below it, and no `
+        + 'bidder in this auction may bid below their own cost.',
+    }
+  }
   return { ok: true, bid: raw }
 }

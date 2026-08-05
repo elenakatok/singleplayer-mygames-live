@@ -77,9 +77,18 @@ export function OpenBidScreen({
   // stall, and the screen must say something during it rather than sitting blank (§4.6).
   const [slow, setSlow] = useState(false)
 
-  // One in-flight request at a time. Without this a slow advance and a click would both
-  // land, and the second would act on a state the player never saw.
-  const inFlight = useRef(false)
+  // ⚠⚠ ONE IN-FLIGHT REQUEST AT A TIME — but a PLAYER ACTION QUEUES BEHIND IT rather than
+  // being dropped. The first version returned early whenever anything was in flight, which
+  // silently swallowed a click: at a fast delay schedule the advance tick is in flight most
+  // of the time, so a student pressing Drop Out or Bid mid-cascade got NOTHING — no bid, no
+  // error, no visible reason. §5.1 requires both controls live while the bots are bidding,
+  // and "live" has to mean the press does something.
+  //
+  // ⚠ THE ASYMMETRY IS DELIBERATE. A TICK that arrives while something is in flight is
+  // dropped, because another tick is already scheduled and queueing them would stack up
+  // redundant advances. A PLAYER ACTION waits its turn, because there is no second one
+  // coming and the student is watching for it.
+  const pending = useRef<Promise<void> | null>(null)
   const ended = useRef(false)
 
   const apply = useCallback((turn: ProcurementOpenTurn) => {
@@ -95,19 +104,30 @@ export function OpenBidScreen({
     }
   }, [onRoundEnd])
 
-  const call = useCallback(async (fn: () => Promise<ProcurementOpenTurn>) => {
-    if (inFlight.current || ended.current) return
-    inFlight.current = true
-    const slowTimer = setTimeout(() => setSlow(true), 1_200)
-    try {
-      apply(await fn())
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Something went wrong. Try again.')
-    } finally {
-      clearTimeout(slowTimer)
-      setSlow(false)
-      inFlight.current = false
+  const call = useCallback(async (
+    fn: () => Promise<ProcurementOpenTurn>,
+    { queue = false }: { queue?: boolean } = {},
+  ) => {
+    if (ended.current) return
+    if (pending.current) {
+      // A tick can be skipped — another is already scheduled. A player's press cannot.
+      if (!queue) return
+      await pending.current.catch(() => { /* its own handler reported it */ })
+      if (ended.current) return
     }
+    const work = (async () => {
+      const slowTimer = setTimeout(() => setSlow(true), 1_200)
+      try {
+        apply(await fn())
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Something went wrong. Try again.')
+      } finally {
+        clearTimeout(slowTimer)
+        setSlow(false)
+      }
+    })()
+    pending.current = work
+    try { await work } finally { if (pending.current === work) pending.current = null }
   }, [apply])
 
   // ── the tick: wait until the bot is due, then ask ─────────────────────────
@@ -130,19 +150,25 @@ export function OpenBidScreen({
 
   const parsed = /^\d+$/.test(boxValue.trim()) ? Number(boxValue.trim()) : NaN
   const live = auction.status !== 'resolved' && !auction.youAreOut && !busy
-  // ⚠ §4.2: THE HOLDER MAY NOT UNDERCUT THEMSELVES, and that includes the player. The box
-  // stays live while the BOTS bid (§5.1) — which is exactly the window in which the player
-  // holds their own bid — so bidding is closed while they are winning. The server refuses
-  // it independently; this is what stops the screen inviting it. Drop Out stays live:
-  // quitting while ahead is a real, if unwise, decision.
-  const canBid = live && !auction.youHold
+  // ⚠⚠ `canBid` IS THE SERVER'S, NOT THE SCREEN'S. It already folds in both closures:
+  //   • §4.2 — the holder may not undercut themselves, and that includes the player. The
+  //     box stays live while the BOTS bid (§5.1), which is exactly the window in which the
+  //     player holds their own bid.
+  //   • the cost floor — no bidder may bid below their own cost (Elena, 2026-08-04), so
+  //     once the minimum next bid falls under it there is no legal move but Drop Out.
+  // Computing it here from a client-side copy of the cost would be a second opinion about
+  // a rule the server will enforce anyway; when the two disagreed, the screen would win
+  // the argument and the student would lose it.
+  const canBid = live && auction.canBid
+  // ⚠ The cost floor specifically — used only to explain WHY, never to decide.
+  const belowCost = auction.minNextBid !== null && auction.minNextBid < cost
 
   const submit = async (amount: number) => {
     setBusy(true)
     // ⚠ THE SEQUENCE THE PLAYER WAS LOOKING AT travels with the bid, so a collision can be
     // described accurately. It is never why a bid is refused — the server re-checks
     // against the new standing and accepts if it still clears (§4.6).
-    await call(() => procurementOpenBid(amount, auction.sequence))
+    await call(() => procurementOpenBid(amount, auction.sequence), { queue: true })
     setTyped(null)
     setBusy(false)
   }
@@ -248,7 +274,9 @@ export function OpenBidScreen({
           <button
             data-testid="proc-open-dropout"
             disabled={!live}
-            onClick={() => { void call(procurementDropOut) }}
+            // ⚠ QUEUED: a Drop Out pressed while a bot's advance is in flight must still
+            // happen. It is the student's only move once the cost floor closes bidding.
+            onClick={() => { void call(procurementDropOut, { queue: true }) }}
           >
             Drop Out
           </button>
@@ -271,6 +299,17 @@ export function OpenBidScreen({
         {slow && (
           <p data-testid="proc-open-slow" style={{ margin: '0.5rem 0 0', fontSize: '0.8rem', color: colors.textSecondary }}>
             Opening the auction… the first move of a session can take a few seconds.
+          </p>
+        )}
+        {/* ⚠⚠ THE COST FLOOR, SAID PLAINLY AND WITH THE NUMBERS. A disabled button with no
+            explanation reads as a broken page — and this is the moment a student most
+            needs to understand the rule, because it is the moment it costs them the
+            round. §4.3 binds the bots to exactly this; they are now bound the same way. */}
+        {belowCost && live && !auction.youHold && (
+          <p data-testid="proc-open-cost-floor" style={{ margin: '0.5rem 0 0', fontSize: '0.85rem', color: colors.warnBannerText }}>
+            The next bid would be {auction.minNextBid}, below your cost of {cost}. You
+            can't bid lower — no bidder in this auction may go below their own cost. Drop
+            Out is your only move.
           </p>
         )}
         {auction.youHold && auction.status !== 'resolved' && (
@@ -330,7 +369,7 @@ export function OpenBidScreen({
                 fontWeight: row.isYou ? 600 : 400,
                 borderBottom: `1px solid ${colors.borderLight ?? '#eee'}`,
               }}>
-                {row.label}{row.amount === null ? ' — dropped out' : ` — ${row.amount}`}
+                {row.label}{eventSuffix({ kind: row.eventKind, amount: row.amount })}
               </li>
             )
           ))}
@@ -344,8 +383,17 @@ export function OpenBidScreen({
   )
 }
 
+/** ⚠ THREE ROW KINDS, THREE SENTENCES. An auto-drop must not read as "dropped out": the
+ *  student did not quit, the price went below what they were allowed to pay. */
+function eventSuffix(row: { kind?: string; amount: number | null }): string {
+  if (row.amount !== null) return ` — ${row.amount}`
+  return row.kind === 'autoDrop'
+    ? ' — out: the price went below your cost'
+    : ' — dropped out'
+}
+
 type Row =
-  | { kind: 'event'; label: string; amount: number | null; isYou: boolean }
+  | { kind: 'event'; label: string; amount: number | null; isYou: boolean; eventKind: string }
   | { kind: 'band'; step: number }
   | { kind: 'open'; amount: string }
 
@@ -372,7 +420,7 @@ function historyRows(
   const events = auction.history
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]
-    rows.push({ kind: 'event', label: e.label, amount: e.amount, isYou: e.isYou })
+    rows.push({ kind: 'event', label: e.label, amount: e.amount, isYou: e.isYou, eventKind: e.kind })
     // Compare THIS bid's band with the one before it, in chronological order — the
     // marker belongs between them, which reading backwards means after the newer row.
     const prev = events[i - 1]
@@ -555,7 +603,7 @@ export function OpenRoundEnd({
                 fontWeight: row.isYou ? 600 : 400,
                 borderBottom: `1px solid ${colors.borderLight ?? '#eee'}`,
               }}>
-                {row.label}{row.amount === null ? ' — dropped out' : ` — ${row.amount}`}
+                {row.label}{eventSuffix({ kind: row.eventKind, amount: row.amount })}
               </li>
             )
           ))}

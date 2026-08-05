@@ -802,6 +802,132 @@ stop being the clean benchmark the chart exists to show.
 
 ---
 
+## 6j. ⚠⚠ NO BID BELOW COST, and the exit-price defect (2026-08-04)
+
+### The defect: `exit_price === price` in 100% of rounds, by construction
+
+`playerExit` returned `state.standing` of the **resolved** state. For a loser that is the
+FINAL PRICE — the bots they left behind have already driven it down — and `terminate()`
+sets `price` from the same field. For a winner, their last bid *is* the winning price. So
+the column agreed with `price` in every round of both outcomes and carried **no
+information at all**. The Tier-3 chart was plotting the clearing price against cost: the
+45° benchmark meaningless for losers, the winner/loser split meaningless as a censoring
+distinction.
+
+⚠ **Why two checkpoints of tests missed it.** Every test used the reference field
+47/88/21/63, where after the player leaves the **cheapest bot already holds and cannot
+undercut itself** — the settle is a no-op, the price does not move, and exit legitimately
+equals final. BUILD_NOTES §3, a sixth time: the scenario never contained the condition.
+The live case had **two** cheap bots left, which duel each other down to 17.
+
+**The pin** now uses that fixture deliberately — bots 12/14/88/63, student at 46 — and
+asserts `exit_price !== price` on a losing round where the settle moved. It is the
+assertion nothing made.
+
+### The mechanism change: one rule for every bidder
+
+§4.3 already forbade a BOT from bidding below its own cost. **The player was the only
+bidder in the auction permitted to do what none of the others could.** Now nobody may:
+
+- **Sealed** — `validateBid` refuses it at submit. The check runs INSIDE the transaction,
+  because it needs the recorded cost, and still draws nothing: throwing aborts the
+  transaction before `resolveRound` opens the rival stream.
+- **Open** — `playerBid` refuses it; the screen closes Bid and says why with both numbers;
+  and a bot bid landing below the cost **auto-drops** the player.
+
+⚠ It also makes the closed-form benchmark **exact rather than approximate**: the
+lowest-cost bidder always wins, and the price always lands within one step above the
+second-lowest cost.
+
+### ⚠⚠ Auto-drop can never steal a won round — structurally
+
+It runs only on a **bot** bid, so the holder is that bot; and a player who holds is
+standing at their own bid, which cannot be below their own cost. A player holding at
+exactly their cost with every bot stopped is the normal winning path. The `holder` test is
+written explicitly anyway, and two tests assert it — one targeted, one a 150-round sweep —
+because "cannot happen" is what every stolen round is made of.
+
+### Exit price: three cases, complete, never clamped
+
+| | |
+|---|---|
+| **won** | their winning bid (censored) |
+| **dropped out** | their last bid — `null` if they never bid |
+| **auto-dropped** | their **cost** |
+
+Recorded **at the moment of leaving**, on `OpenState.playerExitPrice`, and read back from
+there. Never re-derived from the settled state.
+
+⚠ **No `min()`/`max()` anywhere near it.** An early quitter at 50 with a cost of 34 records
+50; clamping would plot them as perfect. And the auto-drop case is why last-bid alone is
+wrong: a passive player who bid 40 and watched the bots walk to 33 would read as "quit
+early, left 6 unclaimed", when what happened is the auction went below what they were
+allowed to pay. Their cost is exactly that boundary.
+
+⚠ **`null` is omitted from charts and counted separately**, never silently dropped: they
+committed to nothing, so there is no revealed stopping point to record.
+
+### Consequences
+
+**Two personas deleted, not left dead** — sealed `loss-maker` (6→5) and open
+`exits below cost` (4→3). Both existed to populate the region under the 45° line, which is
+now **unreachable by construction**. Surviving sets:
+*sealed* — equilibrium · cost-bidder · over-marker · under-marker · random-in-band;
+*open* — exits at cost · exits early · random exit.
+
+**Both captions rewritten.** §7's "below the line = willing to supply below cost" is dead
+text in both formats; each chart now says the region is unreachable by construction rather
+than empty by luck.
+
+**`autoDrop` is its own event kind**, not a `dropOut`. A history that told a student they
+quit when the auction left them behind would be a lie in the record. It is still the
+player's — the invariant that a bot emits nothing but a bid is intact.
+
+### The robot budget: wall clock, not iterations
+
+The open loop read `guard < 400` with a 150 ms wait — roughly **60–80 seconds**, a number
+nobody chose. At shipped pacing (800/1200/2500/3000) a long endgame exceeded it, fell out
+of the loop, and then timed out waiting for a Continue that was never coming. **Two of
+eight stuck in a launcher run.**
+
+⚠ An iteration count is the wrong *unit*: it measures how often we looked, not how long
+the auction has had. Halving the poll interval would have halved the budget silently.
+Now **5 minutes of wall clock per round**, with the loop's exit reason logged and the
+longest round reported so the margin is visible rather than assumed.
+
+⚠ **The browser cohort now runs at the SHIPPED schedule.** It previously ran at
+`delayMs: 0` — zeroing the pacing exactly where the bug lived, which is why the harness was
+green throughout. **Measured after the fix: longest round 41–42 s against a 300 s budget,
+86% headroom, headless AND headed.**
+
+### ⚠⚠ Occluded-window throttling was my hypothesis and it was WRONG
+
+I predicted timer throttling would dominate the headed case and that wall-clock budgeting
+alone might not fix it. It did fix it. The headed run went red twice, and **neither cause
+was throttling**:
+
+1. **A flake I had just introduced.** The `[OPEN]` section drew a student cost from the
+   full 10–60 range, so once auto-drop existed the round often resolved mid-cascade and
+   never reached `waiting`. Headless passed only because the draw was low. Both harnesses
+   now PIN the cost range per section — cheap student for the manual path, dear student for
+   the auto-drop path — so each section tests the ending it names rather than whichever the
+   RNG produced.
+2. ⚠⚠ **A genuine product defect: a player's click was silently swallowed.** `call()`
+   returned early whenever anything was in flight, and at a fast delay schedule the advance
+   tick is in flight most of the time — so a student pressing **Drop Out or Bid mid-cascade
+   got nothing. No action, no error, no reason.** §5.1 requires both controls live while the
+   bots bid, and "live" has to mean the press does something.
+
+   Player actions now **queue** behind an in-flight call; ticks still skip, because another
+   tick is already scheduled and queueing them would stack redundant advances. The
+   asymmetry is the point: there is no second Drop Out coming, and the student is watching
+   for it.
+
+**Only the headed run found (2).** It is the case where the harness clicks land against a
+live tick often enough to matter — which is also the case a real student is in.
+
+---
+
 ## 7. Which hosting targets a frontend change needs — the standing rule
 
 Read off `frontend/vite.config.ts` and `firebase.json`, not off convention.

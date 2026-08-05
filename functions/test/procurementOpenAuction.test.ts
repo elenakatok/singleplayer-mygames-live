@@ -59,6 +59,10 @@ const base = (over: Partial<OpenSettings> = {}): OpenSettings => ({
   schedule: SCHEDULE,
   delaySchedule: DELAYS,
   playerId: 'player',
+  // ⚠ THE MACHINE NEEDS THE COST NOW (2026-08-04) — no bidder may bid below their own.
+  // §8's vector player has a cost of 34, so the trace is unchanged: every bid in it is
+  // at or above 34.
+  playerCost: 34,
   bots: BOTS,
   rngAt: blankSeedRng,
   // Deterministic pacing in the vector: jitter is UX, and a random one would make the
@@ -252,11 +256,14 @@ describe('§8.2 Phase 2 — player engages', () => {
     expect(lastPlayerBid(done, s)).toBe(38)
   })
 
-  it('the player\'s exit price is 36 and is NOT censored — they lost (§7)', () => {
+  it('the player\'s exit price is their LAST BID of 38, not censored — they lost (§7)', () => {
+    // ⚠⚠ INVERTED FROM CP4b, AND THE OLD VALUE WAS THE BUG. It asserted 36 — the standing
+    // they DECLINED, read off the settled state — which also happened to be the final
+    // price, so it looked correct. Exit is the lowest price they COMMITTED to.
     const { s, st } = duel()
     const done = playerDropOut(st, s, 0)
     const exit = playerExit(done, s)
-    expect(exit.exitPrice).toBe(36)
+    expect(exit.exitPrice).toBe(38)
     expect(exit.censored).toBe(false)
   })
 })
@@ -289,21 +296,26 @@ describe('§8.3 required cases', () => {
     expect(st.sequence).toBe(10)
   })
 
-  it('case 4 — a bid below the player\'s own cost is LEGAL and never blocked', () => {
-    // 33 against a standing of 38, with a player cost of 34. The machine is not even TOLD
-    // the player's cost, so it could not block one if it wanted to.
+  it('⚠⚠ case 4 SUPERSEDED — a bid below the player\'s own cost is now REFUSED', () => {
+    // ⚠⚠ THIS CASE IS INVERTED FROM §8.3 AS WRITTEN (Elena, 2026-08-04), and the spec is
+    // being corrected. It read: "Player bids 33 at standing 38 | **Legal and allowed** —
+    // below own cost. If it wins, profit is −1. Never blocked."
+    //
+    // §4.3 already forbade a BOT from bidding below its own cost, so the player was the
+    // only bidder in the auction permitted to do what none of the others could. It is now
+    // ONE mechanism rule — and it is what makes the closed-form benchmark exact.
+    //
+    // ⚠ THE SCHEDULE STILL SAYS 33 CLEARS THE STEP. Legality and the cost floor are two
+    // different gates, and `isLegalBid` remains a statement about the DECREMENT only.
     expect(isLegalBid(33, 38, SCHEDULE)).toBe(true)
 
-    // End to end: a below-cost bid that WINS. One bot, cost 21; the player bids 20.
-    const s = base({ bots: [{ bidderId: 'bot3', cost: 21 }] })
-    let st = runCascade(openAuction(s, 0), s).state
-    st = bid(st, s, 20)                 // 20 < bot3's cost of 21 → bot3 cannot answer
-    st = runCascade(st, s).state
-    expect(st.status).toBe('resolved')
-    expect(st.winnerId).toBe('player')
-    expect(st.price).toBe(20)
-    // With a cost of 34 that is a profit of −14. Nothing warned them, deliberately.
-    expect(st.price! - 34).toBe(-14)
+    const s = base({ playerCost: 34, bots: [{ bidderId: 'bot3', cost: 21 }] })
+    const st = runCascade(openAuction(s, 0), s).state
+    const r = playerBid(st, s, 20, st.sequence, 0)
+    expect(r.ok).toBe(false)
+    expect((r as { reason: string }).reason).toMatch(/below their own cost/)
+    // A refused bid changes nothing: no −14 round can be produced any more.
+    expect(st.winnerId).toBeNull()
   })
 
   it('case 5 — player drops out at standing 48: bot 3 wins at 48, price still shown', () => {
@@ -314,14 +326,17 @@ describe('§8.3 required cases', () => {
     expect(st.winnerId).toBe('bot3')
     expect(st.price).toBe(48)
     // ⚠ The player still sees where it landed — most of the lesson (§4.5).
-    expect(playerExit(st, s).exitPrice).toBe(48)
+    // ⚠⚠ BUT THEIR EXIT PRICE IS NULL, not 48: they never bid, so they committed to
+    // nothing and there is no revealed stopping point to record. 48 is a price they
+    // declined. Null is omitted from the charts and counted separately.
+    expect(playerExit(st, s).exitPrice).toBeNull()
     expect(playerExit(st, s).censored).toBe(false)
     // Recorded as PLAY, never as an absence.
     expect(st.history.some(e => e.kind === 'dropOut' && e.bidderId === 'player')).toBe(true)
   })
 
   it('case 6 — player cost 15 (below every bot): the duel runs past 36 to bot 3\'s floor', () => {
-    const s = base()
+    const s = base({ playerCost: 15 })
     let st = runCascade(openAuction(s, 0), s).state
     // Play the minimum legal move each time, as a patient player with a cost of 15 would.
     for (let i = 0; i < 40 && st.status === 'waiting'; i++) {

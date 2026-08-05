@@ -56,6 +56,18 @@ export interface OpenSettings {
   schedule: readonly DecrementBand[]
   delaySchedule: readonly DelayBand[]
   playerId: string
+  /**
+   * ⚠⚠ THE PLAYER'S OWN COST — AND THE MACHINE NEEDS IT NOW (Elena, 2026-08-04).
+   *
+   * Until this change the machine was deliberately NOT told it, and a test said so: "it
+   * could not block a below-cost bid if it wanted to." That was correct while §6.2/§8.3
+   * case 4 allowed one. **They no longer do.** §4.3 already forbade a BOT from bidding
+   * below its own cost; the player could do something no other bidder in the auction
+   * can. It is now ONE rule applied uniformly — and it is what makes the closed-form
+   * benchmark exact rather than approximate, because the lowest-cost bidder always wins
+   * and the price always lands within one step above the second-lowest cost.
+   */
+  playerCost: number
   bots: readonly OpenBot[]
   /**
    * ⚠⚠ A FRESH STREAM PER DECISION, KEYED BY THE DECISION INDEX — not one stateful `Rng`
@@ -103,6 +115,12 @@ export interface OpenSettings {
 export type OpenEvent =
   | { kind: 'bid'; bidderId: string; amount: number; isPlayer: boolean }
   | { kind: 'dropOut'; bidderId: string }
+  /** ⚠ THE PLAYER WAS REMOVED because the price fell below their own cost — they can no
+   *  longer bid at all (§4.3, now applied to the player). Its own kind rather than a
+   *  `dropOut`, because "you left" and "the price left you behind" are different events
+   *  and the history should not tell a student they quit when they did not.
+   *  ⚠ STILL THE PLAYER'S — the invariant that a BOT emits nothing but a bid is intact. */
+  | { kind: 'autoDrop'; bidderId: string }
 
 export type OpenStatus =
   /** A bot will act. The client waits until `nextBotAtMs`, then calls advance(). */
@@ -142,6 +160,23 @@ export interface OpenState {
   /** When the next bot bid becomes due, in epoch ms. Null unless `status` is 'bot_turn'.
    *  ⚠ The SERVER checks this; the client only decides when to ask (open §4.6). */
   nextBotAtMs: number | null
+  /**
+   * ⚠⚠ THE EXIT PRICE, RECORDED AT THE MOMENT THE PLAYER LEAVES — never read back off the
+   * settled state. That readback was the CP4b defect: `playerExit` returned
+   * `state.standing` of the RESOLVED state, which for a loser is the FINAL PRICE, so
+   * `exit_price === price` in 100% of rounds by construction and the Tier-3 chart was
+   * plotting the clearing price against cost.
+   *
+   * Three cases, complete, and NEVER clamped (Elena, 2026-08-04):
+   *   won         → their winning bid            (derived at resolution, not stored here)
+   *   dropped out → their last bid, null if none (stored here, at the drop)
+   *   auto-dropped→ their COST                   (stored here, at the removal)
+   *
+   * ⚠ NO `min()`/`max()` ANYWHERE NEAR THIS. An early quitter at 50 with a cost of 34
+   * must record 50; clamping would plot them as perfect.
+   */
+  playerExitPrice: number | null
+  playerExitKind: 'dropOut' | 'autoDrop' | null
   winnerId: string | null
   price: number | null
 }
@@ -271,6 +306,8 @@ export function openAuction(s: OpenSettings, nowMs: number): OpenState {
     sequence: 0,
     decisions: 0,
     nextBotAtMs: null,
+    playerExitPrice: null,
+    playerExitKind: null,
     winnerId: null,
     price: null,
   }
@@ -344,14 +381,71 @@ function commitOneBotBid(state: OpenState, s: OpenSettings, nowMs: number): Open
   // jumping pays is a question for the humans; the bots do not try to answer it.
   const amount = maxLegalBid(state.standing, s.schedule)
 
-  return settle({
+  const next: OpenState = {
     ...state,
     standing: amount,
     holder: chosen.bidderId,
     history: [...state.history, { kind: 'bid', bidderId: chosen.bidderId, amount, isPlayer: false }],
     sequence: state.sequence + 1,
     decisions: state.decisions + 1,
-  }, s, nowMs)
+  }
+
+  // ⚠⚠ AUTO-DROP: the price has fallen below the player's own cost, so there is no bid
+  // left they are allowed to make (§4.3, now applied to the player). They are removed.
+  //
+  // ⚠⚠ IT CAN NEVER FIRE ON A PLAYER ABOUT TO WIN, and that is structural rather than a
+  // guard somebody has to remember: this branch runs only on a BOT bid, so the holder is
+  // that bot and not the player — and a player who HOLDS is standing at their own bid,
+  // which is at or above their cost because they cannot bid below it. A player holding at
+  // exactly their own cost with every bot stopped is the normal winning path, and firing
+  // here would steal a won round. The `holder` test below says so explicitly anyway, and
+  // a test asserts it.
+  if (!next.playerOut && next.holder !== s.playerId && amount < s.playerCost) {
+    const removed: OpenState = {
+      ...next,
+      playerOut: true,
+      // ⚠ THE EXIT IS THEIR COST, NOT THEIR LAST BID (Elena, 2026-08-04). A passive player
+      // who bid 40 and then watched the bots walk to 33 has a last bid of 40, which would
+      // read as "quit early, left 6 unclaimed" — but nothing they did says that. What
+      // happened is that the auction went below what they were allowed to pay, and their
+      // cost is exactly that boundary.
+      playerExitPrice: s.playerCost,
+      playerExitKind: 'autoDrop',
+      history: [...next.history, { kind: 'autoDrop', bidderId: s.playerId }],
+      sequence: next.sequence + 1,
+    }
+    // The player is out, so the remaining bots settle among themselves IMMEDIATELY —
+    // the same treatment §4.4 gives a Drop Out, and safe for the same reason: nobody is
+    // left who could bid against a price they cannot see.
+    return settleRemainingBots(removed, s, nowMs)
+  }
+
+  return settle(next, s, nowMs)
+}
+
+/**
+ * The player has left — by their own hand or by auto-drop — so run the remaining bots to
+ * quiescence in this one commit (§4.4's table, in its own words).
+ *
+ * ⚠ SHARED BY BOTH EXITS ON PURPOSE. They differ in what the exit price RECORDS and in
+ * what the history says; they do not differ in what happens to the auction afterwards,
+ * and two copies of this loop would eventually disagree about that.
+ */
+function settleRemainingBots(state: OpenState, s: OpenSettings, nowMs: number): OpenState {
+  let cur = settle(state, s, nowMs)
+  // A bound, not a policy: every step strictly lowers the standing bid by at least 1 and
+  // the price is bounded below by the lowest cost, so this cannot spin. It exists so a
+  // schedule that somehow reached a zero step raises loudly instead of hanging a request.
+  let guard = 0
+  while (cur.status === 'bot_turn') {
+    if (++guard > 10_000) {
+      throw new Error('[procurement] open cascade did not terminate — is a step size 0?')
+    }
+    const next = commitOneBotBid(cur, s, nowMs)
+    if (next === null) break
+    cur = next
+  }
+  return cur
 }
 
 export type BidRejection = { ok: false; reason: string }
@@ -427,6 +521,17 @@ export function playerBid(
   if (amount < 0) {
     return { ok: false, reason: 'A bid cannot be negative.' }
   }
+  // ⚠⚠ NO BID BELOW YOUR OWN COST (Elena, 2026-08-04). §4.3 already bound the bots to
+  // this; binding the player too makes it ONE mechanism rule rather than a licence only
+  // the human had. It SUPERSEDES §8.3 case 4 ("legal and allowed — below own cost … never
+  // blocked"), which is being corrected in the spec.
+  if (amount < s.playerCost) {
+    return {
+      ok: false,
+      reason: `Your cost is ${s.playerCost}. A bid of ${amount} would be below it, and no `
+        + 'bidder in this auction may bid below their own cost.',
+    }
+  }
 
   const ceiling = maxLegalBid(state.standing, s.schedule)
   if (amount > ceiling) {
@@ -472,29 +577,22 @@ export function playerBid(
 export function playerDropOut(state: OpenState, s: OpenSettings, nowMs: number): OpenState {
   if (state.status === 'resolved' || state.playerOut) return state
 
-  let cur = settle({
+  // ⚠⚠ THE EXIT IS CAPTURED HERE, BEFORE THE BOTS SETTLE — that is the whole fix. CP4b
+  // read it back off the RESOLVED state, where `standing` has already been driven down by
+  // the bots the player left behind, so every loser recorded the FINAL PRICE.
+  //
+  // ⚠ IT IS THEIR LAST BID — the lowest price they actually committed to — and NULL when
+  // they never bid at all. Not the standing they declined: a rival who undercuts a player
+  // below that player's own cost would otherwise stamp them as "willing to supply below
+  // cost", which is the one mistake the chart exists to name and which they did not make.
+  return settleRemainingBots({
     ...state,
     playerOut: true,
+    playerExitPrice: lastPlayerBid(state, s),
+    playerExitKind: 'dropOut',
     history: [...state.history, { kind: 'dropOut', bidderId: s.playerId }],
     sequence: state.sequence + 1,
   }, s, nowMs)
-
-  // A bound, not a policy: every step strictly lowers the standing bid by at least 1 and
-  // the price is bounded below by the lowest cost, so this cannot spin. It exists so a
-  // schedule that somehow reached a zero step raises loudly instead of hanging a request.
-  let guard = 0
-  while (cur.status === 'bot_turn') {
-    if (++guard > 10_000) {
-      throw new Error('[procurement] open cascade did not terminate — is a step size 0?')
-    }
-    // ⚠ `commitOneBotBid` DIRECTLY, bypassing the due check — the settle is IMMEDIATE by
-    // §4.4's own word. Faking `now` to force `advanceOne` through would have written an
-    // absurd `nextBotAtMs` into the intermediate states.
-    const next = commitOneBotBid(cur, s, nowMs)
-    if (next === null) break
-    cur = next
-  }
-  return cur
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -581,10 +679,18 @@ export function playerExit(state: OpenState, s: OpenSettings): {
   censored: boolean
 } {
   if (state.winnerId === s.playerId) {
-    // Censored: the auction ended before the player was pushed to their limit.
+    // WON — their winning bid. Censored: the auction ended before anybody pushed them to
+    // their limit, so this is an upper bound on where they would have stopped.
     return { exitPrice: lastPlayerBid(state, s), censored: true }
   }
-  // Revealed: the price they declined to beat. For a player who never bid at all this is
-  // the standing price they walked away from, which is still a genuine stopping point.
-  return { exitPrice: state.standing, censored: false }
+  // ⚠⚠ READ BACK FROM THE RECORD, NEVER FROM `state.standing`. That readback was the CP4b
+  // defect: by the time a round is resolved the standing has been driven to the FINAL
+  // PRICE by the bots the player left behind, so `exit_price === price` in every round and
+  // the field carried no information at all. It is set once, at the moment of leaving.
+  //
+  //   dropped out  → their last bid (null if they never bid)
+  //   auto-dropped → their cost
+  //
+  // ⚠ NOT CLAMPED. An early quitter at 50 with a cost of 34 records 50.
+  return { exitPrice: state.playerExitPrice, censored: false }
 }

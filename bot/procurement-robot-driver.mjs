@@ -236,6 +236,9 @@ async function playOpenRounds({ page, style, label, think, kcAnswered }) {
   }
 
   const rounds = []
+  // ⚠ Reported back so the MARGIN is visible rather than assumed — see `runCohort`'s
+  // summary. A budget nobody can see the headroom on is a budget nobody can trust.
+  let longestRoundMs = 0
   for (let t = 1; t <= totalRounds; t++) {
     await page.waitForSelector('[data-testid="proc-open-bid-input"]', { timeout: 60_000 })
     const cost = num(await grab(page, '[data-testid="proc-open-cost"]'))
@@ -243,9 +246,25 @@ async function playOpenRounds({ page, style, label, think, kcAnswered }) {
     let acted = 0
     let lastMin = null
 
-    // Drive until the round ends — by our own Drop Out, or by winning.
-    for (let guard = 0; guard < 400; guard++) {
+    // ⚠⚠ BUDGET BY WALL CLOCK, NOT BY ITERATIONS (Elena, 2026-08-04). This loop first read
+    // `guard < 400` with a 150 ms wait per pass — roughly 60–80 SECONDS, which is not a
+    // number anybody chose. At SHIPPED pacing (800/1200/2500/3000 ms) the opening cascade
+    // alone is ~12 s and each duel exchange another ~3 s, so a robot with a long endgame
+    // — a low cost, or a threshold well under the halt — ran out mid-round, fell out of
+    // the loop, and then waited 60 s for a Continue that was never coming. Two of eight
+    // stuck in a launcher run.
+    //
+    // ⚠ AN ITERATION COUNT IS THE WRONG UNIT ENTIRELY: it measures how often we looked,
+    // not how long the auction has had. Halving the poll interval would have halved the
+    // budget without a line of it changing.
+    const ROUND_BUDGET_MS = 5 * 60_000
+    const deadline = Date.now() + ROUND_BUDGET_MS
+    let exitReason = 'resolved'
+
+    // Drive until the round ends — by our own Drop Out, by auto-drop, or by winning.
+    for (;;) {
       if (await visible(page, '[data-testid="proc-open-continue"]')) break
+      if (Date.now() > deadline) { exitReason = 'budget'; break }
 
       // ⚠ The screen prints "46 ECU — bids must fall by at least 2 ECU"; the FIRST number
       // is the minimum next bid. It is absent once the round has resolved.
@@ -283,11 +302,24 @@ async function playOpenRounds({ page, style, label, think, kcAnswered }) {
       }
     }
 
+    // ⚠ LOG WHERE THE LOOP EXITED. A robot that runs out of budget and then times out
+    // waiting for Continue reports only "timeout", which says nothing about which of the
+    // two happened — and that ambiguity is what made the original stall hard to place.
+    if (exitReason === 'budget') {
+      console.error(
+        `  [${label}] round ${t}: WALL-CLOCK BUDGET EXHAUSTED after ${ROUND_BUDGET_MS}ms `
+        + `(cost ${cost}, threshold ${threshold}, ${acted} bids, last minimum ${lastMin}). `
+        + 'The auction had not resolved. This is the stall, not a timeout downstream.')
+    }
     await page.waitForSelector('[data-testid="proc-open-continue"]', { timeout: 60_000 })
+    const elapsedMs = Date.now() - (deadline - ROUND_BUDGET_MS)
+    if (elapsedMs > longestRoundMs) longestRoundMs = elapsedMs
     rounds.push({
       round: t,
       cost,
       threshold,
+      elapsedMs,
+      exitReason,
       bids: acted,
       exitPrice: num(await grab(page, '[data-testid="proc-open-exit"]')),
       finalPrice: num(await grab(page, '[data-testid="proc-open-final-price"]')),
@@ -324,6 +356,7 @@ async function playOpenRounds({ page, style, label, think, kcAnswered }) {
     format: 'open_descending',
     style: style.name,
     kcAnswered,
+    longestRoundMs,
     rounds,
     // ⚠ `bids` is kept under the same key the sealed path uses so the dry run and the
     // launcher's log do not need to know which format they are summarising.
@@ -479,6 +512,15 @@ async function main() {
   const byStyle = new Map()
   for (const r of done) byStyle.set(r.style, (byStyle.get(r.style) ?? 0) + 1)
   for (const [name, n] of byStyle) console.log(`  ${n} × ${name}`)
+
+  // ⚠ THE MARGIN, PRINTED. The open loop budgets each round by WALL CLOCK; the number
+  // that matters is not the budget but how close the slowest round came to it, and that
+  // is only knowable from a run at shipped pacing.
+  const longest = Math.max(0, ...done.map(r => r.longestRoundMs ?? 0))
+  if (longest > 0) {
+    console.log(`  longest round observed: ${(longest / 1000).toFixed(1)}s `
+      + `(budget 300.0s — ${((1 - longest / 300_000) * 100).toFixed(0)}% headroom)`)
+  }
 
   if (done.length === 0) process.exitCode = 1
 

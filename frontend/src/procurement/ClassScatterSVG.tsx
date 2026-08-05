@@ -216,6 +216,9 @@ export function ClassScatterSVG({ report }: { report: ProcurementReport }) {
         . The rivals bid the optimal markup for their own cost every time, which is why
         they lie along the green line — it is where the other bidders actually bid, not an
         opinion about what anyone should have done.
+        {' '}<strong>Nothing sits below the dashed line:</strong> no bidder may bid below
+        their own cost, so that region is unreachable by construction rather than empty by
+        luck.
       </p>
     </div>
   )

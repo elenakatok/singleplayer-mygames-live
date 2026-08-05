@@ -131,7 +131,10 @@ export interface StoredRound {
 
 /** One event of an open round, as stored. snake_case to match the rest of the record. */
 export interface OpenEventRecord {
-  kind: 'bid' | 'dropOut'
+  /** ⚠ `autoDrop` = the price fell below the player's own cost and they were removed
+   *  (Elena, 2026-08-04). A distinct kind from `dropOut`, because a history that told a
+   *  student they quit when the auction left them behind would be a lie in the record. */
+  kind: 'bid' | 'dropOut' | 'autoDrop'
   bidder_id: string
   /** Absent on a drop-out. */
   amount?: number
@@ -146,11 +149,11 @@ export function parseOpenHistory(raw: unknown): OpenEventRecord[] | undefined {
   for (const el of raw) {
     if (typeof el !== 'object' || el === null) return undefined
     const e = el as Record<string, unknown>
-    if (e.kind !== 'bid' && e.kind !== 'dropOut') return undefined
+    if (e.kind !== 'bid' && e.kind !== 'dropOut' && e.kind !== 'autoDrop') return undefined
     if (typeof e.bidder_id !== 'string') return undefined
     const isPlayer = e.is_player === true
-    if (e.kind === 'dropOut') {
-      out.push({ kind: 'dropOut', bidder_id: e.bidder_id, is_player: isPlayer })
+    if (e.kind !== 'bid') {
+      out.push({ kind: e.kind, bidder_id: e.bidder_id, is_player: isPlayer })
       continue
     }
     if (typeof e.amount !== 'number' || !Number.isFinite(e.amount)) return undefined

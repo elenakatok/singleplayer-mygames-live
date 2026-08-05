@@ -11,8 +11,14 @@
 //   cost-bidder     bids its own cost            → sits ON the 45° line, earns 0
 //   over-marker     marks up far too much        → high band, rarely wins
 //   under-marker    shaves below the optimum     → wins often, earns thin
-//   loss-maker      occasionally bids below cost → the points BELOW the 45° line
 //   random-in-band  no policy at all             → the noise a real class contains
+//
+// ⚠⚠ `loss-maker` IS GONE (Elena, 2026-08-04), and DELETED rather than left dead. It bid
+// below its own cost to populate the region under the 45° line. **That region can no
+// longer be populated by anybody**: no bidder in this auction may bid below their own
+// cost, in either format, so `validateBid` refuses it at submit. A persona that exists to
+// demonstrate a rejected move would produce a cohort of refused rounds, not a chart.
+// Five styles, not six.
 //
 // ⚠⚠ EVERY STYLE DECIDES FROM WHAT IS ON THE STUDENT'S OWN SCREEN: their own cost, and
 // the auction parameters the bidding screen prints (reserve, rival range, bidder count).
@@ -81,14 +87,6 @@ export const STYLES = [
       const b = beta(cost, p) ?? cost
       return legal(cost + (b - cost) * 0.45, p.reserve)
     },
-  },
-  {
-    name: 'loss-maker',
-    note: 'sometimes bids BELOW its own cost — the points under the 45° line',
-    // ⚠ A REAL BEHAVIOUR, NOT A BUG IN THE ROBOT. Bidding below cost is legal (§6.2)
-    // and students do it; the scatter's whole lower half exists to show it back to
-    // them. A cohort with no such points would misrepresent the class.
-    bid: (cost, p, key) => legal(cost - 3 + jitter(key, 4), p.reserve),
   },
   {
     name: 'random-in-band',

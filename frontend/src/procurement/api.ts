@@ -239,7 +239,10 @@ export const procurementSubmitBid = (round: number, bid: number) =>
  * See `totalBidders` below (functions procurement/openView.ts).
  */
 export type ProcurementAuctionEvent = {
-  kind: 'bid' | 'dropOut'
+  /** ⚠ `autoDrop` — the price fell below the student's own cost and they were removed.
+   *  A different row from `dropOut`: one says they left, the other says the auction left
+   *  them behind, and the history must not tell them they quit when they did not. */
+  kind: 'bid' | 'dropOut' | 'autoDrop'
   /** "You" or "Bot 3" (open §5.1). ⚠ There is no cost on this row, ever. */
   label: string
   amount: number | null
@@ -265,6 +268,11 @@ export type ProcurementAuction = {
   /** §5.1's "Minimum next bid", and the bid box's pre-fill. ⚠ A DEFAULT, NOT A LIMIT —
    *  jump bidding is legal and useful (§4.2). */
   minNextBid: number | null
+  /** ⚠⚠ SERVER-COMPUTED. False once the minimum next bid would fall below the student's
+   *  own cost — no bidder may bid below their own cost — so Bid is closed and Drop Out is
+   *  the only move. Computed against the cost the SERVER holds, so the button state and
+   *  the rule that would refuse the bid cannot disagree. */
+  canBid: boolean
   history: ProcurementAuctionEvent[]
   /**
    * ⚠⚠ THE OPENING PARAMETER, AND IT NEVER MOVES. There is deliberately NO `activeBidders`
@@ -296,6 +304,8 @@ export type ProcurementOpenTurn = {
     profit: number
     profitTotal: number
     droppedOut: boolean
+    /** How they left. `autoDrop` = the price went below their cost. Null when they won. */
+    exitKind: 'dropOut' | 'autoDrop' | null
     /** ⚠ §7's pair, read back off the stored record rather than recomputed. */
     exitPrice: number | null
     exitCensored: boolean

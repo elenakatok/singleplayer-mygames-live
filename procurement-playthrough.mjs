@@ -188,7 +188,7 @@ const PARAMS_KEYS = [
  *  moves and reports nothing about who is left. */
 const AUCTION_KEYS = [
   'round', 'status', 'standing', 'holderLabel', 'youHold', 'yourLastBid', 'youAreOut',
-  'sequence', 'nextBotAtMs', 'step', 'minNextBid', 'history',
+  'sequence', 'nextBotAtMs', 'step', 'minNextBid', 'canBid', 'history',
   'totalBidders', 'winnerLabel', 'youWon', 'price',
 ].sort()
 
@@ -201,7 +201,7 @@ const OPEN_TURN_KEYS = [
 
 const OPEN_OUTCOME_KEYS = [
   'round', 'yourCost', 'yourLastBid', 'won', 'price', 'profit', 'profitTotal', 'droppedOut',
-  'exitPrice', 'exitCensored', 'perfectProfit', 'perfectWon',
+  'exitKind', 'exitPrice', 'exitCensored', 'perfectProfit', 'perfectWon',
 ].sort()
 
 const PLAYED_KEYS = [
@@ -282,6 +282,12 @@ async function makeInstance({
   // ⚠ and the timing gate is then tested SEPARATELY, with a real delay, rather than being
   // quietly untested because every instance here made it a no-op.
   delaySchedule = null, delayJitterMs = null, decrementSchedule = null,
+  // ⚠ THE PLAYER COST RANGE IS PARAMETERISED so a section can choose which ending it is
+  // testing. A passive player is AUTO-DROPPED the moment the price falls below their cost
+  // (2026-08-04), so a high draw resolves the round mid-cascade and a low one leaves it
+  // waiting for them — two different flows, and a section must not get whichever the RNG
+  // felt like.
+  playerCostMin = 10, playerCostMax = 60,
 }) {
   const gid = `proc-${++seq}-${Date.now()}`
   // ⚠ ONE WRITE, EVERY FIELD. A Firestore REST PATCH with no updateMask REPLACES the
@@ -295,7 +301,7 @@ async function makeInstance({
     rivalCount: intVal(rivalCount),
     reserve: intVal(reserve),
     rivalCostDist: distVal(10, 110),
-    playerCostDist: distVal(10, 60),
+    playerCostDist: distVal(playerCostMin, playerCostMax),
     bidIncrementUnit: intVal(1),
     currencyLabel: strVal('ECU'),
     kcEnabled: boolVal(kcEnabled),
@@ -623,15 +629,22 @@ async function main() {
   const negative = await callFn('procurementSubmitBid', asStudent(gid3, pid3, { round: 2, bid: -5 }))
   check(!negative.ok, 'a negative bid is refused')
 
-  // ⚠ BELOW YOUR OWN COST IS LEGAL (§6.2) and must NOT be gated. This is the check that
-  // stops a future "helpful" floor being added.
+  // ⚠⚠ BELOW YOUR OWN COST IS NOW REFUSED — INVERTED FROM §6.2 (Elena, 2026-08-04), and
+  // this check used to assert the opposite ("losing money is legal"). Open §4.3 already
+  // forbade a BOT from bidding below its own cost, so the player was the only bidder in
+  // the auction allowed to do what none of the others could; it is one rule now.
   const s3 = (await callFn('procurementGetState', asStudent(gid3, pid3))).result
   const below = await callFn('procurementSubmitBid',
     asStudent(gid3, pid3, { round: 2, bid: Math.max(0, s3.currentCost - 5) }))
-  check(below.ok, 'a bid BELOW the player\'s own cost is accepted — losing money is legal (§6.2)')
-  if (below.ok && below.result.round.won) {
-    check(below.result.round.profit < 0, 'and winning with it produces a genuine loss')
-  }
+  check(!below.ok && /below their own cost/i.test(below.error ?? ''),
+    '⚠⚠ a bid BELOW the player\'s own cost is REFUSED, naming both numbers')
+  check((await storedRounds(gid3, pid3)).length === 1,
+    '⚠ and it wrote NOTHING — a refused bid costs no round and, crucially, no draw')
+
+  // ⚠ AT cost is accepted: the rule is `>=`, the same character §4.3 gives the bots.
+  const atCost = await callFn('procurementSubmitBid',
+    asStudent(gid3, pid3, { round: 2, bid: s3.currentCost }))
+  check(atCost.ok, 'a bid exactly AT cost is accepted — the floor is inclusive')
 
   // ── §8 the lowered reserve, and β's second term ─────────────────────────────
   section('§8  A lowered reserve — where the simple β diverges')
@@ -1077,6 +1090,11 @@ async function main() {
   const gidO = await makeInstance({
     rounds: 2, reserve: RESERVE, format: 'open_descending',
     delaySchedule: [{ above: 0, delayMs: 0 }], delayJitterMs: 0,   // ⚠ see makeInstance
+    // ⚠ A CHEAP STUDENT, deliberately: with a cost of 10–12 the cascade halts ABOVE them,
+    // so the round waits for a decision and this section exercises the MANUAL path (bid,
+    // refusal, Drop Out). The auto-drop ending has its own section (§17) with a dear
+    // student, rather than being left to whichever the draw produced.
+    playerCostMin: 10, playerCostMax: 12,
   })
   const pidO = 'student-open'
   await callFn('procurementBootstrap', asStudent(gidO, pidO))
@@ -1264,6 +1282,26 @@ async function main() {
   check(rec.exit_censored !== undefined, '⚠⚠ §15 and the censoring flag, STORED not inferred')
   check(recCensored === recWon,
     `§15 censored iff won (won=${recWon}, censored=${recCensored})`)
+
+  // ⚠⚠ THE REGRESSION PIN, AT THE CALLABLE LEVEL. `exit_price === price` in 100% of rounds
+  // was the CP4b defect — `playerExit` read `state.standing` off the SETTLED state, which
+  // for a loser IS the final price. Asserted here against the STORED document, read with
+  // owner credentials.
+  if (!recWon && recExit !== null && dropped.roundOutcome.price !== null) {
+    check(recExit >= dropped.roundOutcome.price,
+      `⚠⚠ §15 a loser's exit is at or above the final price `
+      + `(exit ${recExit}, final ${dropped.roundOutcome.price}) — never the price itself by construction`)
+  }
+  // ⚠ AND THE THREE CASES ARE COMPLETE AND UNCLAMPED: won → winning bid; dropped out →
+  // last bid (null if none); auto-dropped → COST.
+  const outcome = dropped.roundOutcome
+  if (outcome.exitKind === 'autoDrop') {
+    check(recExit === outcome.yourCost,
+      `§15 an auto-dropped exit is the COST (${recExit} vs cost ${outcome.yourCost})`)
+  } else if (outcome.exitKind === 'dropOut') {
+    check(recExit === outcome.yourLastBid,
+      `§15 a dropped-out exit is their LAST BID (${recExit} vs ${outcome.yourLastBid})`)
+  }
   check(recExit === dropped.roundOutcome.exitPrice,
     '§15 and the number the client was given IS the number on the record')
   check(dropped.roundOutcome.exitCensored === recCensored,
@@ -1392,6 +1430,57 @@ async function main() {
   const stillDue = (await callFn('procurementGetState', asStudent(gidT, pidT))).result
   check(Math.abs(stillDue.auction.nextBotAtMs - t0.auction.nextBotAtMs) < 50,
     '§16 and the due time is unmoved by the early calls')
+
+  // ── §17 AUTO-DROP — the price passes a dear student ────────────────────────
+  section('§17  Auto-drop: the price falls below the student\'s cost')
+
+  // ⚠⚠ A DEAR STUDENT, DELIBERATELY. §15 draws 10–12 so the cascade halts above them and
+  // the round waits for a decision; here it draws 55–60, so with four rivals from 10–110
+  // the price almost always passes them and the round ends WITHOUT them acting. Choosing
+  // the draw is what makes each section test the ending it names instead of whichever the
+  // RNG produced — the §15 flow went red the first time auto-drop existed, for exactly
+  // that reason.
+  const gidA = await makeInstance({
+    rounds: 1, reserve: RESERVE, format: 'open_descending',
+    delaySchedule: [{ above: 0, delayMs: 0 }], delayJitterMs: 0,
+    playerCostMin: 55, playerCostMax: 60,
+  })
+  const pidA = 'student-autodrop'
+  await callFn('procurementBootstrap', asStudent(gidA, pidA))
+  const a0 = (await callFn('procurementGetState', asStudent(gidA, pidA))).result
+  const aCost = a0.currentCost
+  check(aCost >= 55 && aCost <= 60, `§17 the student's cost is dear (${aCost})`)
+
+  // Never touch a control: this is the PASSIVE player the auto-drop exists for.
+  let aTurn = { auction: a0.auction, roundOutcome: null }
+  for (let i = 0; i < 80 && aTurn.auction.status === 'bot_turn'; i++) {
+    aTurn = (await callFn('procurementAdvance', asStudent(gidA, pidA))).result
+  }
+
+  if (aTurn.roundOutcome !== null) {
+    pinOpenTurnShape(aTurn, '§17 auto-drop')
+    check(aTurn.auction.youAreOut, '⚠⚠ §17 the student was removed without ever acting')
+    check(aTurn.roundOutcome.exitKind === 'autoDrop', '§17 and the reason is recorded as autoDrop')
+    // ⚠⚠ THE EXIT IS THEIR COST — not their last bid (they made none) and NOT the final
+    // price. This is the case the three-case rule exists for.
+    check(aTurn.roundOutcome.exitPrice === aCost,
+      `⚠⚠ §17 the exit price is their COST (${aTurn.roundOutcome.exitPrice} vs cost ${aCost})`)
+    check(aTurn.roundOutcome.exitPrice !== aTurn.roundOutcome.price,
+      `⚠⚠ §17 and NOT the final price (${aTurn.roundOutcome.price}) — the CP4b defect`)
+    check(aTurn.roundOutcome.won === false, '§17 they did not win')
+    check(aTurn.roundOutcome.profit === 0, '§17 and earned nothing — never a negative loss')
+    // The history says what happened, in its own kind.
+    const kinds = aTurn.auction.history.map(e => e.kind)
+    check(kinds.includes('autoDrop'), '§17 the history carries an autoDrop row')
+    check(!kinds.includes('dropOut'),
+      '⚠ §17 and NOT a dropOut row — the student did not quit, the price left them behind')
+    check(aTurn.auction.history.filter(e => e.kind !== 'bid').every(e => e.isYou),
+      '§17 every non-bid row is still the student\'s — bots emit only bids')
+  } else {
+    // The draw left them cheapest after all. Legitimate, and it must not read as a pass.
+    check(aTurn.auction.status === 'waiting',
+      `§17 (no auto-drop this draw — cost ${aCost} survived the cascade; the round waits)`)
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   console.log(`\n${'═'.repeat(70)}`)

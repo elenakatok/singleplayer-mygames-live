@@ -61,6 +61,10 @@ const auction = (over: Partial<ProcurementAuction> = {}): ProcurementAuction => 
   nextBotAtMs: null,
   step: 2,
   minNextBid: 46,
+  // ⚠ SERVER-COMPUTED (2026-08-04). It folds in both closures — the holder may not
+  // undercut themselves, and no bidder may bid below their own cost — so the screen never
+  // forms a second opinion about a rule the server will enforce.
+  canBid: true,
   history: [
     { kind: 'bid', label: 'Bot 1', amount: 60, isYou: false },
     { kind: 'bid', label: 'Bot 3', amount: 55, isYou: false },
@@ -169,7 +173,7 @@ describe('§5.1 the bid box is live and PRE-FILLED with the minimum legal bid', 
     // §5.1: "The bid box is live and pre-filled at all times, including while bots are
     // bidding." A screen that disabled itself during the cascade would make the 2–3s
     // window unusable, which is the whole pacing argument.
-    const html = render(auction({ status: 'bot_turn', nextBotAtMs: Date.now() + 1200 }))
+    const html = render(auction({ status: 'bot_turn', nextBotAtMs: Date.now() + 1200, canBid: true }))
     expect(html).not.toMatch(/data-testid="proc-open-bid-input"[^>]*disabled/)
     expect(html).not.toMatch(/data-testid="proc-open-dropout"[^>]*disabled/)
   })
@@ -180,7 +184,7 @@ describe('§5.1 the bid box is live and PRE-FILLED with the minimum legal bid', 
     // clicks would otherwise walk them down against nobody.
     const html = render(auction({
       status: 'bot_turn', youHold: true, holderLabel: 'You', yourLastBid: 46,
-      standing: 46, minNextBid: 44, nextBotAtMs: Date.now() + 1200,
+      standing: 46, minNextBid: 44, nextBotAtMs: Date.now() + 1200, canBid: false,
     }))
     expect(html).toMatch(/data-testid="proc-open-bid"[^>]*disabled/)
     expect(html).toMatch(/data-testid="proc-open-bid-min"[^>]*disabled/)
@@ -189,8 +193,27 @@ describe('§5.1 the bid box is live and PRE-FILLED with the minimum legal bid', 
     expect(html).not.toMatch(/data-testid="proc-open-dropout"[^>]*disabled/)
   })
 
+  it('⚠⚠ the COST FLOOR closes bidding, and the screen says why with both numbers', () => {
+    // No bidder may bid below their own cost (Elena, 2026-08-04) — §4.3's rule for the
+    // bots, now one rule for everybody. A disabled button with no explanation reads as a
+    // broken page, and this is the moment a student most needs the rule, because it is
+    // the moment it costs them the round.
+    const html = render(auction({
+      standing: 35, minNextBid: 33, step: 2, canBid: false, holderLabel: 'Bot 3',
+    }), { cost: 34 })
+    expect(html).toMatch(/data-testid="proc-open-bid"[^>]*disabled/)
+    expect(html).toMatch(/data-testid="proc-open-bid-min"[^>]*disabled/)
+    // ⚠ Apostrophes come back HTML-escaped from renderToStaticMarkup — unescape before
+    // asserting on prose (same trap as the §4.1 opening-row test).
+    expect((textOf(html, 'proc-open-cost-floor') ?? '').replace(/&#x27;/g, "'")).toBe(
+      "The next bid would be 33, below your cost of 34. You can't bid lower — no bidder "
+      + 'in this auction may go below their own cost. Drop Out is your only move.')
+    // ⚠ DROP OUT STAYS LIVE — it is now their only move, so it had better work.
+    expect(html).not.toMatch(/data-testid="proc-open-dropout"[^>]*disabled/)
+  })
+
   it('and they are refused once the player has dropped out', () => {
-    const html = render(auction({ youAreOut: true, status: 'resolved', minNextBid: null }))
+    const html = render(auction({ youAreOut: true, status: 'resolved', minNextBid: null, canBid: false }))
     expect(html).toMatch(/data-testid="proc-open-dropout"[^>]*disabled/)
     expect(textOf(html, 'proc-open-winning')).toBe('You have dropped out of this auction')
   })
@@ -263,6 +286,15 @@ describe('§5.1 the history, most recent first, with band markers', () => {
       history: [{ kind: 'dropOut', label: 'You', amount: null, isYou: true }],
     }))
     expect(textOf(html2, 'proc-open-history')).toContain('You — dropped out')
+  })
+
+  it('⚠ an AUTO-DROP row does not say the student quit', () => {
+    // Two different events: one says they left, the other says the price left them behind.
+    const html2 = render(auction({
+      history: [{ kind: 'autoDrop', label: 'You', amount: null, isYou: true }],
+    }))
+    expect(textOf(html2, 'proc-open-history')).toContain('You — out: the price went below your cost')
+    expect(textOf(html2, 'proc-open-history')).not.toContain('dropped out')
   })
 
   it('⚠⚠ every row is an ACTION SOMEBODY TOOK, or the opening — no "Bot 3 has stopped"', () => {
