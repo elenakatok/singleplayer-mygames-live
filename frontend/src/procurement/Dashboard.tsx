@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { colors, typography } from '@mygames/game-ui'
+import { SortableTable, colors, type SortableColumn } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
@@ -28,21 +28,62 @@ import {
 // outcome measure — the markup decision is judged in the debrief and the Tier-3 scatter.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const tnum = { fontVariantNumeric: 'tabular-nums' as const }
-
-const th = {
-  padding: '0.4rem 0.6rem', fontSize: '0.75rem', fontWeight: 600,
-  color: colors.textSecondary, borderBottom: `1px solid ${colors.borderMid}`,
-  textAlign: 'right' as const, whiteSpace: 'nowrap' as const,
-}
-const td = {
-  padding: '0.35rem 0.6rem', fontSize: '0.85rem', textAlign: 'right' as const,
-  ...tnum, borderBottom: '1px solid #eee',
-}
 
 /** Not started < in progress < finished < finalized, so a sort walks the assignment. */
 const statusRank = (r: ProcurementReportRow) =>
   r.normalizedScore !== null ? 3 : r.finished ? 2 : r.roundsPlayed > 0 ? 1 : 0
+
+/**
+ * ⚠⚠ THE ROSTER USES THE SHARED `SortableTable`, as pennies/poll/pd/pricing/newsvendor
+ * already do. Procurement shipped a plain `<table>` and therefore never had column
+ * sorting — see BUILD_NOTES §6k: this is an ADOPTION, not a restoration, and the audit
+ * that established that is in the same note.
+ *
+ * ⚠ THE COLUMN SET IS FORMAT-NEUTRAL. Every column here is a roster fact that both
+ * mechanisms produce — name, status, rounds, won, profit, KC — so the sorting is not
+ * wired to a sealed-only or open-only column. If a format-specific column is ever added,
+ * it goes in the array conditionally and its comparator travels with it.
+ */
+type SortKey = 'name' | 'status' | 'rounds' | 'won' | 'profit' | 'kc'
+
+export const buildColumns = (
+  totalRounds: number,
+): readonly SortableColumn<ProcurementReportRow, SortKey>[] => [
+  {
+    key: 'name',
+    label: 'Name',
+    render: r => r.name ?? r.participantId,
+    // ⚠ CASE-INSENSITIVE, via localeCompare's own collation rather than a lowercased
+    // copy: "de Souza" and "De Souza" belong next to each other.
+    compare: (a, b) => (a.name ?? a.participantId).localeCompare(
+      b.name ?? b.participantId, undefined, { sensitivity: 'base' }),
+  },
+  {
+    key: 'status',
+    label: 'Status',
+    render: r => statusText(r, totalRounds),
+    // ⚠ RANKED, NOT ALPHABETICAL. Alphabetically "Finished" sorts before "Not started",
+    // which puts the class in an order that means nothing. `statusRank` walks the
+    // assignment: not started → in progress → finished → finalized.
+    compare: (a, b) => statusRank(a) - statusRank(b),
+  },
+  { key: 'rounds', label: 'Rounds', render: r => r.roundsPlayed, compare: (a, b) => a.roundsPlayed - b.roundsPlayed },
+  { key: 'won', label: 'Won', render: r => r.roundsWon, compare: (a, b) => a.roundsWon - b.roundsWon },
+  // ⚠ NUMERIC, on the underlying number. The rendered cell is a string; comparing those
+  // would sort 10 before 9 — the string-sort bug pennies' header records twice shipping.
+  { key: 'profit', label: 'Profit', render: r => r.profitTotal, compare: (a, b) => a.profitTotal - b.profitTotal },
+  {
+    key: 'kc',
+    label: 'KC',
+    render: r => r.knowledgeCheckScore === null ? '—' : `${Math.round(r.knowledgeCheckScore * 100)}%`,
+    compare: (a, b) => (a.knowledgeCheckScore ?? 0) - (b.knowledgeCheckScore ?? 0),
+    // ⚠ A STUDENT WHO HAS NOT TAKEN THE KC IS NOT A ZERO — they are absent. Sorting them
+    // among the zeroes would read as "scored nothing" rather than "has not sat it".
+    nullsLast: true,
+    isNull: r => r.knowledgeCheckScore === null,
+    tiebreak: (a, b) => (a.name ?? a.participantId).localeCompare(b.name ?? b.participantId),
+  },
+]
 
 const statusText = (r: ProcurementReportRow, total: number) =>
   r.normalizedScore !== null ? 'Finalized'
@@ -98,8 +139,9 @@ export default function Dashboard() {
     )
   }
 
-  const rows = [...(data?.rows ?? [])].sort((a, b) =>
-    statusRank(a) - statusRank(b) || (a.name ?? '').localeCompare(b.name ?? ''))
+  // ⚠ NO PRE-SORT. `SortableTable` owns the order now — sorting here as well would mean
+  // the initial view came from one rule and every click from another.
+  const rows = data?.rows ?? []
 
   const actions = (
     <>
@@ -156,41 +198,18 @@ export default function Dashboard() {
         </p>
       )}
 
-      <div style={{ overflowX: 'auto' }}>
-        <table data-testid="proc-dash-roster-table" style={{ borderCollapse: 'collapse', width: '100%', fontFamily: typography.fontFamily }}>
-          <thead>
-            <tr>
-              <th style={{ ...th, textAlign: 'left' }}>Name</th>
-              <th style={{ ...th, textAlign: 'left' }}>Status</th>
-              <th style={th}>Rounds</th>
-              <th style={th}>Won</th>
-              <th style={th}>Profit</th>
-              <th style={th}>KC</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(r => (
-              <tr key={r.participantId}>
-                <td style={{ ...td, textAlign: 'left' }}>{r.name ?? r.participantId}</td>
-                <td style={{ ...td, textAlign: 'left' }}>{statusText(r, data?.rounds ?? 0)}</td>
-                <td style={td}>{r.roundsPlayed}</td>
-                <td style={td}>{r.roundsWon}</td>
-                <td style={td}>{r.profitTotal}</td>
-                <td style={td}>
-                  {r.knowledgeCheckScore === null
-                    ? '—'
-                    : `${Math.round(r.knowledgeCheckScore * 100)}%`}
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr><td style={{ ...td, textAlign: 'left' }} colSpan={6}>
-                No students yet — use <em>Sync roster</em> to pull the course list.
-              </td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <SortableTable<ProcurementReportRow, SortKey>
+        rows={rows}
+        columns={buildColumns(data?.rounds ?? 0)}
+        getRowKey={r => r.participantId}
+        // ⚠ THE DEFAULT VIEW IS THE ONE THE PLAIN TABLE ALWAYS SHOWED — status order,
+        // so a live session still opens on "who has not started". Clicking changes it;
+        // arriving does not.
+        initialSortKey="status"
+        tableTestId="proc-dash-roster-table"
+        emptyMessage="No students yet — use Sync roster to pull the course list."
+      />
+
     </InstructorChrome>
   )
 }

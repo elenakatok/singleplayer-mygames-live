@@ -928,6 +928,101 @@ live tick often enough to matter — which is also the case a real student is in
 
 ---
 
+## 6k. Table sorting — an ADOPTION, not a restoration; and the four missing points
+
+### ⚠⚠ Procurement never had column sorting. It was not lost.
+
+Reported as a regression ("that ability is gone"). It is not one. `git log` over **every
+commit that has ever touched** `procurement/Dashboard.tsx` and `procurement/Reports.tsx`
+finds `SortableTable` in **none** of them: procurement shipped a plain `<table>` at CP1
+(4262ed2) and has rendered one ever since. Nothing removed it, and the format-gate work
+did not bypass it.
+
+### The family audit (Item 3, read-only)
+
+| game | dashboard | class report |
+|---|---|---|
+| pennies | **SortableTable** — name, status, bid | **SortableTable** — name, bid, estimate, truth, status, profit |
+| poll | **SortableTable** — responses | **SortableTable** — name, answer, status |
+| pd | **SortableTable** — name, status, rounds, coop, avgYears, strategy, kc, participation | **SortableTable** — name, status, rounds, coop, avgYears, strategy, kc (+3 tiles) |
+| pricing | **SortableTable** — name, status, rounds, avgPrice, avgProfit | **SortableTable** — name, status, rounds, avgPrice, avgProfit, total, kc, participation |
+| newsvendor | **SortableTable** — name, status, periods, avgOrder, avgProfit | **SortableTable** — name, status, periods, avgOrder, avgDemand, inStock, avgProfit, benchmark, gap, qopt |
+| forecast | **plain `<table>` — never had it** | **SortableTable** — name, status, months, mse, se, mae, bias, mape, accuracy, bonus |
+| procurement | **plain — never had it** → now adopted | **plain — never had it** → now adopted |
+
+**Sorting has always been SHARED**, not per-game: `SortableTable` + `SortableColumn` in
+`@mygames/game-ui` (`src/dashboard/SortableTable.tsx`). Games supply columns and
+comparators; the widget owns click-to-sort, reverse, the active-column arrow, `nullsLast`
+and role filtering.
+
+⚠ **Two gaps remain and BOTH are pre-existing, neither is procurement's:** forecast's
+DASHBOARD has never used it (its report does). Not touched — Elena's call, and it is
+another game's hosting target.
+
+**Nothing shared was modified.** Procurement now consumes the widget the same way the
+other five do, so this stays a one-target deploy.
+
+### The columns, and why the comparators are what they are
+
+Dashboard — name · status · rounds · won · profit · KC. Report — name · status · rounds ·
+won · profit.
+
+- **Numeric columns compare numbers, never rendered strings.** Pennies' own header records
+  the string-sort bug shipping *twice*; `"10" < "9"` is the whole of it.
+- **Name uses `localeCompare(…, { sensitivity: 'base' })`**, not a lowercased copy, so
+  "de Souza" and "De Souza" sit together.
+- **Status ranks by PROGRESS**, not alphabetically — alphabetically "Finished" precedes
+  "Not started", the exact reverse of useful. The dashboard has a fourth rank
+  (`finalized`, from `normalizedScore`); the report has three.
+- **KC is `nullsLast`.** A student who has not sat it is absent, not a zero, and sorting
+  them among the zeroes would read as "scored nothing".
+- ⚠ **"See rounds" is an action and is NOT a column.** It renders inside the Name cell,
+  because `SortableTable` makes every header clickable and a column of buttons would
+  advertise a sort that means nothing.
+- **Both column sets are format-neutral** — every one is a roster fact both mechanisms
+  produce. The format-specific detail is one level down, in the per-student rounds modal,
+  where the gate already is.
+
+### ⚠⚠ The four missing chart points — identified, not assumed
+
+The open class scatter showed 90 + 34 = 124 points against 128 resolved rounds.
+
+**Reproduced in the emulator before anything was written.** A 16-robot open cohort
+produced **4 null exits in 76 rounds** — the same signature and roughly the same rate:
+
+| pid | round | cost | exit_price | player bids | end event | well-formed |
+|---|---|---|---|---|---|---|
+| robot-16-… | 2 | 54 | ABSENT | 0 | dropOut | yes |
+| robot-2-… | 2 | 60 | ABSENT | 0 | dropOut | yes |
+| robot-3-… | 7 | 60 | ABSENT | 0 | dropOut | yes |
+| robot-6-… | 5 | 58 | ABSENT | 0 | dropOut | yes |
+
+**(d) They genuinely carry a null exit — the chart's filter is correct.** Not a rendering
+bug, and not a mechanism gap either: `null` is the SPECIFIED value for "dropped out having
+never bid", and it is the *only* case that produces one — a winner always has a bid, and an
+auto-drop records the student's cost. The three cases remain exhaustive.
+
+**How a robot produces one**, which the prompt doubted: its threshold is `cost + 0..20`, and
+if the cascade drives the price below that threshold *before its first poll*, it drops out
+without ever bidding. Every one of the four had a dear cost (54–60), so the price passed
+their threshold early while still above their cost — which is why auto-drop did not fire
+instead.
+
+⚠ `exit_price` reads **ABSENT** rather than `null` because `parseStoredRounds` round-trips
+it conditionally, so the first whole-array rewrite drops a null key. Same to every consumer;
+recorded so nobody reads "absent" as a different failure.
+
+**The fix is the legend, not the filter.** Both charts now count unplotted rounds **from the
+data** and say so — *"4 rounds are not plotted: the auction was left without a single bid …
+128 rounds in total"* — and show **nothing at all** when the count is zero.
+
+⚠ **A cosmetic finding, not fixed here:** robot participant ids embed the SEALED persona
+name (`robot-16-equilibrium`) even in an open instance, because the label is built from the
+sealed style before the format is known. The robot plays its OPEN persona correctly; only
+the id misleads. Flagged, not changed — it is outside this prompt.
+
+---
+
 ## 7. Which hosting targets a frontend change needs — the standing rule
 
 Read off `frontend/vite.config.ts` and `firebase.json`, not off convention.

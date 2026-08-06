@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 vi.mock('../firebase', () => ({ auth: {}, db: {}, functions: {} }))
 import { OpenBidScreen, OpenRoundEnd } from './OpenBidScreen'
 import { OpenEndScreen } from './OpenEndScreen'
+import { ExitScatterSVG } from './ExitScatterSVG'
 import type { ProcurementAuction, ProcurementParams } from './api'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -495,5 +496,149 @@ describe('§5.3 the open results screen', () => {
   it('⚠ the bot series is DEFAULT OFF (§7)', () => {
     expect(html).not.toContain('data-testid="proc-exit-bot"')
     expect(html).toContain('data-testid="proc-open-end-show-bots"')
+  })
+})
+
+
+// ── ITEM 2 — the rounds that cannot be plotted ───────────────────────────────
+
+describe('⚠⚠ rounds with no exit price are COUNTED, not silently dropped', () => {
+  // ⚠ REPRODUCED BEFORE IT WAS WRITTEN. An emulator cohort produced 4 such rounds in 76:
+  // `exit_price` absent, zero player bids, end event `dropOut`, record otherwise
+  // well-formed. Null is the SPECIFIED value for "dropped out having never bid" — a
+  // winner always has a bid, and an auto-drop records the student's cost — so the chart's
+  // filter is correct and the fix is to say where the missing points went.
+  const pts = [
+    { cost: 30, exitPrice: 36, censored: false },
+    { cost: 20, exitPrice: 46, censored: true },
+  ]
+
+  it('says how many are missing, and what the total was', () => {
+    const html = renderToStaticMarkup(
+      <ExitScatterSVG points={pts} min={10} max={110} currencyLabel="ECU"
+        subjectLabel="Every student in the class" neverBidCount={4} />)
+    const note = textOf(html, 'proc-exit-never-bid') ?? ''
+    expect(note).toContain('4 rounds are not plotted')
+    expect(note).toContain('without a single bid')
+    // ⚠ THE TOTAL RECONCILES — 2 plotted + 4 unplotted = 6. A chart whose numbers do not
+    // add up is what sent us looking for these in the first place.
+    expect(note).toContain('6 rounds in total')
+  })
+
+  it('⚠ and says NOTHING when there are none — never a permanent "0 rounds" line', () => {
+    const html = renderToStaticMarkup(
+      <ExitScatterSVG points={pts} min={10} max={110} currencyLabel="ECU"
+        subjectLabel="Your rounds" />)
+    expect(html).not.toContain('proc-exit-never-bid')
+    expect(html).not.toMatch(/not plotted/)
+  })
+
+  it('singular reads correctly', () => {
+    const html = renderToStaticMarkup(
+      <ExitScatterSVG points={pts} min={10} max={110} currencyLabel="ECU"
+        subjectLabel="Your rounds" neverBidCount={1} />)
+    expect(textOf(html, 'proc-exit-never-bid')).toContain('1 round is not plotted')
+  })
+
+  it('⚠ the student screen counts its OWN null rounds from the data', () => {
+    const rows = [
+      { round: 1, yourCost: 34, yourBid: 38, won: false, price: 36, profit: 0, profitTotal: 0,
+        yourEquilibriumBid: null, exitPrice: 38, exitCensored: false },
+      // Dropped out without ever bidding — no stopping point to plot.
+      { round: 2, yourCost: 55, yourBid: null, won: false, price: 24, profit: 0, profitTotal: 0,
+        yourEquilibriumBid: null, exitPrice: null, exitCensored: false },
+    ]
+    const html = renderToStaticMarkup(
+      <OpenEndScreen params={PARAMS} history={rows} totalProfit={0} totalPerfectProfit={0}
+        roundsWon={0} botCosts={null} />)
+    expect(textOf(html, 'proc-exit-never-bid')).toContain('1 round is not plotted')
+    // ⚠ AND THE TABLE STILL SHOWS THE ROUND — it is not plotted, not hidden.
+    expect(textOf(html, 'proc-open-end-table')).toContain('55')
+  })
+})
+
+// ── ITEM 1 — column sorting on the instructor tables ─────────────────────────
+//
+// ⚠⚠ AN ADOPTION, NOT A RESTORATION. `git log` over every commit that ever touched
+// procurement's Dashboard.tsx and Reports.tsx shows neither file has EVER contained
+// `SortableTable` — procurement shipped a plain `<table>` at CP1 and never had column
+// sorting. Five of the seven single-player games use the shared widget; forecast's
+// dashboard has never used it either. See BUILD_NOTES §6k for the full audit.
+//
+// ⚠ THE COLUMN SETS ARE FORMAT-NEUTRAL — name, status, rounds, won, profit (+ KC on the
+// dashboard) are roster facts both mechanisms produce, so the sorting is not wired to a
+// sealed-only or open-only column. The format-specific detail is one level down, in the
+// per-student rounds modal, which already has the gate.
+
+import { rosterColumns, rosterRank } from './Reports'
+import { buildColumns as dashColumns } from './Dashboard'
+
+const row = (over: Record<string, unknown> = {}) => ({
+  participantId: 'p1', name: 'Bravo', externalId: null, finished: false,
+  roundsPlayed: 3, roundsWon: 1, profitTotal: 20, knowledgeCheckScore: 0.5,
+  rawScore: null, normalizedScore: null, rounds: [], rivalPoints: [], freeText: {},
+  ...over,
+} as never)
+
+describe('the instructor tables sort by column', () => {
+  const dash = dashColumns(8)
+  const roster = rosterColumns(() => {})
+
+  it('every named column is present on each table', () => {
+    expect(dash.map(c => c.key)).toEqual(['name', 'status', 'rounds', 'won', 'profit', 'kc'])
+    expect(roster.map(c => c.key)).toEqual(['name', 'status', 'rounds', 'won', 'profit'])
+  })
+
+  it('⚠ NUMERIC columns compare numbers, not strings', () => {
+    // The string-sort bug pennies' header records shipping twice: "10" < "9".
+    const nine = row({ roundsPlayed: 9, roundsWon: 9, profitTotal: 9 })
+    const ten = row({ roundsPlayed: 10, roundsWon: 10, profitTotal: 10 })
+    for (const key of ['rounds', 'won', 'profit'] as const) {
+      const d = dash.find(c => c.key === key)!
+      const r = roster.find(c => c.key === key)!
+      expect(d.compare(nine, ten), `dashboard ${key}`).toBeLessThan(0)
+      expect(r.compare(nine, ten), `roster ${key}`).toBeLessThan(0)
+    }
+  })
+
+  it('⚠ Name sorts case-insensitively', () => {
+    const lower = row({ name: 'alpha' })
+    const upper = row({ name: 'Bravo' })
+    expect(dash.find(c => c.key === 'name')!.compare(lower, upper)).toBeLessThan(0)
+    expect(roster.find(c => c.key === 'name')!.compare(lower, upper)).toBeLessThan(0)
+    // A case-SENSITIVE compare would put every capital before every lower-case letter.
+    expect(dash.find(c => c.key === 'name')!.compare(row({ name: 'Zulu' }), row({ name: 'alpha' })))
+      .toBeGreaterThan(0)
+  })
+
+  it('⚠⚠ Status sorts by PROGRESS, not alphabetically', () => {
+    // Alphabetically: Finished < In progress < Not started — the exact reverse of useful.
+    const notStarted = row({ roundsPlayed: 0, finished: false })
+    const inProgress = row({ roundsPlayed: 3, finished: false })
+    const finished = row({ roundsPlayed: 8, finished: true })
+    const finalized = row({ roundsPlayed: 8, finished: true, normalizedScore: 0.9 })
+
+    const st = dash.find(c => c.key === 'status')!
+    expect(st.compare(notStarted, inProgress)).toBeLessThan(0)
+    expect(st.compare(inProgress, finished)).toBeLessThan(0)
+    expect(st.compare(finished, finalized)).toBeLessThan(0)
+
+    // The report has no `finalized` state of its own; the other three still rank.
+    expect(rosterRank(notStarted)).toBeLessThan(rosterRank(inProgress))
+    expect(rosterRank(inProgress)).toBeLessThan(rosterRank(finished))
+  })
+
+  it('⚠ a student who has not sat the KC sorts LAST, not among the zeroes', () => {
+    const kc = dash.find(c => c.key === 'kc')!
+    expect(kc.nullsLast).toBe(true)
+    expect(kc.isNull!(row({ knowledgeCheckScore: null }))).toBe(true)
+    expect(kc.isNull!(row({ knowledgeCheckScore: 0 }))).toBe(false)
+  })
+
+  it('⚠ "See rounds" is an ACTION, not a sortable column', () => {
+    // It lives inside the Name cell. `SortableTable` makes every column header clickable,
+    // so a column of buttons would advertise a sort that means nothing.
+    expect(roster.map(c => c.key)).not.toContain('actions')
+    expect(roster.map(c => c.label)).not.toContain('')
   })
 })

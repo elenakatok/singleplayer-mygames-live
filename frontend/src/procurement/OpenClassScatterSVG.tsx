@@ -28,6 +28,23 @@ import type { ProcurementReport } from './api'
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * ⚠⚠ ROUNDS THAT CANNOT BE PLOTTED — a student who dropped out without ever bidding.
+ *
+ * Reproduced and identified before this was written (BUILD_NOTES §6k): four rounds out of
+ * 76 in an emulator cohort, every one `exit_price` absent, `playerBids: 0`, end event
+ * `dropOut`, record otherwise well-formed. They are NOT a chart filter dropping valid
+ * points, and NOT a mechanism gap: null is the SPECIFIED value for "dropped out having
+ * never bid", and it is the only case that produces one — a winner always has a bid, and
+ * an auto-drop records the student's cost.
+ *
+ * ⚠ COUNTED, NEVER HARDCODED. The legend shows it only when it is non-zero.
+ */
+export function openClassNeverBid(report: ProcurementReport): number {
+  return report.rows.reduce(
+    (n, row) => n + row.rounds.filter(r => r.exitPrice === null).length, 0)
+}
+
+/**
  * Every student's exit price against their own cost, flattened across students and rounds.
  *
  * ⚠ RESOLVED ROUNDS ONLY, by construction: `rows[].rounds` is the stored history and a
@@ -82,6 +99,7 @@ export function OpenClassScatterSVG({
         max={report.rivalCostMax}
         currencyLabel={report.currencyLabel}
         subjectLabel="Every student in the class"
+        neverBidCount={openClassNeverBid(report)}
       />
       <ExitScatterCaption subject="class" />
     </div>

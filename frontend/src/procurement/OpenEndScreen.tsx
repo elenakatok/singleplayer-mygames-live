@@ -173,6 +173,9 @@ export function OpenEndScreen({
           max={params.rivalCostMax}
           currencyLabel={c}
           subjectLabel="Your rounds"
+          // ⚠ COUNTED FROM THE DATA — rounds the student left without ever bidding have no
+          // stopping point to plot. Nothing is shown when there are none.
+          neverBidCount={history.filter(r => r.exitPrice === null).length}
         />
         {botCosts !== null && (
           <label style={{ display: 'block', fontSize: '0.8rem', marginTop: '0.5rem' }}>

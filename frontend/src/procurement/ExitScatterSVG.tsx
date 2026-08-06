@@ -62,6 +62,7 @@ export function ExitScatterSVG({
   currencyLabel,
   /** Instructor charts say "every student"; the student's own says "your rounds". */
   subjectLabel,
+  neverBidCount = 0,
 }: {
   points: ExitPoint[]
   /** Each bot's own cost. ⚠ See the legend note — a bot's LIMIT is its cost exactly. */
@@ -71,6 +72,18 @@ export function ExitScatterSVG({
   max: number
   currencyLabel: string
   subjectLabel: string
+  /**
+   * ⚠⚠ ROUNDS WITH NO EXIT PRICE AT ALL — a student who DROPPED OUT WITHOUT EVER BIDDING.
+   * They are absent from `points` because there is no stopping point to plot: they
+   * committed to nothing, and putting them anywhere on the y axis would assert something
+   * never observed.
+   *
+   * ⚠ COUNTED FROM THE DATA BY THE CALLER, never hardcoded, and the legend says nothing
+   * when it is zero. It exists because a chart that quietly plots 124 of 128 rounds is a
+   * chart whose totals do not add up, and the reader deserves to be told where the other
+   * four went rather than discovering the gap by arithmetic.
+   */
+  neverBidCount?: number
 }) {
   const lo = Math.min(min, max)
   const hi = Math.max(min, max)
@@ -154,6 +167,19 @@ export function ExitScatterSVG({
         {showBots && <Key color={SERIES.bots} label="Simulated suppliers" />}
         <Key kind="line" color={SERIES.fortyFive} label="Exit price = cost" />
       </div>
+
+      {/* ⚠ NOTHING AT ALL WHEN ZERO. A permanent "0 rounds never bid" line is noise that
+          trains the reader to stop looking at this row — and it is the row that explains a
+          missing point. */}
+      {neverBidCount > 0 && (
+        <p data-testid="proc-exit-never-bid" style={{
+          margin: '0.45rem 0 0', fontSize: '0.78rem', color: colors.textSecondary,
+        }}>
+          {neverBidCount} {neverBidCount === 1 ? 'round is' : 'rounds are'} not plotted:
+          {' '}the auction was left without a single bid, so there is no stopping point to
+          show. {points.length + neverBidCount} rounds in total.
+        </p>
+      )}
     </div>
   )
 }

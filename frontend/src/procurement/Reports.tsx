@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ReportBoard, colors, typography, type ReportTileConfig } from '@mygames/game-ui'
+import {
+  ReportBoard, SortableTable, colors, typography,
+  type ReportTileConfig, type SortableColumn,
+} from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { ClassScatterSVG, classScatterPoints, classRivalPoints } from './ClassScatterSVG'
@@ -99,55 +102,82 @@ function Stat({ value, label, testId }: { value: string; label: string; testId?:
 
 // ── Tier 1a ────────────────────────────────────────────────────────────────────
 
+/**
+ * ⚠⚠ TIER 1a USES THE SHARED `SortableTable`, as pennies/poll/pd/pricing/newsvendor and
+ * forecast's own report already do. This table shipped as a plain `<table>` and therefore
+ * never had column sorting — see BUILD_NOTES §6k. An ADOPTION, not a restoration.
+ *
+ * ⚠ THE COLUMN SET IS FORMAT-NEUTRAL. Name, status, rounds, won and profit are roster
+ * facts both mechanisms produce, so the sorting is not wired to a sealed-only or
+ * open-only column. The format-specific detail lives one level down, in the per-student
+ * rounds modal, which is where the gate already is.
+ *
+ * ⚠ "See rounds" IS AN ACTION, NOT DATA, and is deliberately NOT a sortable column — it
+ * is rendered inside the Name cell instead of occupying a column of its own. Sorting by
+ * a button would mean nothing, and `SortableTable` makes every column's header clickable.
+ */
+type RosterKey = 'name' | 'status' | 'rounds' | 'won' | 'profit'
+
+export const rosterColumns = (
+  onOpenStudent: (id: string) => void,
+): readonly SortableColumn<ProcurementReportRow, RosterKey>[] => [
+  {
+    key: 'name',
+    label: 'Name',
+    render: r => (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+        {r.name ?? r.participantId}
+        {r.roundsPlayed > 0 && (
+          <button
+            data-testid={`proc-rep-open-${r.participantId}`}
+            onClick={() => onOpenStudent(r.participantId)}
+            style={{
+              fontSize: '0.7rem', border: `1px solid ${colors.border}`,
+              background: 'none', borderRadius: 4, padding: '0.1rem 0.45rem',
+              cursor: 'pointer', whiteSpace: 'nowrap',
+            }}
+          >See rounds ↗</button>
+        )}
+      </span>
+    ),
+    // ⚠ CASE-INSENSITIVE via localeCompare's collation, not a lowercased copy.
+    compare: (a, b) => (a.name ?? a.participantId).localeCompare(
+      b.name ?? b.participantId, undefined, { sensitivity: 'base' }),
+  },
+  {
+    key: 'status',
+    label: 'Status',
+    render: r => r.finished ? 'Finished' : r.roundsPlayed > 0 ? 'In progress' : 'Not started',
+    // ⚠ RANKED, NOT ALPHABETICAL — alphabetically "Finished" precedes "Not started",
+    // which orders the class by nothing anybody cares about.
+    compare: (a, b) => rosterRank(a) - rosterRank(b),
+  },
+  // ⚠ THE CELL IS THE BARE COUNT, unchanged from the plain table this replaced. Adding
+  // "of 8" would be a presentation change riding along on a sorting change, and the
+  // browser harness reads this cell by value.
+  { key: 'rounds', label: 'Rounds', render: r => r.roundsPlayed, compare: (a, b) => a.roundsPlayed - b.roundsPlayed },
+  { key: 'won', label: 'Won', render: r => r.roundsWon, compare: (a, b) => a.roundsWon - b.roundsWon },
+  { key: 'profit', label: 'Profit', render: r => r.profitTotal, compare: (a, b) => a.profitTotal - b.profitTotal },
+]
+
+/** Not started < in progress < finished. ⚠ The report has no `finalized` state of its
+ *  own — that is the dashboard's, which reads `normalizedScore`. */
+export const rosterRank = (r: ProcurementReportRow) =>
+  r.finished ? 2 : r.roundsPlayed > 0 ? 1 : 0
+
 function RosterTable({ rows, onOpenStudent }: {
   rows: ProcurementReportRow[]
   onOpenStudent: (id: string) => void
 }) {
   return (
-    <div style={{ overflowX: 'auto' }}>
-      <table data-testid="proc-rep-roster" style={{ borderCollapse: 'collapse', width: '100%' }}>
-        <thead>
-          <tr>
-            <th style={{ ...th, textAlign: 'left' }}>Name</th>
-            <th style={{ ...th, textAlign: 'left' }}>Status</th>
-            <th style={th}>Rounds</th>
-            <th style={th}>Won</th>
-            <th style={th}>Profit</th>
-            {/* ⚠ NO KC COLUMN — see the file header. */}
-            <th style={{ ...th, textAlign: 'left' }} />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(r => (
-            <tr key={r.participantId}>
-              <td style={{ ...td, textAlign: 'left' }}>{r.name ?? r.participantId}</td>
-              <td style={{ ...td, textAlign: 'left' }}>
-                {r.finished ? 'Finished' : r.roundsPlayed > 0 ? 'In progress' : 'Not started'}
-              </td>
-              <td style={td}>{r.roundsPlayed}</td>
-              <td style={td}>{r.roundsWon}</td>
-              <td style={td}>{r.profitTotal}</td>
-              <td style={{ ...td, textAlign: 'left' }}>
-                {r.roundsPlayed > 0 && (
-                  <button
-                    data-testid={`proc-rep-open-${r.participantId}`}
-                    onClick={() => onOpenStudent(r.participantId)}
-                    style={{
-                      fontSize: '0.75rem', border: `1px solid ${colors.border}`,
-                      background: 'none', borderRadius: 4, padding: '0.2rem 0.55rem',
-                      cursor: 'pointer', whiteSpace: 'nowrap',
-                    }}
-                  >See rounds ↗</button>
-                )}
-              </td>
-            </tr>
-          ))}
-          {rows.length === 0 && (
-            <tr><td style={{ ...td, textAlign: 'left' }} colSpan={6}>No students yet.</td></tr>
-          )}
-        </tbody>
-      </table>
-    </div>
+    <SortableTable<ProcurementReportRow, RosterKey>
+      rows={rows}
+      columns={rosterColumns(onOpenStudent)}
+      getRowKey={r => r.participantId}
+      initialSortKey="name"
+      tableTestId="proc-rep-roster"
+      emptyMessage="No students yet."
+    />
   )
 }
 
