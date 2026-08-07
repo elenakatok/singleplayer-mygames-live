@@ -1,0 +1,213 @@
+# Metalcraft Supplier Scorecard — build notes
+
+Decisions and findings made during the build that are **not** in the spec, kept beside the
+code because each one is a thing a later reader would otherwise re-derive or undo.
+
+Spec is the authority: `Scorecard_Game_Specification_v3_FINAL.md`. Where this file and the
+spec disagree, the spec wins unless a section below explicitly records a departure Elena
+approved.
+
+---
+
+## 1. The spec's numbers were independently reproduced before any code was written
+
+Every figure in spec §6.2 and §6.3 was re-derived from the stated rule alone, in a
+throwaway script that had not seen the repo. **All of them matched**, which is why the
+fixtures are trusted as a regression target rather than treated as approximate:
+
+- Both slide-6 panels, **80/80 cells each**
+- All eight §6.3 benchmark rows, in both conditions
+- Both Δ values §6.2 quotes (8.80 at period 7/score 6; 2.72 at period 4/score 0)
+- The §6.3 effort profile, all ten periods of all three rows
+- `P(Binom(10,0.7) ≥ 7) = 0.6496` and `P(Binom(10,0.4) ≥ 7) = 0.0548`
+- The 27.8% dead-state share
+
+Two figures needed a definition pinned down before they reconciled. Both are recorded
+below because in both cases the **obvious** reading is the wrong one and produces a
+plausible number.
+
+### 1a. ⚠ "Written off" is NOT "mathematically dead"
+
+Spec §6.3's effort-profile table has three rows — P(high), P(coasting), P(written off) —
+and they **partition to 1.00 in every period**. That fixes the definition:
+
+```
+P(written off) = 1 − P(high) − P(coasting)
+```
+
+It is the mass where **the DP has stopped paying and is not coasting**, which *includes
+states that are still mathematically alive*. Spec §6.2 says so directly: it calls
+(period 4, score 0) a write-off at Δ = 2.72, even though score 0 with seven periods left
+can still reach seven.
+
+Reading it as the strict "score + periodsRemaining < target" instead gives
+`0 0 0 0 .02 .06 .09 .14 .21 .28` against the spec's `— — — .03 .08 .06 .21 .14 .21 .28`
+— the last three periods agree, so a careless check passes.
+
+⚠ **Both senses are needed and they are different functions.** `dp.ts` `optimalProfile()`
+returns the loose sense (the chart row). `resolve.ts` `isMathematicallyDead()` is the
+strict sense, and it is what spec §4.1's silence and the Tier-1 "periods paid for after
+the contract was already dead" column are about. Do not unify them.
+
+### 1b. ⚠ The 27.8% dead-state share double-counts unless dead mass is removed
+
+`deadStateShare()` removes dead mass from the live distribution as it counts it. The
+tempting alternative — "dead now, and alive one period ago" — **double-counts**, because a
+contract that scores a point *while already dead* re-satisfies the test: at `s + r < S`,
+scoring gives `(s+1) + (r−1) = s + r`, still dead, still "newly" dead by that test.
+
+The naive version reports **35.6%** for the high condition (plausible, wrong) and **136%**
+under an always-low policy (impossible, which is what exposed it). The corrected figure is
+**27.8%**, matching spec §6.3 exactly.
+
+There is a cross-check in the test suite: `deadStateShare(…, minPeriodsLeft = 0)` must equal
+`1 − P(bonus)`, since every contract finishing below target was dead at some point.
+
+---
+
+## 2. ⚠ The threshold rule is implemented on the cost DIFFERENCE
+
+Spec §6.1 writes the marginal rule as `c / (reliability − p_low)`. That is correct at every
+shipped default because `lowEffortCost` is **0** — but `lowEffortCost` is a setting (spec
+§3), so the implemented rule is
+
+```
+(highEffortCost − lowEffortCost) / (reliability − p_low)
+```
+
+which reduces to the spec's expression exactly whenever `lowEffortCost = 0`.
+
+**Not a departure** — the same rule, stated for the configuration space the settings screen
+actually permits. It is pinned by a test: raising *both* costs by the same amount must leave
+the policy identical and move earnings by the level shift only.
+
+`marginalThreshold()` returns `Infinity` when `reliability ≤ p_low` rather than dividing by
+zero — no point is ever worth enough, which is the honest answer, and the settings panel
+renders it rather than crashing.
+
+---
+
+## 3. ⚠ A mutant the slide-6 fixtures do NOT kill — recorded, not hidden
+
+Following procurement BUILD_NOTES §3 ("a control can appear to fail correctly and still be
+worthless"), the solver was mutation-tested against the fixtures. Four of five mutants die:
+
+| Mutation | Killed by the fixtures? |
+|---|---|
+| low effort resolves at `reliability` (the condition collapse) | ✅ |
+| the effort cost dropped from the comparison | ✅ |
+| the "work until you hit the target" shortcut | ✅ |
+| the bonus threshold off by one | ✅ |
+| **`>=` for `>` — ties go to high effort** | ❌ **SURVIVES** |
+
+**Why it survives:** at the shipped parameters no state is ever an exact tie, so strictness
+is unobservable. A test asserting "the fixtures guard the comparison operator" would have
+been decorative — exactly the failure mode procurement's §3 is about.
+
+**The fix is a scenario that actually contains the condition**, not a weaker assertion. The
+tie is *constructed*: at the last period, Δ is exactly `bonus` at score S*−1 and 0
+elsewhere, so the comparison reduces to `(reliability − p_low) · bonus  vs  c`. Choosing
+binary-exact values — reliability `0.5`, p_low `0.25`, bonus `120`, c `30` — makes both
+sides exactly `30`, with no float slack. The test asserts the tie is genuine (`high === low`)
+*before* asserting which way it breaks, so it cannot silently decay into a near-tie that
+proves nothing.
+
+Ties go to **low** effort, per spec §6.1's "must be worth **more** than the threshold".
+
+⚠ There is **no epsilon** anywhere in the comparison. The (period 7, score 6) cell sits
+0.48 from flipping and spec §6.2 records that it "flips under small parameter edits" —
+that is a *design fact about the parameters*, which the settings panel exists to surface,
+not float noise to be smoothed away.
+
+---
+
+## 4. ⚠ There are TWO "work until the target" shortcuts and only one of them is subtle
+
+The build prompt warns that a second policy implementation is the likeliest way to break
+this game. Measured, under high reliability:
+
+| Rule | Cells where it disagrees with the DP | Cost per contract |
+|---|---|---|
+| **Optimal (DP)** | — | — |
+| "work until target" (naive) | **24** | **2.96 ECU** |
+| "work until target, stop when mathematically dead" | **3** | **0.163 ECU** |
+| optimal except forced high at (p7, s6) | 1 | 0.057 ECU |
+
+**The spec/prompt's "0.17 ECU" is the dead-aware rule's 0.163**, not the naive one's 2.96 and
+not the single cell's 0.057. This matters: the naive rule is *obviously* wrong (it keeps
+paying for contracts already written off, 24 cells' worth), so nobody would ship it. The
+**dead-aware** rule is the one a careful builder would actually write, and it is wrong in
+only three cells and costs a sixth of an ECU — far too small to notice on any screen.
+
+Those three cells are `(p4, s0)`, `(p5, s1)`, `(p7, s6)`. **Two of the three are exactly
+the cells spec §6.2 names** as the ones that make the DP non-optional.
+
+⚠ Per-visit, the (p7, s6) error costs **0.48 ECU**; it only shrinks to 0.057 unconditionally
+because that state is reached just 11.8% of the time. Do not quote the unconditional figure
+as "the size of the mistake".
+
+---
+
+## 5. The config/truth split runs along a different seam than any other game
+
+Full reasoning is in the header of `config.ts`; the short version, because it is the thing a
+reviewer is most likely to get wrong:
+
+Almost every number in this game is **printed on the student's screen and must be**
+(spec §8). What is withheld is not the economics but the **experimental design** — that
+reliability alternates, that there are exactly two conditions, that the roster is
+counterbalanced.
+
+So `reliabilityHigh` **and** `reliabilityLow` both live in `truth/main` even though one of
+them is on screen at all times: holding the **pair** is what reveals the design. Same for
+`labelHigh` / `labelLow` — the label *text* names the other condition, so shipping both
+strings would leak in prose what the numbers were carefully withholding (S4 applied to
+copy). The server sends the current contract's reliability and its rendered label, one
+contract at a time.
+
+`pAcceptableLow` is in `config/main` and that is **correct**: it is displayed, it is
+identical in both conditions, and it discloses nothing about the treatment.
+
+`showRemainingPeriods` appears in **neither** half — spec §3 marks it "true, NOT editable"
+and §4.1 explains why. There is no setting because there is no choice.
+
+---
+
+## 6. `{pct}` is a token, never a typed-in percentage
+
+`labelHigh` / `labelLow` store `"High Reliability ({pct})"`. `renderLabel()` is the only
+place a probability becomes a percentage a student reads, and it rounds (R8).
+
+The failure this prevents: an instructor edits `reliabilityLow` to 0.5, leaves a hardcoded
+`"(40%)"`, and ships a screen that contradicts the game it is describing. Tested, including
+a label carrying no token at all (legitimate) and one carrying the token twice.
+
+---
+
+## 7. Deliberate design points that look like bugs
+
+Carried from spec §5 / the build prompt so nobody "fixes" them:
+
+- **Low effort is 30% in both conditions.** The mechanism, not a copy-paste error. Only the
+  high-effort probability moves.
+- **Under low reliability, always-high (16.57) is three times WORSE than always-low
+  (51.27).** The columns invert. Asserted in the test suite precisely because it is the most
+  counter-intuitive number in the game.
+- **Optimal high-effort periods under low reliability is 0.13** — not ~1 and not ~5. The work
+  region is a sliver reachable only by getting lucky on free draws first.
+- **Rows 5, 6 and 7+ of the two slide-6 panels are identical.** Correct: in the squeeze
+  region Δ approaches the full bonus, clearing both the 10 and the 40 threshold. The
+  conditions differ only where Δ is modest.
+- **The game announces a reached target but never an unreachable one.** Deliberate asymmetry
+  (spec §16, decided 08-07).
+- **Earnings are never graded** — a correctness requirement here, not a preference: correct
+  play under low reliability *earns less*.
+
+---
+
+## 8. Checkpoint log
+
+**CP1 (pure core)** — `dp.ts`, `fixtures.ts`, `schedule.ts`, `resolve.ts`, `validate.ts`,
+`config.ts`. 97 unit tests. Both slide-6 panels reproduced 80/80; all eight §6.3 benchmark
+rows exact; five mutants run, four killed, the survivor documented in §3 above and killed by
+a constructed tie.
