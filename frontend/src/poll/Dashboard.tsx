@@ -4,6 +4,7 @@ import { SortableTable, colors, type SortableColumn } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { pollGetReport, pollSyncRoster, pollInstructorSession, CLASSROOM_URL, type ResponseRow } from './api'
+import { compareByLastName } from '../shared/sortName'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Poll instructor dashboard — the RESPONSE-STATUS view (spec §7.3): who has and hasn't
@@ -18,14 +19,26 @@ type SortKey = 'name' | 'responses' | 'status'
 const statusRank = (r: ResponseRow) => (r.completed ? 2 : r.answered > 0 ? 1 : 0)
 const statusLabel = (r: ResponseRow) => (r.completed ? 'Completed' : r.answered > 0 ? 'In progress' : 'No response')
 
+
+/**
+ * ⚠ THE LAST-NAME TIEBREAK EVERY COLUMN FALLS BACK TO (Elena, 08-07). Without it students
+ * who tie on a column — every "Not started" row, every 0-profit row — land in whatever
+ * order the server sent, and the roster reshuffles between refreshes, which reads as the
+ * table jumping around during a live class.
+ *
+ * ⚠ This game's own `?? ''` fallback is UNCHANGED; only the ORDERING rule is shared.
+ * See procurement BUILD_NOTES §6m.
+ */
+const tie = (a: ResponseRow, b: ResponseRow) => compareByLastName(a.name ?? '', b.name ?? '')
+
 const columns: readonly SortableColumn<ResponseRow, SortKey>[] = [
-  { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => (a.name ?? '').localeCompare(b.name ?? '') },
+  { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => compareByLastName(a.name ?? '', b.name ?? '') },
   {
     key: 'responses', label: 'Responses',
     render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{r.answered} / {r.total}</span>,
-    compare: (a, b) => a.answered - b.answered,
+    compare: (a, b) => a.answered - b.answered || tie(a, b),
   },
-  { key: 'status', label: 'Status', render: statusLabel, compare: (a, b) => statusRank(a) - statusRank(b) },
+  { key: 'status', label: 'Status', render: statusLabel, compare: (a, b) => statusRank(a) - statusRank(b) || tie(a, b) },
 ]
 
 const TITLE = 'Poll — Dashboard'

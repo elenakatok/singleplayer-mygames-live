@@ -7,6 +7,7 @@ import {
   pdGetReport, pdScoreAndRecord, pdSyncRoster, pdInstructorSession, CLASSROOM_URL,
   type PdReportParticipant,
 } from './api'
+import { compareByLastName } from '../shared/sortName'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PD instructor dashboard (spec §9 Tier 1). Deliberately the SAME shape as the
@@ -38,45 +39,57 @@ const statusText = (r: PdReportParticipant) =>
 type SortKey = 'name' | 'status' | 'rounds' | 'coop' | 'avgYears' | 'strategy' | 'kc' | 'participation'
 
 const num = (v: number | null) => v ?? 0
+
+/**
+ * ⚠ THE LAST-NAME TIEBREAK EVERY COLUMN FALLS BACK TO (Elena, 08-07). Without it students
+ * who tie on a column — every "Not started" row, every 0-profit row — land in whatever
+ * order the server sent, and the roster reshuffles between refreshes, which reads as the
+ * table jumping around during a live class.
+ *
+ * ⚠ This game's own `?? ''` fallback is UNCHANGED; only the ORDERING rule is shared.
+ * See procurement BUILD_NOTES §6m.
+ */
+const tie = (a: PdReportParticipant, b: PdReportParticipant) => compareByLastName(a.name ?? '', b.name ?? '')
+
 const tnum = { fontVariantNumeric: 'tabular-nums' as const }
 
 const buildColumns = (unit: string): readonly SortableColumn<PdReportParticipant, SortKey>[] => [
   {
     key: 'name', label: 'Name',
     render: r => r.name ?? '—',
-    compare: (a, b) => (a.name ?? '').localeCompare(b.name ?? ''),
+    compare: (a, b) => compareByLastName(a.name ?? '', b.name ?? ''),
   },
   {
     key: 'status', label: 'Status',
     render: statusText,
     // Rank so the sort orders Not launched < In progress < Completed.
-    compare: (a, b) => statusRank(a) - statusRank(b),
+    compare: (a, b) => statusRank(a) - statusRank(b) || tie(a, b),
   },
   {
     key: 'rounds', label: 'Rounds played',
     render: r => <span style={tnum}>{r.rounds_played}</span>,
-    compare: (a, b) => a.rounds_played - b.rounds_played,
+    compare: (a, b) => a.rounds_played - b.rounds_played || tie(a, b),
   },
   {
     key: 'coop', label: 'Cooperation rate',
     render: r => <span style={tnum}>{pct(r.cooperation_rate)}</span>,
     nullsLast: true,
     isNull: r => r.cooperation_rate == null,
-    compare: (a, b) => num(a.cooperation_rate) - num(b.cooperation_rate),
+    compare: (a, b) => num(a.cooperation_rate) - num(b.cooperation_rate) || tie(a, b),
   },
   {
     key: 'avgYears', label: `Avg ${unit} / round`,
     render: r => <span style={tnum}>{oneDp(r.avg_years)}</span>,
     nullsLast: true,
     isNull: r => r.avg_years == null,
-    compare: (a, b) => num(a.avg_years) - num(b.avg_years),
+    compare: (a, b) => num(a.avg_years) - num(b.avg_years) || tie(a, b),
   },
   {
     key: 'strategy', label: 'Opponent faced',
     render: r => (r.strategy ? STRATEGY_LABEL[r.strategy] : '—'),
     nullsLast: true,
     isNull: r => r.strategy == null,
-    compare: (a, b) => (a.strategy ?? '').localeCompare(b.strategy ?? ''),
+    compare: (a, b) => (a.strategy ?? '').localeCompare(b.strategy ?? '') || tie(a, b),
   },
   {
     key: 'kc', label: 'KC score',
@@ -87,14 +100,14 @@ const buildColumns = (unit: string): readonly SortableColumn<PdReportParticipant
     ),
     nullsLast: true,
     isNull: r => r.knowledge_check_score == null,
-    compare: (a, b) => num(a.knowledge_check_score) - num(b.knowledge_check_score),
+    compare: (a, b) => num(a.knowledge_check_score) - num(b.knowledge_check_score) || tie(a, b),
   },
   {
     key: 'participation', label: 'Participation',
     render: r => <span style={tnum}>{r.participation_score == null ? '—' : r.participation_score}</span>,
     nullsLast: true,
     isNull: r => r.participation_score == null,
-    compare: (a, b) => num(a.participation_score) - num(b.participation_score),
+    compare: (a, b) => num(a.participation_score) - num(b.participation_score) || tie(a, b),
   },
 ]
 

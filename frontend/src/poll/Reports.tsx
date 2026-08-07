@@ -6,6 +6,7 @@ import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { pollGetReport, pollInstructorSession, CLASSROOM_URL, type PollReportData, type QuestionReport, type TextReport, type ResponseRow } from './api'
 import { PieChartSVG } from './PieChartSVG'
+import { compareByLastName } from '../shared/sortName'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Poll reports (spec §7) — TYPE-DERIVED. One tile per VISIBLE question, in order; the
@@ -38,8 +39,10 @@ function TextAnswers({ report }: { report: TextReport }) {
     value: a.value,
   }))
   const columns: readonly SortableColumn<Row, 'name' | 'answer'>[] = [
-    { key: 'name', label: 'Participant', render: r => r.name, compare: (a, b) => a.name.localeCompare(b.name), headerStyle: { width: '30%' } },
-    { key: 'answer', label: 'Answer', render: r => <span style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{r.value}</span>, compare: () => 0 },
+    { key: 'name', label: 'Participant', render: r => r.name, compare: (a, b) => compareByLastName(a.name, b.name), headerStyle: { width: '30%' } },
+    { key: 'answer', label: 'Answer', render: r => <span style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{r.value}</span>, // ⚠ THE ANSWER TEXT IS NOT ORDERABLE (free text), so this column sorts by the
+      // respondent rather than pretending 0 is an order. Elena, 08-07.
+      compare: (a, b) => compareByLastName(a.name, b.name) },
   ]
   return (
     <>
@@ -55,8 +58,8 @@ function TextAnswers({ report }: { report: TextReport }) {
 function StatusTable({ status }: { status: ResponseRow[] }) {
   const rank = (r: ResponseRow) => (r.completed ? 2 : r.answered > 0 ? 1 : 0)
   const columns: readonly SortableColumn<ResponseRow, 'name' | 'status'>[] = [
-    { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => (a.name ?? '').localeCompare(b.name ?? '') },
-    { key: 'status', label: 'Responses', render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{r.answered} / {r.total}{r.completed ? ' ✓' : ''}</span>, compare: (a, b) => rank(a) - rank(b) },
+    { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => compareByLastName(a.name ?? '', b.name ?? '') },
+    { key: 'status', label: 'Responses', render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{r.answered} / {r.total}{r.completed ? ' ✓' : ''}</span>, compare: (a, b) => rank(a) - rank(b) || compareByLastName(a.name ?? '', b.name ?? '') },
   ]
   return <SortableTable<ResponseRow, 'name' | 'status'> rows={status} columns={columns} getRowKey={r => r.participant_id} initialSortKey="status" initialSortDir="desc" emptyMessage="No students yet." />
 }

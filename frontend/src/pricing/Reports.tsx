@@ -12,6 +12,7 @@ import { PriceChartSVG } from './PriceChartSVG'
 import { ProfitChartSVG } from './ProfitChartSVG'
 import { ModeHeader } from './Dashboard'
 import { formatPrice, formatProfitM } from './format'
+import { compareByLastName } from '../shared/sortName'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Pricing reports (spec §10), through the shared ReportBoard + a modal per tile —
@@ -60,20 +61,32 @@ const profit = (v: number | null) => (v == null ? '—' : formatProfitM(v))
 
 type RosterKey = 'name' | 'status' | 'rounds' | 'avgPrice' | 'avgProfit' | 'total' | 'kc' | 'participation'
 
+
+/**
+ * ⚠ THE LAST-NAME TIEBREAK EVERY COLUMN FALLS BACK TO (Elena, 08-07). Without it students
+ * who tie on a column — every "Not started" row, every 0-profit row — land in whatever
+ * order the server sent, and the roster reshuffles between refreshes, which reads as the
+ * table jumping around during a live class.
+ *
+ * ⚠ This game's own `?? ''` fallback is UNCHANGED; only the ORDERING rule is shared.
+ * See procurement BUILD_NOTES §6m.
+ */
+const tie = (a: PricingReportParticipant, b: PricingReportParticipant) => compareByLastName(a.name ?? '', b.name ?? '')
+
 function OutcomesTable({ rows }: { rows: PricingReportParticipant[] }) {
   const columns: readonly SortableColumn<PricingReportParticipant, RosterKey>[] = [
-    { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => (a.name ?? '').localeCompare(b.name ?? '') },
+    { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => compareByLastName(a.name ?? '', b.name ?? '') },
     {
       key: 'status', label: 'Status',
       render: r => (r.completed ? 'Finished' : r.launched ? 'In progress' : 'Not started'),
-      compare: (a, b) => (a.completed ? 2 : a.launched ? 1 : 0) - (b.completed ? 2 : b.launched ? 1 : 0),
+      compare: (a, b) => (a.completed ? 2 : a.launched ? 1 : 0) - (b.completed ? 2 : b.launched ? 1 : 0) || tie(a, b),
     },
-    { key: 'rounds', label: 'Rounds', render: r => <span style={tnum}>{r.rounds_played}</span>, compare: (a, b) => a.rounds_played - b.rounds_played },
-    { key: 'avgPrice', label: 'Avg posted price', render: r => <span style={tnum}>{price(r.average_price)}</span>, nullsLast: true, isNull: r => r.average_price == null, compare: (a, b) => (a.average_price ?? 0) - (b.average_price ?? 0) },
-    { key: 'avgProfit', label: 'Avg profit / round', render: r => <span style={tnum}>{profit(r.average_profit)}</span>, nullsLast: true, isNull: r => r.average_profit == null, compare: (a, b) => (a.average_profit ?? 0) - (b.average_profit ?? 0) },
-    { key: 'total', label: 'Total profit', render: r => <span style={tnum}>{r.rounds_played === 0 ? '—' : formatProfitM(r.total_profit)}</span>, nullsLast: true, isNull: r => r.rounds_played === 0, compare: (a, b) => a.total_profit - b.total_profit },
-    { key: 'kc', label: 'KC', render: r => <span style={tnum}>{r.knowledge_check_score == null ? '—' : `${Math.round(r.knowledge_check_score * 100)}%`}</span>, nullsLast: true, isNull: r => r.knowledge_check_score == null, compare: (a, b) => (a.knowledge_check_score ?? 0) - (b.knowledge_check_score ?? 0) },
-    { key: 'participation', label: 'Participation', render: r => <span style={tnum}>{r.participation_score == null ? '—' : r.participation_score}</span>, nullsLast: true, isNull: r => r.participation_score == null, compare: (a, b) => (a.participation_score ?? 0) - (b.participation_score ?? 0) },
+    { key: 'rounds', label: 'Rounds', render: r => <span style={tnum}>{r.rounds_played}</span>, compare: (a, b) => a.rounds_played - b.rounds_played || tie(a, b) },
+    { key: 'avgPrice', label: 'Avg posted price', render: r => <span style={tnum}>{price(r.average_price)}</span>, nullsLast: true, isNull: r => r.average_price == null, compare: (a, b) => (a.average_price ?? 0) - (b.average_price ?? 0) || tie(a, b) },
+    { key: 'avgProfit', label: 'Avg profit / round', render: r => <span style={tnum}>{profit(r.average_profit)}</span>, nullsLast: true, isNull: r => r.average_profit == null, compare: (a, b) => (a.average_profit ?? 0) - (b.average_profit ?? 0) || tie(a, b) },
+    { key: 'total', label: 'Total profit', render: r => <span style={tnum}>{r.rounds_played === 0 ? '—' : formatProfitM(r.total_profit)}</span>, nullsLast: true, isNull: r => r.rounds_played === 0, compare: (a, b) => a.total_profit - b.total_profit || tie(a, b) },
+    { key: 'kc', label: 'KC', render: r => <span style={tnum}>{r.knowledge_check_score == null ? '—' : `${Math.round(r.knowledge_check_score * 100)}%`}</span>, nullsLast: true, isNull: r => r.knowledge_check_score == null, compare: (a, b) => (a.knowledge_check_score ?? 0) - (b.knowledge_check_score ?? 0) || tie(a, b) },
+    { key: 'participation', label: 'Participation', render: r => <span style={tnum}>{r.participation_score == null ? '—' : r.participation_score}</span>, nullsLast: true, isNull: r => r.participation_score == null, compare: (a, b) => (a.participation_score ?? 0) - (b.participation_score ?? 0) || tie(a, b) },
   ]
   return (
     <div data-testid="pricing-report-outcomes">

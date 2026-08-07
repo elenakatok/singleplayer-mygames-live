@@ -10,6 +10,7 @@ import {
 } from './api'
 import { CooperationChartSVG } from './CooperationChartSVG'
 import { FirstMoveChartSVG } from './FirstMoveChartSVG'
+import { compareByLastName } from '../shared/sortName'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PD reports (spec §9), through the shared ReportBoard + a modal per tile — the same
@@ -52,19 +53,31 @@ const tnum = { fontVariantNumeric: 'tabular-nums' as const }
 
 type RosterKey = 'name' | 'status' | 'rounds' | 'coop' | 'avgYears' | 'strategy' | 'kc'
 
+
+/**
+ * ⚠ THE LAST-NAME TIEBREAK EVERY COLUMN FALLS BACK TO (Elena, 08-07). Without it students
+ * who tie on a column — every "Not started" row, every 0-profit row — land in whatever
+ * order the server sent, and the roster reshuffles between refreshes, which reads as the
+ * table jumping around during a live class.
+ *
+ * ⚠ This game's own `?? ''` fallback is UNCHANGED; only the ORDERING rule is shared.
+ * See procurement BUILD_NOTES §6m.
+ */
+const tie = (a: PdReportParticipant, b: PdReportParticipant) => compareByLastName(a.name ?? '', b.name ?? '')
+
 function OutcomesTable({ rows, unit }: { rows: PdReportParticipant[]; unit: string }) {
   const columns: readonly SortableColumn<PdReportParticipant, RosterKey>[] = [
-    { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => (a.name ?? '').localeCompare(b.name ?? '') },
+    { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => compareByLastName(a.name ?? '', b.name ?? '') },
     {
       key: 'status', label: 'Status',
       render: r => (r.completed ? 'Completed' : r.launched ? 'In progress' : 'Not launched'),
-      compare: (a, b) => (a.completed ? 2 : a.launched ? 1 : 0) - (b.completed ? 2 : b.launched ? 1 : 0),
+      compare: (a, b) => (a.completed ? 2 : a.launched ? 1 : 0) - (b.completed ? 2 : b.launched ? 1 : 0) || tie(a, b),
     },
-    { key: 'rounds', label: 'Rounds', render: r => <span style={tnum}>{r.rounds_played}</span>, compare: (a, b) => a.rounds_played - b.rounds_played },
-    { key: 'coop', label: 'Cooperation', render: r => <span style={tnum}>{pct(r.cooperation_rate)}</span>, nullsLast: true, isNull: r => r.cooperation_rate == null, compare: (a, b) => (a.cooperation_rate ?? 0) - (b.cooperation_rate ?? 0) },
-    { key: 'avgYears', label: `Avg ${unit} / round`, render: r => <span style={tnum}>{oneDp(r.avg_years)}</span>, nullsLast: true, isNull: r => r.avg_years == null, compare: (a, b) => (a.avg_years ?? 0) - (b.avg_years ?? 0) },
-    { key: 'strategy', label: 'Opponent', render: r => (r.strategy ? STRATEGY_LABEL[r.strategy] : '—'), nullsLast: true, isNull: r => r.strategy == null, compare: (a, b) => (a.strategy ?? '').localeCompare(b.strategy ?? '') },
-    { key: 'kc', label: 'KC', render: r => <span style={tnum}>{r.knowledge_check_score == null ? '—' : `${Math.round(r.knowledge_check_score * 100)}%`}</span>, nullsLast: true, isNull: r => r.knowledge_check_score == null, compare: (a, b) => (a.knowledge_check_score ?? 0) - (b.knowledge_check_score ?? 0) },
+    { key: 'rounds', label: 'Rounds', render: r => <span style={tnum}>{r.rounds_played}</span>, compare: (a, b) => a.rounds_played - b.rounds_played || tie(a, b) },
+    { key: 'coop', label: 'Cooperation', render: r => <span style={tnum}>{pct(r.cooperation_rate)}</span>, nullsLast: true, isNull: r => r.cooperation_rate == null, compare: (a, b) => (a.cooperation_rate ?? 0) - (b.cooperation_rate ?? 0) || tie(a, b) },
+    { key: 'avgYears', label: `Avg ${unit} / round`, render: r => <span style={tnum}>{oneDp(r.avg_years)}</span>, nullsLast: true, isNull: r => r.avg_years == null, compare: (a, b) => (a.avg_years ?? 0) - (b.avg_years ?? 0) || tie(a, b) },
+    { key: 'strategy', label: 'Opponent', render: r => (r.strategy ? STRATEGY_LABEL[r.strategy] : '—'), nullsLast: true, isNull: r => r.strategy == null, compare: (a, b) => (a.strategy ?? '').localeCompare(b.strategy ?? '') || tie(a, b) },
+    { key: 'kc', label: 'KC', render: r => <span style={tnum}>{r.knowledge_check_score == null ? '—' : `${Math.round(r.knowledge_check_score * 100)}%`}</span>, nullsLast: true, isNull: r => r.knowledge_check_score == null, compare: (a, b) => (a.knowledge_check_score ?? 0) - (b.knowledge_check_score ?? 0) || tie(a, b) },
   ]
   return (
     <div data-testid="pd-report-outcomes">

@@ -632,6 +632,10 @@ async function main() {
         '--seats', '2',
         '--pace', 'fast',
         '--launcher', 'http://127.0.0.1:1',
+        // ⚠ NAMES THE SEAT IDS ONLY (Elena, 08-07). Gameplay still reads the format off
+        // the screen; this just stops a sealed instance's ids claiming open personas or
+        // vice versa. The caller made the instance, so it is the one thing that knows.
+        '--format', 'sealed_first_price',
         '--emulator', '--app', APP, '--headless', '--exit-when-done',
       ], { cwd: path.join(ROOT, 'bot'), stdio: ['ignore', 'pipe', 'pipe'] })
       let out = ''
@@ -867,6 +871,7 @@ async function main() {
       const child = spawn(process.execPath, [
         'procurement-robot-driver.mjs',
         '--instance', robotGidO, '--students', '4', '--pace', 'fast',
+        '--format', 'open_descending',
         '--emulator', '--app', APP, '--headless', '--exit-when-done',
       ], { cwd: path.join(ROOT, 'bot'), stdio: ['ignore', 'pipe', 'pipe'] })
       let out = ''
@@ -898,6 +903,21 @@ async function main() {
       check(robotOpen.out.includes(label),
         `[open robots] the cohort contains "${label}"`)
     }
+
+    // ⚠⚠ THE PARTICIPANT IDS NAME THE OPEN PERSONAS (Elena, 08-07). They used to embed
+    // the SEALED persona — `robot-16-equilibrium` on an open instance — and these ids are
+    // how the robot reports get read, so the label was misleading about the one thing it
+    // exists to say. ⚠ ASSERTED ON THE IDS THEMSELVES, not on the summary line, because
+    // the summary was always right; it was the id that lied.
+    const openIds = [...robotOpen.out.matchAll(/robot-\d+-[a-z-]+/g)].map(m => m[0])
+    check(openIds.length > 0, '[open robots] the driver prints participant ids at all')
+    // ⚠ READ OFF procurement-styles.mjs, not guessed.
+    const sealedNames = ['equilibrium', 'cost-bidder', 'over-marker', 'under-marker', 'random-in-band']
+    const leaked = openIds.filter(id => sealedNames.some(n => id.endsWith(`-${n}`)))
+    check(leaked.length === 0,
+      `⚠⚠ [open robots] NO id names a SEALED persona — found ${leaked.join(', ') || 'none'}`)
+    check(openIds.every(id => /-(exits-at-cost|exits-early|random-exit)$/.test(id)),
+      `⚠ [open robots] every id names an OPEN persona — ${[...new Set(openIds)].join(', ')}`)
 
     const robotRepO = await callFn('procurementGetReport', { _dev: { game_instance_id: robotGidO } })
     check(robotRepO.rows.length === 4 && robotRepO.rows.every(r => r.roundsPlayed === 4),

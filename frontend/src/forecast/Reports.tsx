@@ -13,6 +13,7 @@ import {
 import { ClassChartSVG, MseHistogramSVG } from './ClassChartSVG'
 import { DemandChartSVG } from './DemandChartSVG'
 import { formatBig, formatMetric, formatMoney, formatPercent, formatSigned } from './format'
+import { compareByLastName } from '../shared/sortName'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Forecasting reports, through the shared ReportBoard + a modal per tile — the same
@@ -185,6 +186,14 @@ type RosterKey =
  * gradebook on its own field and participation is still written by Score & Record —
  * they are simply not shown next to a forecast accuracy they have nothing to do with.
  */
+/**
+ * ⚠ THE LAST-NAME TIEBREAK EVERY COLUMN FALLS BACK TO (Elena, 08-07) — see the note in
+ * this game's Dashboard. This game's own `?? ''` fallback is UNCHANGED; only the ORDERING
+ * rule is shared. Procurement BUILD_NOTES §6m.
+ */
+const tie = (a: ForecastReportParticipant, b: ForecastReportParticipant) =>
+  compareByLastName(a.name ?? '', b.name ?? '')
+
 function OutcomesTable({
   rows,
   onOpenStudent,
@@ -197,7 +206,7 @@ function OutcomesTable({
     {
       key: 'name', label: 'Name',
       render: r => r.name ?? '—',
-      compare: (a, b) => (a.name ?? '').localeCompare(b.name ?? ''),
+      compare: (a, b) => compareByLastName(a.name ?? '', b.name ?? ''),
       sticky: 'left',
     },
     {
@@ -208,32 +217,32 @@ function OutcomesTable({
           {r.below_floor?.flagged && <BelowFloorBadge r={r} />}
         </>
       ),
-      compare: (a, b) => (a.completed ? 2 : a.launched ? 1 : 0) - (b.completed ? 2 : b.launched ? 1 : 0),
+      compare: (a, b) => (a.completed ? 2 : a.launched ? 1 : 0) - (b.completed ? 2 : b.launched ? 1 : 0) || tie(a, b),
     },
-    { key: 'months', label: 'Months', render: r => <span style={tnum}>{r.months_played}</span>, compare: (a, b) => a.months_played - b.months_played },
+    { key: 'months', label: 'Months', render: r => <span style={tnum}>{r.months_played}</span>, compare: (a, b) => a.months_played - b.months_played || tie(a, b) },
 
     // ── the parts, then the whole ────────────────────────────────────────────
-    { key: 'y6', label: 'Y6 MSE', render: r => <span style={tnum}>{big(r.first_year_mse)}</span>, nullsLast: true, isNull: r => r.first_year_mse == null, compare: (a, b) => num(a.first_year_mse) - num(b.first_year_mse) },
-    { key: 'y7', label: 'Y7 MSE', render: r => <span style={tnum}>{big(r.second_year_mse)}</span>, nullsLast: true, isNull: r => r.second_year_mse == null, compare: (a, b) => num(a.second_year_mse) - num(b.second_year_mse) },
+    { key: 'y6', label: 'Y6 MSE', render: r => <span style={tnum}>{big(r.first_year_mse)}</span>, nullsLast: true, isNull: r => r.first_year_mse == null, compare: (a, b) => num(a.first_year_mse) - num(b.first_year_mse) || tie(a, b) },
+    { key: 'y7', label: 'Y7 MSE', render: r => <span style={tnum}>{big(r.second_year_mse)}</span>, nullsLast: true, isNull: r => r.second_year_mse == null, compare: (a, b) => num(a.second_year_mse) - num(b.second_year_mse) || tie(a, b) },
     {
       key: 'mse', label: 'MSE',
       render: r => <strong data-testid={`fc-mse-${r.participant_id}`} style={tnum}>{big(r.mse)}</strong>,
       nullsLast: true, isNull: r => r.mse == null,
-      compare: (a, b) => num(a.mse) - num(b.mse),
+      compare: (a, b) => num(a.mse) - num(b.mse) || tie(a, b),
     },
-    { key: 'se', label: 'Std Error', render: r => <span style={tnum}>{met(r.standard_error)}</span>, nullsLast: true, isNull: r => r.standard_error == null, compare: (a, b) => num(a.standard_error) - num(b.standard_error) },
-    { key: 'mae', label: 'MAE', render: r => <span style={tnum}>{met(r.mae)}</span>, nullsLast: true, isNull: r => r.mae == null, compare: (a, b) => num(a.mae) - num(b.mae) },
+    { key: 'se', label: 'Std Error', render: r => <span style={tnum}>{met(r.standard_error)}</span>, nullsLast: true, isNull: r => r.standard_error == null, compare: (a, b) => num(a.standard_error) - num(b.standard_error) || tie(a, b) },
+    { key: 'mae', label: 'MAE', render: r => <span style={tnum}>{met(r.mae)}</span>, nullsLast: true, isNull: r => r.mae == null, compare: (a, b) => num(a.mae) - num(b.mae) || tie(a, b) },
     {
       key: 'bias', label: 'Bias',
       // Signed, on purpose: an over-forecast is not a worse error than an under-forecast
       // of the same size, it is the OTHER kind, and a run of one sign is what bias is.
       render: r => <span style={tnum}>{r.mean_error == null ? '—' : formatSigned(r.mean_error, 1)}</span>,
       nullsLast: true, isNull: r => r.mean_error == null,
-      compare: (a, b) => num(a.mean_error) - num(b.mean_error),
+      compare: (a, b) => num(a.mean_error) - num(b.mean_error) || tie(a, b),
     },
-    { key: 'mape', label: 'MAPE', render: r => <span style={tnum}>{formatPercent(r.mape)}</span>, nullsLast: true, isNull: r => r.mape == null, compare: (a, b) => num(a.mape) - num(b.mape) },
-    { key: 'accuracy', label: 'Accuracy', render: r => <span style={tnum}>{formatPercent(r.accuracy)}</span>, nullsLast: true, isNull: r => r.accuracy == null, compare: (a, b) => num(a.accuracy) - num(b.accuracy) },
-    { key: 'bonus', label: 'Bonus', render: r => <span style={tnum}>{formatMoney(r.bonus)}</span>, nullsLast: true, isNull: r => r.bonus == null, compare: (a, b) => num(a.bonus) - num(b.bonus) },
+    { key: 'mape', label: 'MAPE', render: r => <span style={tnum}>{formatPercent(r.mape)}</span>, nullsLast: true, isNull: r => r.mape == null, compare: (a, b) => num(a.mape) - num(b.mape) || tie(a, b) },
+    { key: 'accuracy', label: 'Accuracy', render: r => <span style={tnum}>{formatPercent(r.accuracy)}</span>, nullsLast: true, isNull: r => r.accuracy == null, compare: (a, b) => num(a.accuracy) - num(b.accuracy) || tie(a, b) },
+    { key: 'bonus', label: 'Bonus', render: r => <span style={tnum}>{formatMoney(r.bonus)}</span>, nullsLast: true, isNull: r => r.bonus == null, compare: (a, b) => num(a.bonus) - num(b.bonus) || tie(a, b) },
   ]
 
   return (

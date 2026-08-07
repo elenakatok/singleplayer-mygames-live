@@ -374,7 +374,7 @@ async function playOpenRounds({ page, style, label, think, kcAnswered }) {
  * ⚠ NO BARRIER. Each robot is a private game; they run concurrently because nothing any
  * of them does can affect another.
  */
-export async function runCohort({ urlFor, students, headed = false, think = () => 0, screen, cols }) {
+export async function runCohort({ urlFor, students, headed = false, think = () => 0, screen, cols, format = null }) {
   const styles = assignStyles(students)
   // ⚠ BOTH SETS, dealt in parallel. The sealed personas vary by markup relative to β and
   // the open ones by exit threshold; they are not the same list under two names, and
@@ -402,7 +402,30 @@ export async function runCohort({ urlFor, students, headed = false, think = () =
 
   try {
     return await Promise.all(styles.map(async (style, i) => {
-      const pid = `robot-${i + 1}-${style.name}`
+      // ⚠⚠ THE ID NAMES THE PERSONA THAT WILL ACTUALLY BE PLAYED (Elena, 08-07).
+      // It used to be `${style.name}` unconditionally — the SEALED persona — so an OPEN
+      // dry run produced ids like `robot-16-equilibrium` while that seat was really
+      // playing "exits early". The ids are how the robot reports get read, so the label
+      // was actively misleading about the only thing it exists to say.
+      //
+      // ⚠ `format` IS PASSED IN, NOT PROBED. Gameplay still reads the format OFF THE
+      // SCREEN (see playOneRobot) because a live robot has a launch URL and nothing else.
+      // But the ID must exist BEFORE the page loads, so it cannot come from the screen.
+      // The caller that creates the instance knows the format; the launcher path does not
+      // need to, because `mintUrl` IGNORES this pid entirely — a live robot's name comes
+      // from the launcher.
+      //
+      // ⚠ WITH NO FORMAT, THE SEAT IS UNNAMED rather than named wrongly. A bare
+      // `robot-3` says "persona not known here", which is true; `robot-3-equilibrium`
+      // would be a guess that is wrong half the time.
+      // ⚠ SLUGGED. The sealed persona names are already id-safe (`cost-bidder`), but the
+      // open ones carry spaces (`exits at cost`) and a space in a participant id is a
+      // broken URL, not a cosmetic problem.
+      const persona = format === 'open_descending' ? openStyles[i]?.name
+        : format === 'sealed_first_price' ? style.name
+          : null
+      const slug = persona ? persona.trim().toLowerCase().replace(/\s+/g, '-') : null
+      const pid = slug ? `robot-${i + 1}-${slug}` : `robot-${i + 1}`
       let ctx
       if (perRobot) {
         const cell = gridCell(i, students, screen?.[0] ?? 1920, screen?.[1] ?? 1080, cols)
@@ -450,6 +473,9 @@ async function main() {
   const EMULATOR = args.emulator === true || args.emulator === 'true'
   const APP = String(args.app || 'http://localhost:5173').replace(/\/$/, '')
   const EXIT_WHEN_DONE = args['exit-when-done'] === true || args['exit-when-done'] === 'true'
+  /** ⚠ NAMES THE SEAT IDS ONLY — never which persona is played (that is read off the
+   *  screen). Omit it and seats are `robot-N` with no persona claim. */
+  const FORMAT = args.format ? String(args.format) : null
 
   if (!INSTANCE || INSTANCE === true) {
     console.error('ERROR: --instance <gameInstanceId> is required.')
@@ -499,6 +525,7 @@ async function main() {
     think,
     screen: [SCREEN_W, SCREEN_H],
     cols: COLS,
+    format: FORMAT,
   })
 
   const done = results.filter(r => !r.error)

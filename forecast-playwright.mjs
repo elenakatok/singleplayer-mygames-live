@@ -516,6 +516,99 @@ async function main() {
     await page2.close()
 
     // ───────────────────────────────────────────────────────────────────────────
+    section('[DASHBOARD] ⚠⚠ The roster sorts — adopted 08-07, and previously UNCOVERED')
+    // ───────────────────────────────────────────────────────────────────────────
+    // ⚠ THIS SECTION EXISTS BECAUSE THE DASHBOARD HAD NO BROWSER COVERAGE AT ALL. Until
+    // 08-07 forecast's dashboard rendered a plain <table> — the last roster in the family
+    // without `SortableTable` — and no harness ever loaded the page. Swapping in the
+    // shared widget was the largest structural change of that sweep and would have shipped
+    // unverified. The unit tests pin the COMPARATORS; only this proves the headers are
+    // wired to them and that the widget reorders rendered rows.
+    {
+      const GID_S = `pw-dash-${stamp}`
+      await openInstance(GID_S, { kc: false, debrief: false })
+
+      // ⚠ NAMES CHOSEN SO FIRST-NAME AND LAST-NAME SORTS DISAGREE. Under the old
+      // display-string sort this roster reads Adam, Brian, Yolanda, Zoe; by surname it
+      // reads Abbott, Adams, Brown, Carter. Any assertion below fails under the old rule.
+      const PEOPLE = [
+        ['pw-d1', 'Zoe Carter'], ['pw-d2', 'Adam Brown'],
+        ['pw-d3', 'Yolanda Abbott'], ['pw-d4', 'Brian Adams'],
+      ]
+      for (const [pid, name] of PEOPLE) {
+        await putDoc(`forecast_game_instances/${GID_S}/participants/${pid}`, {
+          participant_id: strVal(pid), game_instance_id: strVal(GID_S), name: strVal(name),
+        })
+      }
+      // ⚠ ONE STUDENT ACTUALLY PLAYS, so the numeric columns have something real to sort
+      // and "Not started" is not the only status on the page.
+      await callFn('forecastBootstrap', { _test: { participant_id: 'pw-d1', game_instance_id: GID_S } })
+      await callFn('forecastSubmitRound',
+        { _test: { participant_id: 'pw-d1', game_instance_id: GID_S }, round: 1, forecast: 800 })
+
+      const ctxS = await browser.newContext()
+      const pageS = await ctxS.newPage()
+      await pageS.goto(instrUrl('/dashboard', GID_S))
+      await pageS.waitForSelector('[data-testid="fc-dash-roster"] tbody tr', { timeout: 30_000 })
+
+      check(await exists(pageS, '[data-testid="fc-dash-roster"] thead th'),
+        '⚠⚠ the dashboard renders the SHARED SortableTable, not a plain table')
+
+      const names = async () => (await pageS
+        .locator('[data-testid="fc-dash-roster"] tbody tr td:first-child').allInnerTexts())
+        .map(t => t.trim())
+
+      const shown = await names()
+      check(shown.length === PEOPLE.length,
+        `[dashboard] all ${PEOPLE.length} students are on the roster (saw ${shown.length})`)
+
+      // Click Name to sort by it explicitly (the page opens on status).
+      const headers = pageS.locator('[data-testid="fc-dash-roster"] thead th')
+      await headers.first().click()
+      const byName = await names()
+      const surname = (n) => { const t = n.trim().split(/\s+/); return t[t.length - 1] }
+      const expected = [...byName].sort((a, b) =>
+        surname(a).localeCompare(surname(b), undefined, { sensitivity: 'base' })
+        || a.localeCompare(b, undefined, { sensitivity: 'base' }))
+      check(JSON.stringify(byName) === JSON.stringify(expected),
+        `⚠⚠ [dashboard] the Name header sorts by LAST name — ${byName.join(' | ')}`)
+      // ⚠ THE EXPLICIT NEGATIVE: the old first-name order must NOT be what is on screen.
+      const byFirstName = [...byName].sort((a, b) => a.localeCompare(b))
+      check(JSON.stringify(byName) !== JSON.stringify(byFirstName),
+        '⚠ [dashboard] and that order is NOT the old display-string (first-name) order')
+
+      await headers.first().click()
+      check(JSON.stringify(await names()) === JSON.stringify([...expected].reverse()),
+        '[dashboard] clicking Name again reverses it')
+
+      // A numeric column, sorted numerically and ascending.
+      await headers.nth(2).click()
+      const months = (await pageS
+        .locator('[data-testid="fc-dash-roster"] tbody tr td:nth-child(3)').allInnerTexts())
+        .map(t => Number(t.trim()))
+      check(months.every((v, i) => i === 0 || months[i - 1] <= v),
+        `⚠ [dashboard] the Months header sorts NUMERICALLY ascending — ${months.join(',')}`)
+
+      // ⚠ THE TIEBREAK. Three students are all "Not started" with 0 months; within that
+      // block they must fall in surname order rather than whatever the server sent —
+      // otherwise the roster reshuffles between refreshes during a live class.
+      const tiedNames = (await pageS
+        .locator('[data-testid="fc-dash-roster"] tbody tr').all())
+      const tiedFirst = []
+      for (const row of tiedNames) {
+        const cells = await row.locator('td').allInnerTexts()
+        if (Number(cells[2]?.trim()) === 0) tiedFirst.push(cells[0].trim())
+      }
+      const tiedExpected = [...tiedFirst].sort((a, b) =>
+        surname(a).localeCompare(surname(b), undefined, { sensitivity: 'base' }))
+      check(JSON.stringify(tiedFirst) === JSON.stringify(tiedExpected),
+        `⚠⚠ [dashboard] rows TIED on a column fall in surname order — ${tiedFirst.join(' | ')}`)
+
+      await pageS.close()
+      await ctxS.close()
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────
     section('[REPORTS] ⚠ The Tier-3 chart — the ±1σ band, the wording, the exclusion note')
     // ───────────────────────────────────────────────────────────────────────────
     // All three were found by Elena on the LIVE reports (08-03), and all three are

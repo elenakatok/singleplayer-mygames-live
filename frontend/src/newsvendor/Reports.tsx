@@ -14,6 +14,7 @@ import {
 import { InstanceHeader } from './Dashboard'
 import { formatAverageUnits, formatMoney, formatPercent, formatUnits } from './format'
 import { ExpectedProfitChartSVG } from './ExpectedProfitChartSVG'
+import { compareByLastName } from '../shared/sortName'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Newsvendor reports, through the shared ReportBoard + a modal per tile — the same
@@ -92,26 +93,38 @@ type RosterKey =
   | 'name' | 'status' | 'periods' | 'avgOrder' | 'avgDemand' | 'inStock'
   | 'avgProfit' | 'benchmark' | 'gap'
 
+
+/**
+ * ⚠ THE LAST-NAME TIEBREAK EVERY COLUMN FALLS BACK TO (Elena, 08-07). Without it students
+ * who tie on a column — every "Not started" row, every 0-profit row — land in whatever
+ * order the server sent, and the roster reshuffles between refreshes, which reads as the
+ * table jumping around during a live class.
+ *
+ * ⚠ This game's own `?? ''` fallback is UNCHANGED; only the ORDERING rule is shared.
+ * See procurement BUILD_NOTES §6m.
+ */
+const tie = (a: NewsvendorReportParticipant, b: NewsvendorReportParticipant) => compareByLastName(a.name ?? '', b.name ?? '')
+
 function OutcomesTable({ rows }: { rows: NewsvendorReportParticipant[] }) {
   const columns: readonly SortableColumn<NewsvendorReportParticipant, RosterKey>[] = [
-    { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => (a.name ?? '').localeCompare(b.name ?? '') },
+    { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => compareByLastName(a.name ?? '', b.name ?? '') },
     {
       key: 'status', label: 'Status',
       render: r => (r.completed ? 'Finished' : r.launched ? 'In progress' : 'Not started'),
-      compare: (a, b) => (a.completed ? 2 : a.launched ? 1 : 0) - (b.completed ? 2 : b.launched ? 1 : 0),
+      compare: (a, b) => (a.completed ? 2 : a.launched ? 1 : 0) - (b.completed ? 2 : b.launched ? 1 : 0) || tie(a, b),
     },
-    { key: 'periods', label: 'Periods', render: r => <span style={tnum}>{r.rounds_played}</span>, compare: (a, b) => a.rounds_played - b.rounds_played },
-    { key: 'avgOrder', label: 'Avg order', render: r => <span style={tnum}>{units(r.average_order)}</span>, nullsLast: true, isNull: r => r.average_order == null, compare: (a, b) => (a.average_order ?? 0) - (b.average_order ?? 0) },
-    { key: 'avgDemand', label: 'Avg demand', render: r => <span style={tnum}>{units(r.average_demand)}</span>, nullsLast: true, isNull: r => r.average_demand == null, compare: (a, b) => (a.average_demand ?? 0) - (b.average_demand ?? 0) },
+    { key: 'periods', label: 'Periods', render: r => <span style={tnum}>{r.rounds_played}</span>, compare: (a, b) => a.rounds_played - b.rounds_played || tie(a, b) },
+    { key: 'avgOrder', label: 'Avg order', render: r => <span style={tnum}>{units(r.average_order)}</span>, nullsLast: true, isNull: r => r.average_order == null, compare: (a, b) => (a.average_order ?? 0) - (b.average_order ?? 0) || tie(a, b) },
+    { key: 'avgDemand', label: 'Avg demand', render: r => <span style={tnum}>{units(r.average_demand)}</span>, nullsLast: true, isNull: r => r.average_demand == null, compare: (a, b) => (a.average_demand ?? 0) - (b.average_demand ?? 0) || tie(a, b) },
     // ⚠ IN-STOCK %, NOT "avg demand met" — a different question, and the one that is
     // comparable to the critical ratio the instructor already has on screen.
-    { key: 'inStock', label: 'In-stock %', render: r => <span data-testid={`nv-instock-${r.participant_id}`} style={tnum}>{pct(r.in_stock_rate)}</span>, nullsLast: true, isNull: r => r.in_stock_rate == null, compare: (a, b) => (a.in_stock_rate ?? 0) - (b.in_stock_rate ?? 0) },
+    { key: 'inStock', label: 'In-stock %', render: r => <span data-testid={`nv-instock-${r.participant_id}`} style={tnum}>{pct(r.in_stock_rate)}</span>, nullsLast: true, isNull: r => r.in_stock_rate == null, compare: (a, b) => (a.in_stock_rate ?? 0) - (b.in_stock_rate ?? 0) || tie(a, b) },
     // ⚠ ALL THREE DOLLAR COLUMNS ARE PER PERIOD, not totals. A total scales with how
     // far through the game a student is, so a mid-week roster would rank by progress;
     // and the averages sit on the same scale as the expected-profit chart, so an
     // optimal orderer's Avg profit lands on that chart's peak.
-    { key: 'avgProfit', label: 'Avg profit', render: r => <span data-testid={`nv-avgprofit-${r.participant_id}`} style={tnum}>{rosterMoney(r.average_profit)}</span>, nullsLast: true, isNull: r => r.average_profit == null, compare: (a, b) => (a.average_profit ?? 0) - (b.average_profit ?? 0) },
-    { key: 'benchmark', label: 'Benchmark', render: r => <span data-testid={`nv-avgbench-${r.participant_id}`} style={tnum}>{rosterMoney(r.average_benchmark_profit)}</span>, nullsLast: true, isNull: r => r.average_benchmark_profit == null, compare: (a, b) => (a.average_benchmark_profit ?? 0) - (b.average_benchmark_profit ?? 0) },
+    { key: 'avgProfit', label: 'Avg profit', render: r => <span data-testid={`nv-avgprofit-${r.participant_id}`} style={tnum}>{rosterMoney(r.average_profit)}</span>, nullsLast: true, isNull: r => r.average_profit == null, compare: (a, b) => (a.average_profit ?? 0) - (b.average_profit ?? 0) || tie(a, b) },
+    { key: 'benchmark', label: 'Benchmark', render: r => <span data-testid={`nv-avgbench-${r.participant_id}`} style={tnum}>{rosterMoney(r.average_benchmark_profit)}</span>, nullsLast: true, isNull: r => r.average_benchmark_profit == null, compare: (a, b) => (a.average_benchmark_profit ?? 0) - (b.average_benchmark_profit ?? 0) || tie(a, b) },
     {
       key: 'gap', label: 'Gap',
       render: r => (
@@ -123,7 +136,7 @@ function OutcomesTable({ rows }: { rows: NewsvendorReportParticipant[] }) {
         </span>
       ),
       nullsLast: true, isNull: r => r.average_optimality_gap == null,
-      compare: (a, b) => (a.average_optimality_gap ?? 0) - (b.average_optimality_gap ?? 0),
+      compare: (a, b) => (a.average_optimality_gap ?? 0) - (b.average_optimality_gap ?? 0) || tie(a, b),
     },
   ]
   return (

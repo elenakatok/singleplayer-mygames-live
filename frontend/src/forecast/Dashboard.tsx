@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { colors, typography } from '@mygames/game-ui'
+import { SortableTable, colors, typography, type SortableColumn } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
@@ -9,6 +9,7 @@ import {
   type ForecastReportData, type ForecastReportParticipant,
 } from './api'
 import { formatBig, formatMetric } from './format'
+import { compareByLastName } from '../shared/sortName'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Forecasting — instructor dashboard. The same shape as the pennies, PD, pricing and
@@ -27,17 +28,8 @@ import { formatBig, formatMetric } from './format'
 // down a column and ranking. Accuracy is never graded (spec §6).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const tnum = { fontVariantNumeric: 'tabular-nums' as const }
-
-const th = {
-  padding: '0.4rem 0.6rem', fontSize: '0.75rem', fontWeight: 600,
-  color: colors.textSecondary, borderBottom: `1px solid ${colors.borderMid}`,
-  textAlign: 'right' as const, whiteSpace: 'nowrap' as const,
-}
-const td = {
-  padding: '0.35rem 0.6rem', fontSize: '0.85rem', textAlign: 'right' as const,
-  ...tnum, borderBottom: `1px solid ${colors.borderLight ?? '#eee'}`,
-}
+// ⚠ The local `th`/`td` styles went with the plain table — `SortableTable` owns cell
+// presentation now, which is the point of sharing it.
 
 /** Not started < in progress < finished < finalized, so a sort walks the week. */
 const statusRank = (r: ForecastReportParticipant) =>
@@ -48,6 +40,81 @@ const statusText = (r: ForecastReportParticipant, total: number) =>
     : r.completed ? 'Finished'
       : r.launched ? `In progress (${r.months_played} of ${total})`
         : 'Not started'
+
+/**
+ * ⚠ THE LAST-NAME TIEBREAK EVERY COLUMN FALLS BACK TO (Elena, 08-07). Without it the
+ * twenty students who are all "Not started" land in whatever order the server sent, and
+ * the roster reshuffles under the instructor between refreshes — which reads as the table
+ * jumping around during a live class.
+ *
+ * ⚠ The `?? participant_id` fallback is this game's own and is UNCHANGED; only the
+ * ordering rule is shared. See procurement BUILD_NOTES §6m.
+ */
+const tie = (a: ForecastReportParticipant, b: ForecastReportParticipant) =>
+  compareByLastName(a.name ?? a.participant_id, b.name ?? b.participant_id)
+
+/**
+ * ⚠⚠ THIS DASHBOARD WAS THE LAST ROSTER IN THE FAMILY WITHOUT COLUMN SORTING (Elena,
+ * 08-07). Every other single-player dashboard and report has used the shared
+ * `SortableTable` for some time; forecast's report did too, but its dashboard rendered a
+ * plain `<table>`. Recorded in procurement BUILD_NOTES §6k as a known gap and fixed here,
+ * so all seven games now behave the same way.
+ *
+ * ⚠ COLUMNS MATCH WHAT THE PLAIN TABLE SHOWED — name, status, months, MSE, std error. The
+ * fuller outcome set stays on the reports page; this is a sorting change, not a
+ * presentation change.
+ */
+type SortKey = 'name' | 'status' | 'months' | 'mse' | 'se'
+
+export const buildColumns = (
+  totalRounds: number,
+): readonly SortableColumn<ForecastReportParticipant, SortKey>[] => [
+  {
+    key: 'name',
+    label: 'Name',
+    render: r => r.name ?? r.participant_id,
+    headerStyle: { textAlign: 'left' },
+    // ⚠ BY LAST NAME, the platform's own parsing rule (`shared/sortName.ts`).
+    compare: tie,
+  },
+  {
+    key: 'status',
+    label: 'Status',
+    render: r => statusText(r, totalRounds),
+    headerStyle: { textAlign: 'left' },
+    // ⚠ RANKED, NOT ALPHABETICAL — alphabetically "Finished" precedes "Not started",
+    // ordering the class by nothing anybody cares about.
+    compare: (a, b) => statusRank(a) - statusRank(b) || tie(a, b),
+  },
+  {
+    key: 'months',
+    label: 'Months',
+    render: r => r.months_played,
+    compare: (a, b) => a.months_played - b.months_played || tie(a, b),
+  },
+  {
+    key: 'mse',
+    label: 'MSE',
+    render: r => r.mse === null ? '—' : formatBig(r.mse),
+    // ⚠ NUMERIC, on the underlying number — the cell is a formatted string and comparing
+    // those would sort 10 before 9.
+    compare: (a, b) => (a.mse ?? 0) - (b.mse ?? 0) || tie(a, b),
+    // ⚠ A STUDENT WITH NO MSE HAS NOT PLAYED — they are not the best forecaster in the
+    // class. Sorting them among the low scores would read as a perfect result.
+    nullsLast: true,
+    isNull: r => r.mse === null,
+    tiebreak: tie,
+  },
+  {
+    key: 'se',
+    label: 'Std Error',
+    render: r => r.standard_error === null ? '—' : formatMetric(r.standard_error),
+    compare: (a, b) => (a.standard_error ?? 0) - (b.standard_error ?? 0) || tie(a, b),
+    nullsLast: true,
+    isNull: r => r.standard_error === null,
+    tiebreak: tie,
+  },
+]
 
 export default function Dashboard() {
   const session = useInstructorSession(forecastInstructorSession)
@@ -101,8 +168,10 @@ export default function Dashboard() {
     )
   }
 
-  const rows = [...data.participants].sort((a, b) =>
-    statusRank(a) - statusRank(b) || (a.name ?? a.participant_id).localeCompare(b.name ?? b.participant_id))
+  // ⚠ NO LONGER PRE-SORTED HERE — `SortableTable` owns the order now (status first, then
+  // last name via each column's tiebreak). Sorting twice would just mean the pre-sort is
+  // silently discarded on first render.
+  const rows = data.participants
   const finished = rows.filter(r => r.completed).length
   const started = rows.filter(r => r.launched).length
 
@@ -157,32 +226,18 @@ export default function Dashboard() {
         </p>
       )}
 
-      <div style={{ overflowX: 'auto' }}>
-        <table data-testid="fc-dash-roster" style={{ borderCollapse: 'collapse', width: '100%', fontFamily: typography.fontFamily }}>
-          <thead>
-            <tr>
-              <th style={{ ...th, textAlign: 'left' }}>Name</th>
-              <th style={{ ...th, textAlign: 'left' }}>Status</th>
-              <th style={th}>Months</th>
-              <th style={th}>MSE</th>
-              <th style={th}>Std Error</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(r => (
-              <tr key={r.participant_id} data-testid={`fc-dash-row-${r.participant_id}`}>
-                <td style={{ ...td, textAlign: 'left' }}>{r.name ?? r.participant_id}</td>
-                <td style={{ ...td, textAlign: 'left', color: r.completed ? colors.text : colors.textSecondary }}>
-                  {statusText(r, data.params.rounds)}
-                </td>
-                <td style={td}>{r.months_played}</td>
-                <td style={td}>{r.mse === null ? '—' : formatBig(r.mse)}</td>
-                <td style={td}>{r.standard_error === null ? '—' : formatMetric(r.standard_error)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {/* ⚠ THE SHARED WIDGET (Elena, 08-07), replacing the plain table this dashboard had
+          rendered since it shipped. `initialSortKey="status"` keeps the view the plain
+          table always opened on — status order, so a live session still opens on "who has
+          not started" — and every header is now clickable. */}
+      <SortableTable<ForecastReportParticipant, SortKey>
+        rows={rows}
+        columns={buildColumns(data.params.rounds)}
+        getRowKey={r => r.participant_id}
+        initialSortKey="status"
+        tableTestId="fc-dash-roster"
+        emptyMessage="No students yet — use Sync roster to pull the course list."
+      />
 
       <p style={{ marginTop: '1rem', fontSize: '0.78rem', color: colors.textSecondary, fontFamily: typography.fontFamily }}>
         MSE is shown here as an outcome, not a grade — participation is scored on finishing

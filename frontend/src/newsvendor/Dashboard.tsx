@@ -9,6 +9,7 @@ import {
   type NewsvendorBenchmark, type NewsvendorParams, type NewsvendorReportParticipant,
 } from './api'
 import { formatAverageUnits, formatMoney, formatUnits } from './format'
+import { compareByLastName } from '../shared/sortName'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Newsvendor instructor dashboard. Deliberately the SAME shape as the pennies, PD and
@@ -48,35 +49,47 @@ const statusText = (r: NewsvendorReportParticipant) =>
 
 type SortKey = 'name' | 'status' | 'periods' | 'avgOrder' | 'avgProfit'
 
+
+/**
+ * ⚠ THE LAST-NAME TIEBREAK EVERY COLUMN FALLS BACK TO (Elena, 08-07). Without it students
+ * who tie on a column — every "Not started" row, every 0-profit row — land in whatever
+ * order the server sent, and the roster reshuffles between refreshes, which reads as the
+ * table jumping around during a live class.
+ *
+ * ⚠ This game's own `?? ''` fallback is UNCHANGED; only the ORDERING rule is shared.
+ * See procurement BUILD_NOTES §6m.
+ */
+const tie = (a: NewsvendorReportParticipant, b: NewsvendorReportParticipant) => compareByLastName(a.name ?? '', b.name ?? '')
+
 const num = (v: number | null) => v ?? 0
 
 const COLUMNS: readonly SortableColumn<NewsvendorReportParticipant, SortKey>[] = [
   {
     key: 'name', label: 'Name',
     render: r => r.name ?? '—',
-    compare: (a, b) => (a.name ?? '').localeCompare(b.name ?? ''),
+    compare: (a, b) => compareByLastName(a.name ?? '', b.name ?? ''),
   },
   {
     key: 'status', label: 'Status',
     render: statusText,
-    compare: (a, b) => statusRank(a) - statusRank(b),
+    compare: (a, b) => statusRank(a) - statusRank(b) || tie(a, b),
   },
   {
     key: 'periods', label: 'Periods played',
     render: r => <span style={tnum}>{r.rounds_played}</span>,
-    compare: (a, b) => a.rounds_played - b.rounds_played,
+    compare: (a, b) => a.rounds_played - b.rounds_played || tie(a, b),
   },
   {
     key: 'avgOrder', label: 'Avg order',
     render: r => <span style={tnum}>{units(r.average_order)}</span>,
     nullsLast: true, isNull: r => r.average_order == null,
-    compare: (a, b) => num(a.average_order) - num(b.average_order),
+    compare: (a, b) => num(a.average_order) - num(b.average_order) || tie(a, b),
   },
   {
     key: 'avgProfit', label: 'Avg profit / period',
     render: r => <span style={tnum}>{money(r.average_profit)}</span>,
     nullsLast: true, isNull: r => r.average_profit == null,
-    compare: (a, b) => num(a.average_profit) - num(b.average_profit),
+    compare: (a, b) => num(a.average_profit) - num(b.average_profit) || tie(a, b),
   },
 ]
 

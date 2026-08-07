@@ -4,6 +4,7 @@ import { SortableTable, colors, type SortableColumn } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { penniesGetReport, penniesScoreAndRecord, penniesSyncRoster, penniesInstructorSession, CLASSROOM_URL, type ReportParticipant } from '../api'
+import { compareByLastName } from '../shared/sortName'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Instructor dashboard (spec §8.1). Roster: Name | Status | Outcome = THE BID.
@@ -26,19 +27,31 @@ const statusRank = (r: ReportParticipant) => (r.submitted ? 2 : r.launched ? 1 :
 
 type SortKey = 'name' | 'status' | 'bid'
 
+
+/**
+ * ⚠ THE LAST-NAME TIEBREAK EVERY COLUMN FALLS BACK TO (Elena, 08-07). Without it students
+ * who tie on a column — every "Not started" row, every 0-profit row — land in whatever
+ * order the server sent, and the roster reshuffles between refreshes, which reads as the
+ * table jumping around during a live class.
+ *
+ * ⚠ This game's own `?? ''` fallback is UNCHANGED; only the ORDERING rule is shared.
+ * See procurement BUILD_NOTES §6m.
+ */
+const tie = (a: ReportParticipant, b: ReportParticipant) => compareByLastName(a.name ?? '', b.name ?? '')
+
 const columns: readonly SortableColumn<ReportParticipant, SortKey>[] = [
   {
     key: 'name',
     label: 'Name',
     render: r => r.name ?? '—',
-    compare: (a, b) => (a.name ?? '').localeCompare(b.name ?? ''),
+    compare: (a, b) => compareByLastName(a.name ?? '', b.name ?? ''),
   },
   {
     key: 'status',
     label: 'Status',
     render: r => (r.submitted ? 'Submitted' : r.launched ? 'Launched — no bid' : 'Not launched'),
     // Rank so the sort orders Not launched < Launched-no-bid < Submitted.
-    compare: (a, b) => statusRank(a) - statusRank(b),
+    compare: (a, b) => statusRank(a) - statusRank(b) || tie(a, b),
   },
   {
     key: 'bid',
@@ -46,7 +59,7 @@ const columns: readonly SortableColumn<ReportParticipant, SortKey>[] = [
     render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(r.bid)}</span>,
     nullsLast: true,
     isNull: r => r.bid == null,
-    compare: (a, b) => (a.bid ?? 0) - (b.bid ?? 0),
+    compare: (a, b) => (a.bid ?? 0) - (b.bid ?? 0) || tie(a, b),
   },
 ]
 

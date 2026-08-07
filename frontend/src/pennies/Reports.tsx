@@ -9,6 +9,7 @@ import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { penniesGetReport, penniesInstructorSession, CLASSROOM_URL, type ReportData, type ReportParticipant } from '../api'
 import { JarHistogramSVG } from './JarHistogramSVG'
+import { compareByLastName } from '../shared/sortName'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Reports (spec §8.2). Two instructor-only reports through the shared ReportBoard
@@ -42,14 +43,26 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 // ── Report 2 columns ────────────────────────────────────────────────────────────
 type BidSortKey = 'name' | 'bid' | 'estimate' | 'truth' | 'status' | 'profit'
 
+
+/**
+ * ⚠ THE LAST-NAME TIEBREAK EVERY COLUMN FALLS BACK TO (Elena, 08-07). Without it students
+ * who tie on a column — every "Not started" row, every 0-profit row — land in whatever
+ * order the server sent, and the roster reshuffles between refreshes, which reads as the
+ * table jumping around during a live class.
+ *
+ * ⚠ This game's own `?? ''` fallback is UNCHANGED; only the ORDERING rule is shared.
+ * See procurement BUILD_NOTES §6m.
+ */
+const tie = (a: ReportParticipant, b: ReportParticipant) => compareByLastName(a.name ?? '', b.name ?? '')
+
 function bidColumns(trueValue: number): readonly SortableColumn<ReportParticipant, BidSortKey>[] {
   return [
-    { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => (a.name ?? '').localeCompare(b.name ?? '') },
-    { key: 'bid', label: 'Bid', render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(r.bid)}</span>, nullsLast: true, isNull: r => r.bid == null, compare: (a, b) => (a.bid ?? 0) - (b.bid ?? 0) },
-    { key: 'estimate', label: 'Estimate', render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(r.estimate)}</span>, nullsLast: true, isNull: r => r.estimate == null, compare: (a, b) => (a.estimate ?? 0) - (b.estimate ?? 0) },
+    { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => compareByLastName(a.name ?? '', b.name ?? '') },
+    { key: 'bid', label: 'Bid', render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(r.bid)}</span>, nullsLast: true, isNull: r => r.bid == null, compare: (a, b) => (a.bid ?? 0) - (b.bid ?? 0) || tie(a, b) },
+    { key: 'estimate', label: 'Estimate', render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(r.estimate)}</span>, nullsLast: true, isNull: r => r.estimate == null, compare: (a, b) => (a.estimate ?? 0) - (b.estimate ?? 0) || tie(a, b) },
     { key: 'truth', label: 'True Value', render: () => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(trueValue)}</span>, compare: () => 0 },
-    { key: 'status', label: 'Winning Status', render: r => (r.won ? 'Won' : 'Did not win'), compare: (a, b) => Number(a.won) - Number(b.won) },
-    { key: 'profit', label: 'Profit', render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(r.profit ?? (r.submitted ? 0 : null))}</span>, nullsLast: true, isNull: r => r.profit == null && !r.submitted, compare: (a, b) => (a.profit ?? 0) - (b.profit ?? 0) },
+    { key: 'status', label: 'Winning Status', render: r => (r.won ? 'Won' : 'Did not win'), compare: (a, b) => Number(a.won) - Number(b.won) || tie(a, b) },
+    { key: 'profit', label: 'Profit', render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(r.profit ?? (r.submitted ? 0 : null))}</span>, nullsLast: true, isNull: r => r.profit == null && !r.submitted, compare: (a, b) => (a.profit ?? 0) - (b.profit ?? 0) || tie(a, b) },
   ]
 }
 

@@ -1104,6 +1104,159 @@ that gap is closed. Names come from the rendered roster, never hardcoded.
 
 ---
 
+## 6m. The rule went FAMILY-WIDE — all seven games (Elena, 2026-08-07)
+
+§6l fixed procurement and flagged that it was then the odd one out. Elena: *"I would like
+all other single player games to sort by last name. So that it is consistent with the other
+games."* Done — **13 comparators across 7 games**.
+
+### Where the rule lives, and why NOT in `game-ui`
+
+`frontend/src/shared/sortName.ts`, **not** an export from `@mygames/game-ui`. Exporting
+`getLastName` would edit a package **every family** consumes (Baxter, Winemaster, …) for a
+change only the single-player family asked for. Living in `shared/` the blast radius is one
+repo and one project's seven hosting targets. The duplication is a three-line function, and
+`sortName.test.ts` pins it against an independent restatement of game-ui's rule so the two
+cannot drift silently.
+
+⚠ **This is now the SECOND copy, deliberately.** If a third appears, promote it to `game-ui`
+instead.
+
+### ⚠⚠ THE MODULE TAKES STRINGS, NOT ROWS — and that is the whole safety argument
+
+The seven games disagree about what an **unnamed** row is called: six fall back to `''`,
+procurement falls back to the participant id, and forecast's dashboard to `participant_id`.
+That fallback decides whether unnamed students **clump at the top** or **scatter by id**.
+Changing it would be a behaviour change riding along on a sorting change, so every caller
+keeps its **own** fallback expression verbatim and this module changes only the ORDERING
+RULE. `lastNameOf('')` is `''`, so empty names still clump exactly where they did.
+
+### What was touched
+
+| game | dashboard | report |
+|---|---|---|
+| pennies · pd · pricing · newsvendor | name column | name column |
+| poll | name column | **two** — the answers table and the status table |
+| forecast | ⚠ no columns — sorts rows in place, ordering changed | name column |
+| procurement | name + every column's tiebreak (§6l) | name + tiebreaks |
+
+⚠ **`forecast`'s dashboard STILL has no clickable column sorting.** It now *orders* by
+surname, but it is the one roster in the family without `SortableTable`. Pre-existing, first
+recorded at §6k, and deliberately still not fixed — Elena asked for last-name sorting, not
+for the missing widget.
+
+⚠ **Tiebreaks were NOT added to the other six games' non-name columns.** Procurement has
+them (§6l); the rest still fall to server order within a tied column. Same latent defect,
+but adding it would change orderings five browser harnesses assert on, for something nobody
+asked for. Flagged, not taken.
+
+### The test is a SOURCE SCAN, and the reason is worth recording
+
+Almost none of these column arrays can be imported: most are module-private, and five are
+declared **inside** their component body (`poll`, `pd`, `pricing`, `newsvendor`, `forecast`
+Reports). Exporting eleven of them to satisfy a test would restructure six components for no
+runtime benefit. So the conformance test **reads the source** and asserts every Name column
+routes through `compareByLastName`.
+
+⚠ **It is a WIRING check, not a behaviour check.** Behaviour is proved by
+`compareByLastName`'s own tests; end-to-end wiring by the procurement browser harness, which
+clicks a real header and reads the rendered order. Stated plainly so nobody mistakes the scan
+for proof that a roster renders in order.
+
+⚠ A fixed-width window was **not** enough, and the first version proved it: procurement's
+report Name column renders a "See rounds" button, so its `compare:` sits ~500 characters
+after its `key:` and a 400-char window reported a **false failure**. The window now ends at
+the next `key:`.
+
+### ⚠⚠ Another worthless-control specimen, for §3's collection
+
+The first per-game control run reported **"NOTHING FAILED"** for all six games — and I had
+`cd`'d into `src/`, so `npx vitest run src/shared/…` resolved to `src/src/shared/…`, matched
+no test files, and the grep for "N failed" found nothing in output that said *"No test files
+found"*. **A control that runs zero tests reports exactly like a control that bites.** Fixed
+by asserting the baseline passes 30 first, then reading the full `Tests` line rather than
+grepping for a failure count.
+
+Redone properly, **13 of 13 controls bite**: reverting any single game's Dashboard or
+Reports to the display-string comparator fails 2 of 30 (forecast's dashboard 1 of 30 — it
+has no `key: 'name'` column, so only its dedicated assertion fires).
+
+⚠ And `npm run build` was re-verified to actually typecheck by injecting a deliberate type
+error (`error TS2322`, caught) — §6i records that `npx tsc --noEmit` in `frontend/` checks
+nothing, and a 200ms incremental build looks identical to a build that skipped.
+
+---
+
+## 6n. All-column sorting, tiebreaks everywhere, and the robot id (Elena, 2026-08-07)
+
+§6m took the last-name rule family-wide. Elena then asked for the rest of the consistency:
+*"Sorting by all columns on dashboard and report, and when sorting by name, use last name,
+should exist for all single player games."* Plus two items carried from §6k's report.
+
+### Sorting on every column — one gap, and it was the one already known
+
+Audited all seven games first. **Every roster already had every column sortable except
+forecast's dashboard**, the last one in the family rendering a plain `<table>` (5 raw `<th>`).
+It now uses `SortableTable`: name · status · months · MSE · std error, with `nullsLast` on
+both metrics — ⚠ *a student with no MSE has not played; sorting them among the low scores
+would read as the best forecaster in the class.*
+
+⚠ **The remaining raw `<th>` tables are NOT rosters** — they are the per-student drill-down
+round histories in forecast/Reports and procurement/Reports, which are **chronological by
+design**. Sorting a round history by profit would destroy the only order it has. Left alone
+deliberately, so nobody "finishes the job" later.
+
+### The tiebreak went to all 85 columns
+
+§6l gave procurement a last-name tiebreak on every column and §6m explicitly declined to
+spread it, on the grounds that nobody had asked and it could disturb five browser harnesses.
+Elena asked. **85 columns across 14 files** now fall back to last name.
+
+⚠ Each game defines its own `const tie` carrying **its own null fallback**, and the shared
+module still only supplies the ordering rule (§6m). A conformance test pins every `const tie`
+to `compareByLastName`, because otherwise the Name-column scan would wave through a file that
+defined `tie` as anything at all.
+
+### ⚠⚠ The robot id named the wrong persona — and why the fix is NOT a probe
+
+Ids embedded the **sealed** persona (`robot-16-equilibrium`) even on open instances, where the
+personas are exits-at-cost / exits-early / random-exit. These ids are how the robot reports
+get read, so the label was misleading about the only thing it exists to say.
+
+**The constraint that shapes the fix:** gameplay reads the format **off the screen** (§6f — a
+live robot has a launch URL and nothing else), but **the id must exist before the page
+loads**. So the id cannot come from the screen, and a probe request would either pollute the
+instance with a throwaway participant or reintroduce the config dependency the driver exists
+without.
+
+**Resolution: `--format` is passed in by the caller that CREATED the instance.** Gameplay
+detection is untouched.
+
+⚠ **It only ever mattered in emulator/dry-run runs.** In a live run `mintUrl` **ignores the
+pid entirely** — a robot's name comes from the launcher. Worth recording, because it bounds
+the bug: no live report ever carried a wrong persona name.
+
+⚠ **With no `--format`, the seat is `robot-3` — unnamed rather than named wrongly.** A bare
+seat number says "persona not known here", which is true; the old behaviour was a guess that
+was wrong half the time.
+
+⚠ **Slugged.** The sealed names were already id-safe (`cost-bidder`); the open ones carry
+spaces (`exits at cost`), and a space in a participant id is a broken URL, not a cosmetic
+problem. The browser harness now asserts on the **ids themselves** — no id may end in a
+sealed persona name, every id must end in an open one — rather than on the summary line,
+because the summary was always right; it was the id that lied.
+
+### Controls (16 total, all bite)
+
+| mutation | fails |
+|---|---|
+| revert any one of 13 files to the display-string sort | 2 of 32 each |
+| strip a `\|\| tie(a, b)` from any column | 1 of 32 |
+| define a local `tie()` without the shared rule | 2 of 32 |
+| revert forecast's dashboard to a plain table | 1 of 32 |
+
+---
+
 ## 7. Which hosting targets a frontend change needs — the standing rule
 
 Read off `frontend/vite.config.ts` and `firebase.json`, not off convention.
