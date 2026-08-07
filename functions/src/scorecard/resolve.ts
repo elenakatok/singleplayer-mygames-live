@@ -128,7 +128,13 @@ export interface ContractResult {
 }
 
 /**
- * Is the bonus already mathematically impossible? `score + periodsRemaining < targetScore`.
+ * DEAD — the STRICT sense: the bonus is arithmetically impossible.
+ * `score + periodsRemaining < targetScore`.
+ *
+ * ⚠⚠ THIS IS NOT `isWrittenOff` (dp.ts), AND THE TWO MUST NEVER BE MERGED (Elena, 08-07).
+ * This one is a fact about the arithmetic and depends on no policy; the other is a
+ * judgement about what optimal play would do and depends on the whole DP. See
+ * `isWrittenOff` for what conflating them would silently do to Tier 1.
  *
  * ⚠⚠ SERVER-SIDE ONLY, AND IT MUST NEVER REACH THE CLIENT IN ANY FORM (spec §4.1).
  *
@@ -143,7 +149,7 @@ export interface ContractResult {
  * — but it stays an inference. ⚠ The reached-target banner IS shipped, and the asymmetry
  * is deliberate (spec §16); do not "fix" it for symmetry.
  */
-export function isMathematicallyDead(
+export function isDead(
   score: number,
   periodsRemaining: number,
   targetScore: number,
@@ -154,6 +160,13 @@ export function isMathematicallyDead(
 /**
  * Periods a student paid high effort for after the contract was already dead — the
  * Tier-1 column (spec §11). Computed from the STORED record, after play.
+ *
+ * ⚠ USES THE STRICT `isDead`, NEVER `isWrittenOff`. The column claims a student paid for a
+ * contract that was **already impossible**, which is a fact they could have derived
+ * themselves from the periods-remaining counter (spec §4.1). Swapping in the loose
+ * predicate would silently change the claim to "paid for a contract the DP would have
+ * abandoned" — counting give-ups that were never impossible, and ranking the class by
+ * divergence from optimal play rather than by waste.
  */
 export function periodsPaidAfterDead(
   periods: readonly PeriodRecord[],
@@ -163,7 +176,7 @@ export function periodsPaidAfterDead(
   for (let i = 0; i < periods.length; i++) {
     const scoreBefore = i === 0 ? 0 : periods[i - 1].score
     const remaining = rules.periodsPerContract - i
-    if (isMathematicallyDead(scoreBefore, remaining, rules.targetScore) && periods[i].action === 'high') {
+    if (isDead(scoreBefore, remaining, rules.targetScore) && periods[i].action === 'high') {
       wasted++
     }
   }

@@ -415,6 +415,36 @@ describe('⚠ mutation testing — the fixtures must reject a wrong solver', () 
     expect(reproducesFixtures((r, rel) => build(r, rel, { tieToHigh: true }))).toBe(true)
   })
 
+  it('⚠ TIES GO TO LOW, and it is E[#high] — not earnings — that this protects', () => {
+    // Elena, 08-07. A tie leaves E[earnings] unchanged by definition; it does NOT leave
+    // E[#high] unchanged, and E[#high] is exactly what the §3.1 separation warning
+    // compares between conditions. Breaking ties toward high would print a separation
+    // figure computed under a different convention than spec §6.3's benchmarks were.
+    const tie: ScorecardRules = {
+      ...RULES, pAcceptableLow: 0.25, highEffortCost: 30, lowEffortCost: 0, bonus: 120,
+    }
+    const rel = 0.5
+    const strict = solve(tie, rel).benchmarks
+
+    // Same earnings under either convention — the tie is worth the same both ways.
+    // Different E[#high]: the ties-to-high policy pays for periods it need not.
+    const toHigh = build(tie, rel, { tieToHigh: true })
+    let expectedHighUnderMutant = 0
+    let dist = new Map<number, number>([[0, 1]])
+    for (let p = 1; p <= tie.periodsPerContract; p++) {
+      const r = tie.periodsPerContract - p + 1
+      for (const [s, pr] of dist) if (toHigh[r][s]) expectedHighUnderMutant += pr
+      const next = new Map<number, number>()
+      for (const [s, pr] of dist) {
+        const q = toHigh[r][s] ? rel : tie.pAcceptableLow
+        next.set(s + 1, (next.get(s + 1) ?? 0) + pr * q)
+        next.set(s, (next.get(s) ?? 0) + pr * (1 - q))
+      }
+      dist = next
+    }
+    expect(expectedHighUnderMutant).toBeGreaterThan(strict.expectedHighEffortPeriods)
+  })
+
   it('⚠ …and IS killed by a constructed exact tie', () => {
     // Binary-exact throughout: 0.5 − 0.25 = 0.25 exactly, and 0.25 × 120 = 30 exactly.
     const tie: ScorecardRules = {

@@ -38,9 +38,22 @@ import { marginalThreshold, type ScorecardRules } from './config'
 // ⚠ NO EPSILON ON THE COMPARISON. The (period 7, score 6) cell sits 0.48 from flipping
 // and spec §6.2 records that it "flips under small parameter edits" — that is a
 // DESIGN FACT about the parameters, not float noise, and a tolerance would paper over
-// exactly the sensitivity the settings panel exists to display. Strict `>` throughout,
-// which also gives ties to LOW effort — correct, since spec §6.1 requires a point be
-// worth strictly MORE than the threshold.
+// exactly the sensitivity the settings panel exists to display.
+//
+// ⚠⚠ TIES GO TO **LOW** EFFORT — strict `>`, never `>=` (Elena, 08-07). Spec §6.1 requires
+// a point be worth strictly MORE than the threshold, and the convention is load-bearing
+// for a reason that is not about earnings:
+//
+//   A tie by definition leaves E[earnings] UNCHANGED — both actions are worth the same.
+//   It does NOT leave E[#high] unchanged. Breaking ties toward high effort inflates
+//   `expectedHighEffortPeriods`, which is the exact quantity the §3.1 SEPARATION WARNING
+//   compares between conditions. An instructor whose parameters produce ties would then
+//   see a separation figure computed under a different convention than the one spec §6.3's
+//   benchmarks were computed with — a warning silently calibrated against the wrong number.
+//
+// No state ties at the shipped parameters, so this is unobservable there; it is pinned by
+// a constructed binary-exact tie (BUILD_NOTES §3) rather than by the slide-6 fixtures,
+// which cannot see it.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** What optimal play is worth, and what it does, under ONE condition. */
@@ -127,6 +140,39 @@ export function highEffortOptimal(sol: Solution, periodsRemaining: number, score
   return sol.policy[periodsRemaining]?.[score] ?? false
 }
 
+/**
+ * WRITTEN OFF — the LOOSE sense: optimal play has stopped paying for this contract and is
+ * not merely coasting on a target already met.
+ *
+ * ⚠⚠ THIS IS NOT `isDead` (resolve.ts), AND THE TWO MUST NEVER BE MERGED (Elena, 08-07).
+ *
+ *   isWrittenOff  — the DP gives up. INCLUDES states that are still mathematically
+ *                   reachable: spec §6.2 calls (period 4, score 0) a write-off at
+ *                   Δ = 2.72 even though score 0 with seven periods left can still hit
+ *                   seven. Used by §6.3's effort-profile row and by nothing else.
+ *   isDead        — the bonus is arithmetically impossible. Used by §4.1's silence and by
+ *                   Tier 1's "periods paid for after the contract was already dead".
+ *
+ * ⚠ THE COST OF CONFLATING THEM is a wrong report, not a crash. Serving the loose sense to
+ * Tier 1 would count periods a student spent on contracts that were **never impossible** —
+ * turning "paid for a contract that was already lost" into "paid for a contract the DP
+ * would have given up on", which is a judgement about optimal play, not a fact about the
+ * arithmetic. The effort-gap ranking built on that column would then rank students by how
+ * far they diverged from the DP rather than by how much they wasted, which is a different
+ * claim and the one spec §11 does not make.
+ *
+ * They disagree at (period 4, score 0) at the shipped defaults; a test pins exactly that.
+ */
+export function isWrittenOff(
+  sol: Solution,
+  periodsRemaining: number,
+  score: number,
+  targetScore: number,
+): boolean {
+  if (score >= targetScore) return false // coasting, not written off
+  return !highEffortOptimal(sol, periodsRemaining, score)
+}
+
 // ── The forward distribution ──────────────────────────────────────────────────
 
 /**
@@ -152,16 +198,19 @@ function rollForward(
     const r = T - p + 1
     let pHigh = 0
     let pCoast = 0
+    let pOff = 0
     for (const [s, pr] of dist) {
       if (playsHigh(r, s)) pHigh += pr
       else if (s >= rules.targetScore) pCoast += pr
+      else pOff += pr
     }
-    // ⚠ "WRITTEN OFF" IS THE REMAINDER, and the definition matters — see BUILD_NOTES.
-    // It is NOT "mathematically unreachable": spec §6.2 calls (period 4, score 0) a
-    // write-off at Δ = 2.72 even though score 0 with 7 periods left can still reach 7.
-    // The category is "the DP has stopped paying for this contract and is not coasting",
-    // which is what the §6.3 profile table's three rows partition into.
-    perPeriod.push({ period: p, pHigh, pCoasting: pCoast, pWrittenOff: 1 - pHigh - pCoast })
+    // ⚠ THE THREE CATEGORIES PARTITION, and `pWrittenOff` is accumulated DIRECTLY rather
+    // than taken as `1 − pHigh − pCoast`. The subtraction is what the §6.3 row equals, but
+    // computing it that way would make the row true BY CONSTRUCTION and unable to detect a
+    // miscategorisation — the partition test below it would assert nothing. Summing the
+    // third bucket independently is what lets that test be a control. See `isWrittenOff`
+    // for why this is NOT the same predicate as `isDead`.
+    perPeriod.push({ period: p, pHigh, pCoasting: pCoast, pWrittenOff: pOff })
     expectedHigh += pHigh
 
     const next = new Map<number, number>()

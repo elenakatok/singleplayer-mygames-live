@@ -44,10 +44,31 @@ Reading it as the strict "score + periodsRemaining < target" instead gives
 `0 0 0 0 .02 .06 .09 .14 .21 .28` against the spec's `— — — .03 .08 .06 .21 .14 .21 .28`
 — the last three periods agree, so a careless check passes.
 
-⚠ **Both senses are needed and they are different functions.** `dp.ts` `optimalProfile()`
-returns the loose sense (the chart row). `resolve.ts` `isMathematicallyDead()` is the
-strict sense, and it is what spec §4.1's silence and the Tier-1 "periods paid for after
-the contract was already dead" column are about. Do not unify them.
+⚠⚠ **BOTH SENSES ARE NEEDED AND THEY ARE TWO SEPARATELY NAMED FUNCTIONS** (Elena, 08-07).
+Do not unify them, and do not let a caller pick "whichever is handy":
+
+| | `isWrittenOff` (dp.ts) | `isDead` (resolve.ts) |
+|---|---|---|
+| Sense | loose | strict |
+| Test | optimal policy stops paying, target unmet | `score + periodsRemaining < targetScore` |
+| Depends on | the whole DP | arithmetic only |
+| Feeds | §6.3's effort-profile row | §4.1's silence, Tier 1's "periods paid after dead" |
+
+**What conflating them would silently do.** Tier 1's column claims a student paid for a
+contract that was **already impossible** — a fact they could have derived themselves from
+the periods-remaining counter (spec §4.1). Serving the loose predicate there would change
+the claim to "paid for a contract the DP would have abandoned", counting give-ups that were
+never impossible. The effort-gap ranking built on that column would then order the class by
+**divergence from optimal play** rather than by **waste** — a different claim, and one spec
+§11 does not make.
+
+Measured on a concrete transcript (ten high-effort periods, no acceptable deliveries):
+strict counts **6**, loose counts **7**. One extra period charged to every such student.
+
+They disagree in exactly **three** states at the shipped defaults — `(p4,s0)`, `(p5,s1)`,
+`(p7,s6)` — the same three cells §4 below is about. Dead always implies written off; the
+reverse never holds. Both directions are asserted, and the count of strictly-looser states
+is pinned at 3 so the distinction cannot quietly disappear.
 
 ### 1b. ⚠ The 27.8% dead-state share double-counts unless dead mass is removed
 
@@ -112,7 +133,23 @@ sides exactly `30`, with no float slack. The test asserts the tie is genuine (`h
 *before* asserting which way it breaks, so it cannot silently decay into a near-tie that
 proves nothing.
 
-Ties go to **low** effort, per spec §6.1's "must be worth **more** than the threshold".
+### ⚠ Ties go to LOW effort — and it is `E[#high]`, not earnings, that this protects
+
+Per spec §6.1's "must be worth **more** than the threshold". The convention is pinned
+deliberately (Elena, 08-07), and the reason is not the obvious one:
+
+> A tie leaves **E[earnings] unchanged by definition** — both actions are worth exactly the
+> same, which is what "tie" means. It does **not** leave **E[#high]** unchanged. Breaking
+> ties toward high effort inflates the expected high-effort count, and `E[#high]` is
+> precisely the quantity the **§3.1 separation warning** compares between conditions.
+
+So an instructor whose parameters happen to produce ties would, under a `>=` solver, see a
+separation figure computed under a **different convention than the one spec §6.3's
+benchmarks were computed with** — a warning silently calibrated against the wrong number,
+on a screen whose entire job is to tell them whether the lesson survives their edits.
+
+Asserted directly: at the constructed tie configuration, earnings are identical under both
+conventions while the ties-to-high policy's `E[#high]` is strictly larger.
 
 ⚠ There is **no epsilon** anywhere in the comparison. The (period 7, score 6) cell sits
 0.48 from flipping and spec §6.2 records that it "flips under small parameter edits" —
@@ -137,14 +174,34 @@ this game. Measured, under high reliability:
 not the single cell's 0.057. This matters: the naive rule is *obviously* wrong (it keeps
 paying for contracts already written off, 24 cells' worth), so nobody would ship it. The
 **dead-aware** rule is the one a careful builder would actually write, and it is wrong in
-only three cells and costs a sixth of an ECU — far too small to notice on any screen.
+only three cells: `(p4, s0)`, `(p5, s1)`, `(p7, s6)`. **Two of the three are exactly the
+cells spec §6.2 names** as the ones that make the DP non-optional.
 
-Those three cells are `(p4, s0)`, `(p5, s1)`, `(p7, s6)`. **Two of the three are exactly
-the cells spec §6.2 names** as the ones that make the DP non-optional.
+### ⚠⚠ The argument for one-solver is that the error is RARE, not that it is small
 
-⚠ Per-visit, the (p7, s6) error costs **0.48 ECU**; it only shrinks to 0.057 unconditionally
-because that state is reached just 11.8% of the time. Do not quote the unconditional figure
-as "the size of the mistake".
+This is the framing to keep, because the obvious reading of "0.163 ECU" is *"negligible —
+ship the shortcut"*, and that reading is wrong (Elena, 08-07):
+
+| | |
+|---|---|
+| Cost **per visit** to (p7, s6) | **0.48 ECU** |
+| P(reaching that state) under optimal play | **11.8%** |
+| Cost **unconditionally** | 0.48 × 0.118 ≈ **0.057 ECU** |
+
+The dead-aware shortcut is not a policy that is *slightly* wrong everywhere. It is a policy
+that is **substantially wrong in a state students rarely reach** — and rarity is what makes
+it survive review, not smallness. Nobody watching a screen will see 0.163 ECU per contract.
+Anyone landing on (p7, s6) is being told to spend 4 ECU on a point worth 8.80 against a
+threshold of 10, which is a real and legible mistake about the thing the lecture teaches.
+
+⚠ **Never quote the unconditional 0.057 (or the 0.163) as "the size of the mistake".** It is
+the size of the mistake *averaged over the times it does not occur*. A future reader who
+reconstructs the naive rule, measures 0.163, and concludes the shortcut is fine will have
+made exactly the inference this section exists to prevent.
+
+The three shortcut cells are also the three where `isWrittenOff` and `isDead` diverge (§1a)
+— the same states, reached from two different directions, which is a good sign that this is
+a real structural feature of the game rather than an artefact of the parameters.
 
 ---
 

@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
-  resolvePeriod, settleContract, isMathematicallyDead, periodsPaidAfterDead,
+  resolvePeriod, settleContract, isDead, periodsPaidAfterDead,
   type PeriodRecord, type EffortAction,
 } from '../src/scorecard/resolve'
+import { solve, isWrittenOff } from '../src/scorecard/dp'
 import {
   DEFAULT_CONFIG, DEFAULT_RELIABILITY_HIGH, DEFAULT_RELIABILITY_LOW,
   type ScorecardRules, type Condition,
@@ -174,11 +175,11 @@ describe('settleContract — the bonus lands at contract end (spec §1)', () => 
 
 describe('§4.1 — the dead state, server-side only', () => {
   it('is exactly score + periodsRemaining < targetScore', () => {
-    expect(isMathematicallyDead(0, 7, 7)).toBe(false) // needs all seven — still alive
-    expect(isMathematicallyDead(0, 6, 7)).toBe(true)
-    expect(isMathematicallyDead(6, 1, 7)).toBe(false)
-    expect(isMathematicallyDead(5, 1, 7)).toBe(true)
-    expect(isMathematicallyDead(7, 0, 7)).toBe(false) // already met
+    expect(isDead(0, 7, 7)).toBe(false) // needs all seven — still alive
+    expect(isDead(0, 6, 7)).toBe(true)
+    expect(isDead(6, 1, 7)).toBe(false)
+    expect(isDead(5, 1, 7)).toBe(true)
+    expect(isDead(7, 0, 7)).toBe(false) // already met
   })
 
   it('⚠ is ABSORBING — a point scored while dead does not revive a contract', () => {
@@ -186,7 +187,7 @@ describe('§4.1 — the dead state, server-side only', () => {
     // s + r is unchanged (score +1, remaining −1) or falls.
     let score = 1
     for (let remaining = 4; remaining >= 1; remaining--) {
-      expect(isMathematicallyDead(score, remaining, 7)).toBe(true)
+      expect(isDead(score, remaining, 7)).toBe(true)
       score += 1 // best case: every remaining period is acceptable
     }
   })
@@ -213,6 +214,86 @@ describe('§4.1 — the dead state, server-side only', () => {
     ]
     const recs = play(actions, Array(10).fill(0.99), 0.7)
     expect(periodsPaidAfterDead(recs, RULES)).toBe(0)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠⚠ `isDead` AND `isWrittenOff` ARE TWO FUNCTIONS AND MUST STAY TWO (Elena, 08-07).
+//
+//   isWrittenOff — LOOSE. Optimal play has stopped paying, target unmet. Policy-dependent.
+//                  Feeds spec §6.3's effort-profile row.
+//   isDead       — STRICT. score + periodsRemaining < targetScore. Pure arithmetic.
+//                  Feeds spec §4.1's silence and Tier 1's "periods paid after dead".
+//
+// If one served both, the Tier-1 column would count give-ups that were never impossible,
+// and the effort-gap ranking built on it would order the class by divergence from the DP
+// rather than by waste.
+// ═══════════════════════════════════════════════════════════════════════════════
+describe('⚠ the two write-off predicates are distinct', () => {
+  const sol = solve(RULES, DEFAULT_RELIABILITY_HIGH)
+  const T = RULES.periodsPerContract
+  /** periodsRemaining at period p, INCLUDING p. */
+  const remainingAt = (p: number) => T - p + 1
+
+  it('⚠ THEY DISAGREE AT (period 4, score 0) — the cell spec §6.2 names', () => {
+    const r = remainingAt(4)
+    // Still reachable: 0 + 7 = 7 = targetScore. Every remaining period must land, but it
+    // is not impossible.
+    expect(isDead(0, r, RULES.targetScore)).toBe(false)
+    // And yet the DP has already given up on it — Δ = 2.72 against a threshold of 10.
+    expect(isWrittenOff(sol, r, 0, RULES.targetScore)).toBe(true)
+  })
+
+  it('they agree once the contract is genuinely impossible', () => {
+    const r = remainingAt(5) // 0 + 6 < 7
+    expect(isDead(0, r, RULES.targetScore)).toBe(true)
+    expect(isWrittenOff(sol, r, 0, RULES.targetScore)).toBe(true)
+  })
+
+  it('⚠ isWrittenOff EXCLUDES coasting; isDead is false there too, for a different reason', () => {
+    const r = remainingAt(8)
+    // Target already met: the DP plays low, but this is coasting, not a write-off.
+    expect(isWrittenOff(sol, r, 7, RULES.targetScore)).toBe(false)
+    expect(isDead(7, r, RULES.targetScore)).toBe(false)
+  })
+
+  it('neither fires in the squeeze, where the DP is paying', () => {
+    const r = remainingAt(8)
+    expect(isWrittenOff(sol, r, 6, RULES.targetScore)).toBe(false)
+    expect(isDead(6, r, RULES.targetScore)).toBe(false)
+  })
+
+  it('⚠ isWrittenOff is strictly WEAKER — dead always implies written off, never the reverse', () => {
+    let strictlyLooser = 0
+    for (let p = 1; p <= T; p++) {
+      const r = remainingAt(p)
+      for (let s = 0; s <= p - 1; s++) {
+        const dead = isDead(s, r, RULES.targetScore)
+        const off = isWrittenOff(sol, r, s, RULES.targetScore)
+        if (dead) expect(off, `p${p} s${s}: dead but not written off`).toBe(true)
+        if (off && !dead) strictlyLooser++
+      }
+    }
+    // ⚠ Size-asserted (T2): if the two predicates ever coincided everywhere, the loop
+    // above would pass vacuously and the distinction would be untested. At the shipped
+    // defaults there are exactly three states where the DP gives up on a live contract —
+    // (p4,s0), (p5,s1) and (p7,s6), the cells that make the DP non-optional.
+    expect(strictlyLooser).toBe(3)
+  })
+
+  it('⚠ swapping isDead for isWrittenOff would inflate the Tier-1 column', () => {
+    // The concrete cost of merging them, on a real transcript: a student who plays high
+    // throughout and never scores. The strict count starts at period 5 (the contract
+    // becomes impossible); the loose one would start at period 4, where the DP gives up
+    // but the bonus is still reachable — one extra period charged to every such student.
+    const recs = play(Array(10).fill('high'), Array(10).fill(0.99), 0.7)
+    expect(periodsPaidAfterDead(recs, RULES)).toBe(6)
+
+    const looseCount = recs.filter((_, i) =>
+      isWrittenOff(sol, T - i, i === 0 ? 0 : recs[i - 1].score, RULES.targetScore),
+    ).length
+    expect(looseCount).toBe(7)
+    expect(looseCount).toBeGreaterThan(periodsPaidAfterDead(recs, RULES))
   })
 })
 
