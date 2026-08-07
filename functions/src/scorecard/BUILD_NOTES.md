@@ -268,3 +268,76 @@ Carried from spec §5 / the build prompt so nobody "fixes" them:
 `config.ts`. 97 unit tests. Both slide-6 panels reproduced 80/80; all eight §6.3 benchmark
 rows exact; five mutants run, four killed, the survivor documented in §3 above and killed by
 a constructed tie.
+
+---
+
+## 9. ⚠ The contract boundary — a gated READ, not a write
+
+Spec §13 forbids "next-contract reliability before that contract starts", and spec §4's
+flow puts a contract-result screen between contracts. Those two together decide the design,
+and it is not the obvious one.
+
+**Contract-start is NOT a separate server screen.** Spec §4 describes it as "Contract k of
+10 · Period 1 of 10 · the reliability label · score 0 · balance = endowment" — which is
+period 1's effort-choice screen with a heading. It ships as `effort-choice` carrying
+`isContractStart`. That is why the build prompt names exactly **three** resume boundaries
+(mid-contract, contract-result, session-summary), not four.
+
+**Advancing is `scorecardGetState({ advance: true })` — a read that writes nothing.** The
+next contract's condition is derived from the stored `startsWith` on the spot, so it does
+not exist in the database until its first period is submitted. The omission is in the data
+model, not in a filter (S8).
+
+⚠ **It is GATED, and the gate is the whole point.** `advance` is honoured only when the
+student is genuinely at contract-result. Without that, any student could call it
+mid-contract and read the next contract's reliability — the exact leak the design is
+avoiding. A mid-contract caller is refused and learns nothing.
+
+### ⚠ The bug this design caused, and the fix
+
+Because `advance` writes nothing, `positionOf` still reports `contract-result` after the
+student has advanced — so `scorecardSubmitPeriod`'s ordering check rejected the first
+period of the next contract with *"That is not the period you are on"*. Every session died
+at contract 2, period 1. **The CP2 harness caught it on its first clean run.**
+
+The fix is that **two positions are legal sources for a submit**, not one:
+
+| Position | Legal submit |
+|---|---|
+| `effort-choice(k, p)` | `(k, p)` — the ordinary case |
+| `contract-result(k)` | `(k+1, 1)` — **the contract boundary** |
+
+A future reader who tries to "simplify" that check back to a single case will reintroduce
+the same total failure. It is commented at the call site for that reason.
+
+---
+
+## 10. ⚠ `(4 − 0) / (0.4 − 0.3)` is 39.999999999999986
+
+Not 40. `0.4 − 0.3` is not exactly `0.1` in IEEE 754, and the low condition's marginal
+threshold runs straight into it — so the knowledge check's Q2 would have printed
+**"39.999999999999986 ECU"** as an answer option.
+
+`questions.ts` rounds before rendering (`ecu()`), so students read "40 ECU". The harness
+now rounds too, and additionally asserts that **no KC option matches `/\d\.\d{4,}/`** —
+a general guard rather than a fix for this one number, since any edited probability can
+land in the same place.
+
+⚠ This is R8 ("round percentages before display") arriving somewhere R8 did not obviously
+apply. The rule is really *round anything derived before it reaches a screen*.
+
+---
+
+## 11. Checkpoint log
+
+**CP2 (student flow)** — `scorecardGetState`, `scorecardSubmitPeriod`,
+`scorecardGetQuestions`, `scorecardSubmitKcAnswer`, `scorecardSubmitDebrief`; `state.ts`
+(the bespoke nested loop), `clientState.ts` (the whitelist), `instance.ts` (the join
+counter), `rng.ts`, `questions.ts`, `reveal.ts`; the frontend Play flow with
+`key={screen.id}` isolation at both boundaries; Firestore rules. 133 unit tests plus a
+162-check emulator harness, both arms played end to end.
+
+⚠ **Dashboard, Settings and Reports ship as declared stubs** (`frontend/src/scorecard/
+Placeholders.tsx`) — App.tsx's per-game map requires the quartet, and scorecard needs a
+routing entry before Play is reachable. Each stub says on screen that it is not built.
+CP3 replaces all three.

@@ -39,6 +39,14 @@ const LIVE_HOSTS: ReadonlyArray<readonly [string, string]> = [
   // ⚠ Plain `procurement` was globally taken (08-03), hence the `-mygames` site id.
   ['procurement.mygames.live', 'procurement'],
   ['procurement-mygames.web.app', 'procurement'],
+  // ⚠ THE `.web.app` SITE ID IS NOT YET CREATED — the CNAME and the Firebase site are
+  // Elena's CP4 infrastructure steps (spec §14). `scorecard-mygames-live` is the id this
+  // table ASSUMES; if the console hands back a different one because the name is taken
+  // (as happened to procurement on 08-03), this row and HOST_PREFIXES must both change
+  // in the same commit. The prefix match tolerates any suffix, so only an entirely
+  // different first label would break it.
+  ['scorecard.mygames.live', 'scorecard'],
+  ['scorecard-mygames-live.web.app', 'scorecard'],
 ]
 
 describe('hostname → game', () => {

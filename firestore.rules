@@ -319,5 +319,68 @@ service cloud.firestore {
         allow write: if false;
       }
     }
+
+    // ── Metalcraft Supplier Scorecard (game_id: scorecard) ─────────────────────
+
+    match /scorecard_game_instances/{instanceId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+
+      // Per-instance instructor config (config/main). STUDENT-READABLE, and every
+      // field in it is safe to be — spec §8 says the student is TOLD all of it:
+      // the contract and period counts, the target score, the bonus, both effort
+      // costs, P(acceptable | LOW effort), the endowment, the display switches and
+      // the nouns.
+      //
+      // ⚠⚠ THE SPLIT HERE IS ABOUT THE EXPERIMENTAL DESIGN, NOT THE ECONOMICS — a
+      // different seam from every other game in the family. Almost every number in
+      // this game is printed on the student's own screen and must be. What is
+      // withheld is that reliability ALTERNATES, that there are exactly TWO
+      // conditions, and that the roster is counterbalanced (spec §8). So both
+      // reliabilities and both labels live in truth/ below, even though one of each
+      // is on screen at all times: holding the PAIR is what reveals the design.
+      //
+      // ⚠ `p_acceptable_low` IS here and that is CORRECT — it is displayed, and it
+      // is IDENTICAL in both conditions (spec §2.1), so it discloses nothing about
+      // the treatment. It is also the mechanism, which makes it exactly the number a
+      // student is entitled to reason about.
+      match /config/{doc} {
+        allow read: if request.auth != null;
+        allow write: if false;
+      }
+
+      // TRUTH — DENY ALL CLIENT ACCESS, read AND write, unconditionally, with NO
+      // exception for the instructor (who reaches it only through an authenticated
+      // callable). Two documents live here:
+      //
+      //   truth/main   — reliability_high, reliability_low, reliability_schedule,
+      //                  label_high, label_low, and the seed.
+      //   truth/roster — the JOIN COUNTER that assigns `starts_with` in join order
+      //                  (spec §2.2). Not secret in itself, but it is server-owned
+      //                  state and a client write would break the exact 50/50 split
+      //                  the counterbalancing depends on.
+      //
+      // ⚠ A student who could read truth/main would learn there are two conditions,
+      // which one they are in, and what the next contract holds — every single thing
+      // spec §8 says they are not told. Do not move any of it into config, and do not
+      // relax this rule, ever.
+      match /truth/{doc} {
+        allow read, write: if false;
+      }
+
+      // Participant document — per-INSTANCE subcollection (S2, architecture §4.2).
+      //
+      // ⚠ READ IS DENIED OUTRIGHT, not scoped to "your own doc". A scorecard
+      // participant doc carries `starts_with` — from which the ENTIRE schedule
+      // derives, including every contract not yet played — plus the raw draw `u` for
+      // every period. Either would end the exercise: the first reveals the design,
+      // the second makes the next outcome predictable. Every student read goes
+      // through a callable whose response is a hand-built whitelist (functions
+      // scorecard/clientState.ts). No client writes either (callables only).
+      match /participants/{participantId} {
+        allow read: if false;
+        allow write: if false;
+      }
+    }
   }
 }

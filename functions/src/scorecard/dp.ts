@@ -350,6 +350,27 @@ export function deadStateShare(
   return dead
 }
 
+/**
+ * P(Binom(n, p) ≥ k) — the chance a fixed-effort policy reaches the target.
+ *
+ * Spec §9's Q3/Q4 turn on this: a 70% PERIOD rate is a 65% CONTRACT rate, and a 40%
+ * period rate is a 5% contract rate. Exact, by summing the tail; n is at most a few
+ * dozen here so there is no reason to approximate.
+ */
+export function binomialAtLeast(n: number, p: number, k: number): number {
+  if (k <= 0) return 1
+  if (k > n) return 0
+  let total = 0
+  for (let i = k; i <= n; i++) {
+    // Binomial coefficient built multiplicatively — no factorials, so nothing overflows
+    // and nothing loses precision at the sizes this game uses.
+    let choose = 1
+    for (let j = 0; j < i; j++) choose = (choose * (n - j)) / (j + 1)
+    total += choose * p ** i * (1 - p) ** (n - i)
+  }
+  return total
+}
+
 // ── The §6.2 grid ─────────────────────────────────────────────────────────────
 
 /** A grid cell: high effort, low effort, or a state that cannot be reached. */

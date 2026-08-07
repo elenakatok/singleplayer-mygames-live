@@ -227,6 +227,85 @@ export function renderLabel(truth: ScorecardTruth, condition: Condition): string
   return template.replace(/\{pct\}/g, pct)
 }
 
+// ── Firestore loaders ─────────────────────────────────────────────────────────
+//
+// ⚠ MISSING DOCS READ AS SHIPPED DEFAULTS, and that is the CLASSROOM CASE, not an edge
+// case (T4). An instance created from the classroom has NO `truth/main` at all and a
+// blank seed; 361 green checks once described a configuration the classroom never
+// creates. Every loader below must therefore be total on `undefined`.
+
+const num = (v: unknown, fallback: number): number =>
+  typeof v === 'number' && Number.isFinite(v) ? v : fallback
+
+const bool = (v: unknown, fallback: boolean): boolean =>
+  typeof v === 'boolean' ? v : fallback
+
+const str = (v: unknown, fallback: string): string =>
+  typeof v === 'string' && v.length > 0 ? v : fallback
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+
+/** A probability, clamped to [0,1]. Anything unparseable falls back. */
+const prob = (v: unknown, fallback: number): number =>
+  typeof v === 'number' && Number.isFinite(v) ? clamp(v, 0, 1) : fallback
+
+/** The student-readable half. Total on undefined (see above). */
+export function loadScorecardConfig(raw: unknown): ScorecardConfig {
+  const d = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const periodsPerContract = clamp(
+    Math.round(num(d.periods_per_contract, DEFAULT_PERIODS_PER_CONTRACT)),
+    HARD_MIN_PERIODS, HARD_MAX_PERIODS,
+  )
+  return {
+    contracts: clamp(
+      Math.round(num(d.contracts, DEFAULT_CONTRACTS)), HARD_MIN_CONTRACTS, HARD_MAX_CONTRACTS,
+    ),
+    periodsPerContract,
+    // ⚠ Clamped INTO the horizon: a target above T is unreachable by construction and
+    // would make every contract dead from period 1.
+    targetScore: clamp(
+      Math.round(num(d.target_score, DEFAULT_TARGET_SCORE)), 0, periodsPerContract,
+    ),
+    bonus: num(d.bonus, DEFAULT_BONUS),
+    highEffortCost: num(d.high_effort_cost, DEFAULT_HIGH_EFFORT_COST),
+    lowEffortCost: num(d.low_effort_cost, DEFAULT_LOW_EFFORT_COST),
+    pAcceptableLow: prob(d.p_acceptable_low, DEFAULT_P_ACCEPTABLE_LOW),
+    endowmentPerContract: num(d.endowment_per_contract, DEFAULT_ENDOWMENT_PER_CONTRACT),
+    showTargetReachedBanner: bool(d.show_target_reached_banner, true),
+    showPriorContractsPanel: bool(d.show_prior_contracts_panel, true),
+    showRunningBalance: bool(d.show_running_balance, true),
+    showReliabilityLabel: bool(d.show_reliability_label, true),
+    currency: str(d.currency, DEFAULT_CURRENCY),
+    contractNoun: str(d.contract_noun, DEFAULT_CONTRACT_NOUN),
+    periodNoun: str(d.period_noun, DEFAULT_PERIOD_NOUN),
+    deliveryNoun: str(d.delivery_noun, DEFAULT_DELIVERY_NOUN),
+    scorecardNoun: str(d.scorecard_noun, DEFAULT_SCORECARD_NOUN),
+    buyerName: str(d.buyer_name, DEFAULT_BUYER_NAME),
+    productName: str(d.product_name, DEFAULT_PRODUCT_NAME),
+  }
+}
+
+function isSchedule(v: unknown): v is ReliabilitySchedule {
+  return v === 'alternating' || v === 'blocked' || v === 'betweenSubject'
+}
+
+/** The treatment — rules-denied. Total on undefined (the classroom case). */
+export function loadScorecardTruth(raw: unknown): ScorecardTruth {
+  const d = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    reliabilityHigh: prob(d.reliability_high, DEFAULT_RELIABILITY_HIGH),
+    reliabilityLow: prob(d.reliability_low, DEFAULT_RELIABILITY_LOW),
+    reliabilitySchedule: isSchedule(d.reliability_schedule)
+      ? d.reliability_schedule
+      : DEFAULT_RELIABILITY_SCHEDULE,
+    labelHigh: str(d.label_high, DEFAULT_LABEL_HIGH),
+    labelLow: str(d.label_low, DEFAULT_LABEL_LOW),
+    // ⚠ BLANK IS THE CLASSROOM CASE (S1, T4) — null means Math.random, which is exactly
+    // why every drawn value must be WRITTEN when drawn rather than derived on read.
+    seed: typeof d.seed === 'string' && d.seed.length > 0 ? d.seed : null,
+  }
+}
+
 /**
  * The marginal rule's threshold (spec §6.1): one scorecard point must be worth more
  * than this before high effort pays. 10 ECU high / 40 ECU low at defaults.

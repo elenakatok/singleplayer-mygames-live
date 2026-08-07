@@ -9,6 +9,7 @@ import { PRICING_COLLECTION_PREFIX, PRICING_CORS_ORIGINS } from './pricing/confi
 import { NEWSVENDOR_COLLECTION_PREFIX, NEWSVENDOR_CORS_ORIGINS } from './newsvendor/config'
 import { FORECAST_COLLECTION_PREFIX, FORECAST_CORS_ORIGINS } from './forecast/config'
 import { PROCUREMENT_COLLECTION_PREFIX, PROCUREMENT_CORS_ORIGINS } from './procurement/config'
+import { SCORECARD_COLLECTION_PREFIX, SCORECARD_CORS_ORIGINS } from './scorecard/config'
 
 admin.initializeApp()
 
@@ -228,6 +229,44 @@ export { procurementScoreAndRecord } from './procurement/scoreAndRecord'
 export { procurementGetReport } from './procurement/report'
 export { procurementGetConfig, procurementUpdateConfig } from './procurement/instructorConfig'
 
+// ── Metalcraft Supplier Scorecard (game_id: scorecard) ────────────────────────
+//
+// The student is the SUPPLIER being rated. They work `contracts` contracts of
+// `periodsPerContract` periods, choosing High or Low effort each period; reliability —
+// P(acceptable | high effort) — ALTERNATES contract by contract between two values, with
+// half the roster starting high (spec §2.2).
+//
+// ⚠⚠ THE FAMILY'S FIRST TWO-LEVEL LOOP:
+//   loop(contracts) { contract-start → loop(periods){ effort → compute } → contract-result }
+// Bespoke, NOT a generalised primitive (spec §14.2) — contracts are independent of each
+// other, which satisfies architecture §2.4, but periods within a contract are not.
+//
+// ⚠ THE CONFIG/TRUTH SPLIT IS ABOUT THE EXPERIMENTAL DESIGN, not the economics. Almost
+// every number is printed on the student's screen and must be (spec §8); what is withheld
+// is that reliability alternates, that there are exactly two conditions, and the
+// counterbalancing. So BOTH reliabilities and BOTH labels live in truth/main even though
+// one of each is on screen at all times. See scorecard/config.ts.
+//
+// ⚠ `scorecardGetState({ advance: true })` is the contract boundary. It is a GATED read —
+// honoured only at contract-result — so the next contract's reliability never exists in
+// the payload, or in the database, before that contract starts (spec §13).
+
+export const scorecardBootstrap = makeSinglePlayerBootstrap({
+  collectionPrefix: SCORECARD_COLLECTION_PREFIX,
+  corsOrigins: SCORECARD_CORS_ORIGINS,
+})
+export const scorecardInstructorSession = makeSinglePlayerInstructorSession({
+  corsOrigins: SCORECARD_CORS_ORIGINS,
+})
+
+// Student.
+export { scorecardGetState } from './scorecard/getState'
+export { scorecardSubmitPeriod } from './scorecard/submitPeriod'
+export { scorecardGetQuestions } from './scorecard/getQuestions'
+export { scorecardSubmitKcAnswer } from './scorecard/submitKcAnswer'
+// ⚠ The ONLY path that returns the reveal, and it is gated on the stored finish stamp.
+export { scorecardSubmitDebrief } from './scorecard/submitDebrief'
+
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 
 function makeHealth(game: string, origins: string[]) {
@@ -251,3 +290,4 @@ export const pricingHealth = makeHealth('pricing', PRICING_CORS_ORIGINS)
 export const newsvendorHealth = makeHealth('newsvendor', NEWSVENDOR_CORS_ORIGINS)
 export const forecastHealth = makeHealth('forecast', FORECAST_CORS_ORIGINS)
 export const procurementHealth = makeHealth('procurement', PROCUREMENT_CORS_ORIGINS)
+export const scorecardHealth = makeHealth('scorecard', SCORECARD_CORS_ORIGINS)

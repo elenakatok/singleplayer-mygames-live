@@ -29,6 +29,10 @@ import ProcurementPlay from './procurement/Play'
 import ProcurementDashboard from './procurement/Dashboard'
 import ProcurementSettings from './procurement/Settings'
 import ProcurementReports from './procurement/Reports'
+import ScorecardPlay from './scorecard/Play'
+import {
+  ScorecardDashboard, ScorecardSettings, ScorecardReports,
+} from './scorecard/Placeholders'
 // ⚠ The routing table lives in its own module so it can be unit-tested without pulling
 // firebase.ts (which calls initializeApp at load) into the test. See hostRouting.ts.
 import { gameForHost, type Game } from './hostRouting'
@@ -60,6 +64,7 @@ function resolveGame(): Game {
     if (q === 'newsvendor') return 'newsvendor'
     if (q === 'forecast') return 'forecast'
     if (q === 'procurement') return 'procurement'
+    if (q === 'scorecard') return 'scorecard'
   }
   return 'pennies'
 }
@@ -103,6 +108,13 @@ const GAMES: Record<Game, GameScreens> = {
   procurement: {
     title: 'Procurement Auction',
     Play: ProcurementPlay, Dashboard: ProcurementDashboard, Settings: ProcurementSettings, Reports: ProcurementReports,
+  },
+  // ⚠ Dashboard/Settings/Reports are CHECKPOINT 3 STUBS (scorecard/Placeholders.tsx).
+  // The Play screen is complete; the other three say so on screen rather than rendering
+  // an empty shell that would read as a broken page.
+  scorecard: {
+    title: 'Metalcraft Supplier Scorecard',
+    Play: ScorecardPlay, Dashboard: ScorecardDashboard, Settings: ScorecardSettings, Reports: ScorecardReports,
   },
 }
 

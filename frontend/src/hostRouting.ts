@@ -11,6 +11,7 @@
 
 export type Game =
   | 'pennies' | 'poll' | 'pd' | 'pricing' | 'newsvendor' | 'forecast' | 'procurement'
+  | 'scorecard'
 
 /**
  * Hostname prefix → game. Checked IN ORDER; the first match wins.
@@ -38,6 +39,9 @@ export const HOST_PREFIXES: ReadonlyArray<readonly [string, Game]> = [
   // today — but a future game whose name begins 'pro…' would be shadowed by this line
   // rather than by a bug. Add such a game ABOVE this one, or make both exact.
   ['procurement', 'procurement'],
+  // ⚠ 'scorecard' shares no prefix with any entry above it, so its position is not
+  // load-bearing today. Host: scorecard.mygames.live (spec §14).
+  ['scorecard', 'scorecard'],
 ]
 
 /** host → game, or null when nothing matches (the caller decides the fallback). */
