@@ -248,6 +248,166 @@ describe('spec §6.3 — the dead-state share behind §4.1', () => {
   })
 })
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠⚠ THE SOLVER COMPARES PRODUCTS, NEVER THE QUOTIENT (Elena, 08-07).
+//
+//   PRODUCT  (what solve() does):  (reliability − p_low) · Δ  >  (c_high − c_low)
+//   QUOTIENT (what it must NOT):   Δ  >  marginalThreshold(...)
+//
+// Equivalent in exact arithmetic; NOT equivalent in floating point. `marginalThreshold`
+// at the shipped low condition is `39.999999999999986`, because `0.4 − 0.3` is not
+// exactly `0.1`. A quotient comparison would decide a policy cell on that artefact.
+//
+// At the shipped defaults nothing flips — so this is not a live bug, it is a live RISK,
+// and the tests below are what keep it from becoming one at instructor-edited parameters.
+// ═══════════════════════════════════════════════════════════════════════════════
+describe('⚠ product form vs quotient form', () => {
+  /** Rebuild the policy under an explicitly chosen comparison form. */
+  function policyUnder(
+    rules: ScorecardRules,
+    reliability: number,
+    form: 'product' | 'quotient',
+  ): boolean[][] {
+    const { periodsPerContract: T, targetScore: S, bonus: B, pAcceptableLow: pLow } = rules
+    const threshold = marginalThreshold(rules, reliability)
+    const costGap = rules.highEffortCost - rules.lowEffortCost
+    const V: number[][] = [[]]
+    const policy: boolean[][] = [[]]
+    for (let s = 0; s <= T; s++) V[0][s] = s >= S ? B : 0
+    for (let r = 1; r <= T; r++) {
+      V[r] = []
+      policy[r] = []
+      for (let s = 0; s <= T; s++) {
+        const up = V[r - 1][Math.min(s + 1, T)]
+        const stay = V[r - 1][s]
+        const delta = up - stay
+        const takeHigh = form === 'product'
+          ? (reliability - pLow) * delta > costGap
+          : delta > threshold
+        policy[r][s] = takeHigh
+        V[r][s] = takeHigh
+          ? -rules.highEffortCost + reliability * up + (1 - reliability) * stay
+          : -rules.lowEffortCost + pLow * up + (1 - pLow) * stay
+      }
+    }
+    return policy
+  }
+
+  it('the shipped solver agrees with the PRODUCT form, cell for cell', () => {
+    // solve() compares expected VALUES, which expands to the product form. This pins
+    // that the expansion is what actually happens.
+    for (const rel of [DEFAULT_RELIABILITY_HIGH, DEFAULT_RELIABILITY_LOW, 0.55, 0.9]) {
+      const shipped = solve(RULES, rel).policy
+      const product = policyUnder(RULES, rel, 'product')
+      for (let r = 1; r <= RULES.periodsPerContract; r++) {
+        expect(shipped[r], `reliability ${rel}, r=${r}`).toEqual(product[r])
+      }
+    }
+  })
+
+  it('at the SHIPPED defaults the quotient form happens to agree — 0 cells flip', () => {
+    // Recorded because it is why this is a risk and not an outage. Elena verified the
+    // same thing independently.
+    for (const rel of [DEFAULT_RELIABILITY_HIGH, DEFAULT_RELIABILITY_LOW]) {
+      const product = policyUnder(RULES, rel, 'product')
+      const quotient = policyUnder(RULES, rel, 'quotient')
+      let flips = 0
+      for (let r = 1; r <= RULES.periodsPerContract; r++) {
+        for (let s = 0; s <= RULES.periodsPerContract; s++) {
+          if (product[r][s] !== quotient[r][s]) flips++
+        }
+      }
+      expect(flips, `reliability ${rel}`).toBe(0)
+    }
+  })
+
+  it('⚠ CALIBRATION: the two comparisons genuinely differ, at the SCALAR level', () => {
+    // ⚠ THIS IS THE HONEST FORM OF THE CLAIM, and it is narrower than "the policy
+    // flips" — see the test below for what could NOT be demonstrated.
+    //
+    // The mechanism is a single comparison: `g·Δ > c` versus `Δ > c/g`. They part
+    // company when Δ lands within an ulp or two of the boundary, because `g·Δ` and
+    // `c/g` round in different directions. Probing Δ at ulp offsets around `c/g` over a
+    // grid of realistic (reliability, p_low, cost) finds this readily.
+    const nextAfter = (x: number, up: boolean) => {
+      const b = new DataView(new ArrayBuffer(8))
+      b.setFloat64(0, x)
+      let hi = b.getUint32(0)
+      let lo = b.getUint32(4)
+      if (up) { if (lo === 0xffffffff) { hi++; lo = 0 } else lo++ }
+      else { if (lo === 0) { hi--; lo = 0xffffffff } else lo-- }
+      b.setUint32(0, hi)
+      b.setUint32(4, lo)
+      return b.getFloat64(0)
+    }
+
+    let probes = 0
+    const disagreements: string[] = []
+    for (const rel of [0.35, 0.4, 0.5, 0.6, 0.7, 0.85]) {
+      for (const pLow of [0.05, 0.1, 0.2, 0.25, 0.3]) {
+        if (rel <= pLow) continue
+        const g = rel - pLow
+        for (let c = 1; c <= 40; c++) {
+          const boundary = c / g
+          for (let k = -4; k <= 4; k++) {
+            let d = boundary
+            for (let i = 0; i < Math.abs(k); i++) d = nextAfter(d, k > 0)
+            probes++
+            if ((g * d > c) !== (d > boundary)) {
+              disagreements.push(`rel=${rel} pLow=${pLow} c=${c} Δ=${d}`)
+            }
+          }
+        }
+      }
+    }
+    // ⚠ Size-asserted before the claim (T2) — a zero-probe loop would "pass" vacuously
+    // in the opposite direction.
+    expect(probes).toBeGreaterThan(5000)
+    expect(disagreements.length,
+      'the two comparison forms must be demonstrably different, or the rule is unfalsifiable')
+      .toBeGreaterThan(0)
+  })
+
+  it('⚠ what could NOT be demonstrated: a full-DP parameter set that flips a cell', () => {
+    // ⚠ RECORDED AS A LIMIT, NOT AS REASSURANCE. A 280-point grid of plausible
+    // instructor edits produced ZERO policy-cell flips between the two forms, because
+    // the DP's Δ values are outputs of the recursion and essentially never land within
+    // an ulp of the boundary. So the risk is REAL AT THE COMPARISON (test above) and
+    // UNPROVEN AT THE POLICY.
+    //
+    // That is precisely why the product form is a rule rather than a fix: the failure it
+    // prevents is one nobody would find by testing, and would never see on a screen.
+    let combos = 0
+    let flips = 0
+    for (const pLow of [0.1, 0.2, 0.25, 0.3, 0.35]) {
+      for (const cHigh of [1, 2, 3, 4, 6, 7, 9, 12]) {
+        for (const rel of [0.4, 0.45, 0.5, 0.55, 0.6, 0.7, 0.8]) {
+          if (rel <= pLow) continue
+          combos++
+          const rules: ScorecardRules = { ...RULES, pAcceptableLow: pLow, highEffortCost: cHigh }
+          const product = policyUnder(rules, rel, 'product')
+          const quotient = policyUnder(rules, rel, 'quotient')
+          for (let r = 1; r <= rules.periodsPerContract; r++) {
+            for (let s = 0; s <= rules.periodsPerContract; s++) {
+              if (product[r][s] !== quotient[r][s]) flips++
+            }
+          }
+        }
+      }
+    }
+    expect(combos).toBeGreaterThan(200)
+    expect(flips, 'if this ever becomes non-zero, the risk has become live — say so')
+      .toBe(0)
+  })
+
+  it('marginalThreshold is not exact at the shipped low condition', () => {
+    // The artefact itself, named, so nobody "fixes" the display rounding by changing the
+    // solver instead.
+    expect(marginalThreshold(RULES, DEFAULT_RELIABILITY_LOW)).not.toBe(40)
+    expect(marginalThreshold(RULES, DEFAULT_RELIABILITY_LOW)).toBeCloseTo(40, 9)
+  })
+})
+
 describe('the solver holds up away from the defaults', () => {
   it('a degenerate condition (reliability ≤ p_low) never pays for effort', () => {
     const sol = solve(RULES, 0.3)

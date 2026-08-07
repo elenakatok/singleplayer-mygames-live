@@ -7,7 +7,7 @@ import {
 } from './config'
 import { loadInstance } from './instance'
 import { scorecardDebriefQuestion } from './questions'
-import { parseStoredContracts, fullSchedule } from './state'
+import { parseStoredContracts } from './state'
 import { buildReveal } from './reveal'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -78,7 +78,22 @@ export const scorecardSubmitDebrief = onCall({ cors: SCORECARD_CORS_ORIGINS }, a
   })
 
   const contracts = parseStoredContracts(stored.pData.contracts, config)
-  const startsWith = stored.pData.starts_with === 'low' ? 'low' as const : 'high' as const
+
+  // ⚠ THE CLASS AVERAGE IS THE COMPARATOR NOW (spec §10, 08-07) — not the DP. That means
+  // reading the whole participant collection, which is the one place a student callable
+  // in this game touches other students' documents. It is safe because nothing
+  // per-student escapes: `buildReveal` reduces the population to two aggregate curves
+  // before it returns, and the response type has no per-participant field to put an id
+  // in. ⚠ Keep it that way — an aggregate that carried its own inputs would be a roster
+  // leak dressed as a chart.
+  const popSnap = await db
+    .collection(INSTANCES_COLLECTION).doc(gameInstanceId)
+    .collection(PARTICIPANTS_SUBCOLLECTION)
+    .get()
+  const population = popSnap.docs.map(d => ({
+    participantId: d.id,
+    contracts: parseStoredContracts(d.data().contracts, config),
+  }))
 
   return {
     ok: true as const,
@@ -87,9 +102,11 @@ export const scorecardSubmitDebrief = onCall({ cors: SCORECARD_CORS_ORIGINS }, a
     answer: stored.answer,
     /**
      * ⚠⚠ THE REVEAL (spec §10). The only student payload in this build that names the
-     * treatment, carries both conditions, or contains anything from the DP. Reachable
-     * only past the gate above.
+     * treatment or carries both conditions. Reachable only past the gate above.
+     *
+     * ⚠ IT CARRIES NO DP (decided 08-07). Their two curves against each other and against
+     * the class — never against an optimal policy. See reveal.ts.
      */
-    reveal: buildReveal(contracts, fullSchedule(startsWith, config, truth), config, truth),
+    reveal: buildReveal(contracts, population, config, truth),
   }
 })

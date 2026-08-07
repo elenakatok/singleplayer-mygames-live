@@ -10,7 +10,7 @@ import { resolvePeriod, settleContract, type EffortAction } from './resolve'
 import { periodDraw } from './rng'
 import {
   parseStoredContracts, positionOf, phaseOf, upcomingContract, toPeriodRecords,
-  totalEarnings, type StoredContract, type StoredPeriod,
+  totalEarnings, legalSubmit, type StoredContract, type StoredPeriod,
 } from './state'
 import { toClientContract, toClientResult, screenId, clientParams } from './clientState'
 
@@ -91,37 +91,15 @@ export const scorecardSubmitPeriod = onCall({ cors: SCORECARD_CORS_ORIGINS }, as
       return { contracts, startsWith, replayed: true as const }
     }
 
-    // ── Past the end. ──────────────────────────────────────────────────────────
-    if (position.kind === 'session-summary') {
-      throw new HttpsError('failed-precondition',
-        'Your session is over — there are no more contracts.')
-    }
-
-    // ── Out of step: periods are played in order, one at a time, no skipping. ──
-    //
-    // ⚠ TWO POSITIONS ARE LEGAL SOURCES FOR A SUBMIT, and missing the second one is a
-    // real bug this harness caught:
-    //
-    //   effort-choice(k, p)  → submit (k, p). The ordinary case.
-    //   contract-result(k)   → submit (k+1, 1). THE CONTRACT BOUNDARY.
-    //
-    // The boundary case exists because `advance` WRITES NOTHING (getState.ts) — it is a
-    // gated read, so the next contract does not exist in the database until its first
-    // period lands here. That is what keeps the next contract's reliability out of the
-    // payload, and the cost is that this check has to know the boundary is crossable.
-    const atNextContract =
-      position.kind === 'contract-result'
-      && contractNumber === (position.contract ?? 0) + 1
-      && contractNumber <= config.contracts
-      && periodNumber === 1
-    const atCurrentPeriod =
-      position.kind === 'effort-choice'
-      && position.contract === contractNumber
-      && position.period === periodNumber
-
-    if (!atCurrentPeriod && !atNextContract) {
-      throw new HttpsError('failed-precondition',
-        'That is not the period you are on. Please reload the page.')
+    // ── Ordering: periods are played in order, one at a time, no skipping. ────
+    // ⚠ THE RULE LIVES IN `legalSubmit` (state.ts), pure and unit-tested — including the
+    // contract-boundary case that broke every session at contract 2 period 1 during CP2.
+    // Do not re-inline it here.
+    const verdict = legalSubmit(position, contractNumber, periodNumber, config)
+    if (!verdict.legal) {
+      throw new HttpsError('failed-precondition', verdict.reason === 'session-over'
+        ? 'Your session is over — there are no more contracts.'
+        : 'That is not the period you are on. Please reload the page.')
     }
 
     // ── Materialise the contract on its first period ──────────────────────────

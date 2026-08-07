@@ -224,6 +224,53 @@ export function phaseOf(position: Position): Phase {
   return position.kind === 'session-summary' ? 'debrief' : 'play'
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠⚠ WHICH SUBMITS ARE LEGAL — THE CONTRACT BOUNDARY, AS A FUNCTION.
+//
+// This was a comment inside `submitPeriod` and it should not have been. The rule it
+// encodes is the one that broke every session at contract 2, period 1 during CP2:
+//
+//   effort-choice(k, p)  → (k, p)     the ordinary case
+//   contract-result(k)   → (k+1, 1)   THE CONTRACT BOUNDARY
+//
+// The boundary case exists because `advance` WRITES NOTHING (getState.ts) — it is a gated
+// read, so the next contract does not exist in the database until its first period lands.
+// That is what keeps the next contract's reliability out of the payload, and the price is
+// that the ordering check has to know the boundary is crossable.
+//
+// ⚠ IT LIVES HERE, PURE, SO IT CAN BE TESTED WITHOUT AN EMULATOR — and so that a future
+// reader who tries to "simplify" the check back to a single case fails a unit test rather
+// than shipping a game that dies on contract 2. A remembered rule is not an enforced one.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type SubmitVerdict =
+  | { legal: true; startsNewContract: boolean }
+  | { legal: false; reason: 'session-over' | 'out-of-step' }
+
+export function legalSubmit(
+  position: Position,
+  contractNumber: number,
+  periodNumber: number,
+  config: ScorecardConfig,
+): SubmitVerdict {
+  if (position.kind === 'session-summary') return { legal: false, reason: 'session-over' }
+
+  if (position.kind === 'effort-choice'
+    && position.contract === contractNumber
+    && position.period === periodNumber) {
+    return { legal: true, startsNewContract: periodNumber === 1 }
+  }
+
+  if (position.kind === 'contract-result'
+    && contractNumber === (position.contract ?? 0) + 1
+    && contractNumber <= config.contracts
+    && periodNumber === 1) {
+    return { legal: true, startsNewContract: true }
+  }
+
+  return { legal: false, reason: 'out-of-step' }
+}
+
 /**
  * The condition and reliability for a contract the student is about to START.
  *

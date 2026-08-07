@@ -130,26 +130,26 @@ export interface ScorecardQuestions {
   debrief: { id: string; prompt: string; followUps: string[]; answered: boolean }
 }
 
-/** ⚠ The ONLY student payload that names the treatment. Gated on the finish stamp. */
+/**
+ * ⚠ The ONLY student payload that names the treatment. Gated on the finish stamp.
+ *
+ * ⚠⚠ NO DP FIELDS, AND THEIR ABSENCE IS THE POINT (decided 08-07). There is no
+ * `benchmarks`, no `threshold`, no `optimalEffortByPeriod` — spec §5 and §10 removed the
+ * DP from every student surface, deleted rather than softened. Students are not asked to
+ * solve a dynamic program and must not be framed as having failed to. The comparator is
+ * the CLASS. If a DP field ever reappears in this type, that is the decision being
+ * reversed by accident.
+ */
 export interface ScorecardRevealCondition {
   condition: 'high' | 'low'
   reliability: number
   label: string
-  threshold: number
-  benchmarks: {
-    marginalThreshold: number
-    optimal: number
-    highUntilTarget: number
-    alwaysHigh: number
-    alwaysLow: number
-    pBonusOptimal: number
-    expectedHighEffortPeriods: number
-    expectedScoreOptimal: number
-  }
-  optimalEffortByPeriod: number[]
   yourEffortByPeriod: (number | null)[]
+  /** ⚠ The comparator (spec §10) — the room, on the same axes. */
+  classEffortByPeriod: (number | null)[]
   contractsPlayed: number
   yourHighEffortRate: number | null
+  classHighEffortRate: number | null
   yourMeanEarnings: number | null
 }
 
@@ -157,8 +157,9 @@ export interface ScorecardReveal {
   high: ScorecardRevealCondition
   low: ScorecardRevealCondition
   yourEffortGap: number | null
-  optimalEffortGap: number
+  classEffortGap: number | null
   contractsPerCondition: { high: number; low: number }
+  classSize: number
 }
 
 // ── Student callables ─────────────────────────────────────────────────────────
@@ -200,3 +201,150 @@ export function scorecardSubmitDebrief(answer: string) {
     'scorecardSubmitDebrief', { answer },
   )
 }
+
+// ── Instructor callables ──────────────────────────────────────────────────────
+
+export interface ScorecardPolicyPanel {
+  condition: 'high' | 'low'
+  reliability: number
+  /** ⚠ Rendered SERVER-SIDE from live config. Never composed on the client. */
+  title: string
+  /** `cells[score][periodIndex]`; null = unreachable and simply absent from the plot. */
+  cells: ('high' | 'low' | null)[][]
+  threshold: number
+}
+
+export interface ScorecardRoundPoint { round: number; rate: number | null; n: number }
+
+export interface ScorecardGapDistribution {
+  bins: { from: number; to: number; count: number }[]
+  included: number
+  excludedUndefined: number
+  excludedNoPlay: number
+  atZero: number
+}
+
+export interface ScorecardReportParticipant {
+  participant_id: string
+  name: string | null
+  launched: boolean
+  completed: boolean
+  finalized: boolean
+  contracts_completed: number
+  total_earnings: number
+  starts_with: 'high' | 'low' | null
+  high_effort_rate_high: number | null
+  high_effort_rate_low: number | null
+  /** ⚠ Null means "played only one condition" — an UNDEFINED gap, never a zero. */
+  effort_gap: number | null
+  earnings_high: number | null
+  earnings_low: number | null
+  bonuses_high: number
+  bonuses_low: number
+  periods_paid_after_dead: number
+  knowledge_check_score: number | null
+  participation_score: number | null
+  debrief: string | null
+  from_bot_cohort: boolean
+}
+
+export interface ScorecardConditionPanel {
+  condition: 'high' | 'low'
+  reliability: number
+  label: string
+  threshold: number
+  benchmarks: Record<string, number>
+}
+
+export interface ScorecardInducedBehaviour {
+  high: ScorecardConditionPanel
+  low: ScorecardConditionPanel
+  separation: number
+  warnings: { id: string; message: string; level: 'warn' | 'severe' }[]
+  policyGrid: ScorecardPolicyPanel[]
+}
+
+export interface ScorecardReport {
+  ok: true
+  scored: boolean
+  params: ScorecardParams
+  /** ⚠ INSTRUCTOR-ONLY — both conditions, both labels, the schedule. Chart captions
+   *  depend on `reliabilitySchedule` AND `showReliabilityLabel` (R7). */
+  treatment: {
+    reliabilityHigh: number
+    reliabilityLow: number
+    reliabilitySchedule: 'alternating' | 'blocked' | 'betweenSubject'
+    labelHigh: string
+    labelLow: string
+    scheduleStartingHigh: ('high' | 'low')[]
+    scheduleStartingLow: ('high' | 'low')[]
+  }
+  participants: ScorecardReportParticipant[]
+  botCount: number
+  debriefPrompt: string
+  tier3: {
+    byRound: { high: ScorecardRoundPoint[]; low: ScorecardRoundPoint[] }
+    byPeriod: {
+      high: (number | null)[]
+      low: (number | null)[]
+      /** ⚠ Optional overlay, DEFAULT OFF. Never on a student screen. */
+      optimalHigh: number[]
+      optimalLow: number[]
+    }
+    gapDistribution: ScorecardGapDistribution
+    /** ⚠ LOW FIRST (left), HIGH second (right) — slide order. Do not sort. */
+    policyGrid: ScorecardPolicyPanel[]
+  }
+  summary: {
+    classEffortHigh: number | null
+    classEffortLow: number | null
+    classEarningsHigh: number | null
+    classEarningsLow: number | null
+    optimalEffortHigh: number
+    optimalEffortLow: number
+    optimalEarningsHigh: number
+    optimalEarningsLow: number
+    lowConditionEffortSpend: number
+    lowConditionOptimalSpendPerContract: number
+    lowConditionContractsPlayed: number
+    studentsWithData: number
+  }
+}
+
+export interface ScorecardConfigResponse {
+  ok: true
+  config: ScorecardParams
+  truth: {
+    reliabilityHigh: number
+    reliabilityLow: number
+    reliabilitySchedule: 'alternating' | 'blocked' | 'betweenSubject'
+    labelHigh: string
+    labelLow: string
+    seed: string | null
+  }
+  /** ⚠ Has anyone STARTED? The standing parameter lock's input (spec §3.1). */
+  started: boolean
+  induced: ScorecardInducedBehaviour
+}
+
+export function scorecardGetReport() {
+  return callFn<ScorecardReport>('scorecardGetReport')
+}
+export function scorecardGetConfig() {
+  return callFn<ScorecardConfigResponse>('scorecardGetConfig')
+}
+export function scorecardUpdateConfig(patch: Record<string, unknown>) {
+  return callFn<ScorecardConfigResponse>('scorecardUpdateConfig', patch)
+}
+export function scorecardScoreAndRecord() {
+  return callFn<{ ok: true; scored: number; finishers: number; push: unknown }>('scorecardScoreAndRecord')
+}
+export function scorecardSyncRoster() {
+  return callFn<{ ok: true; created: number }>('scorecardSyncRoster')
+}
+
+/** Instructor session exchange — the argument `useInstructorSession` takes. */
+export const scorecardInstructorSession = (
+  args: { token: string } | { _dev: { game_instance_id: string } },
+) =>
+  callFn<{ ok: boolean; customToken: string }>('scorecardInstructorSession', args)

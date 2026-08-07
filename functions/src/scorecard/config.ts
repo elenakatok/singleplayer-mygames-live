@@ -72,7 +72,25 @@ export type ReliabilitySchedule = 'alternating' | 'blocked' | 'betweenSubject'
 
 // ── Shipped defaults (spec §3) ────────────────────────────────────────────────
 
-export const DEFAULT_CONTRACTS = 10
+/**
+ * N — contracts in a session. ⚠ RAISED FROM 10 TO 20 (Elena, 08-07; spec §2.5).
+ *
+ * Ten per condition, for two reasons. The primary one is Elena's classroom judgement:
+ * more contracts means more chances to notice the number changed and act on it.
+ *
+ * The measurable one is that the §11 effort-gap column — the headline — gets sharper.
+ * At 5 contracts per condition it is noisy enough that **a third of the students who
+ * ignored reliability show a gap by luck alone** (35% false-positive), which blurs
+ * exactly the Tier-3 "mass at zero" finding. At 10 per condition that falls to 29% and
+ * detection rises from 81% to 90%. Real, but not transformative — the class-AVERAGE
+ * comparison was already sound at 10.
+ *
+ * ⚠ LENGTHENING IS SAFE ONLY BECAUSE THE SCHEDULE ALTERNATES. Under `blocked`, extra
+ * contracts load fatigue onto the back half and contaminate the comparison; under
+ * alternating, fatigue hits both conditions equally, so the GAP survives even if effort
+ * drifts down late. If `reliabilitySchedule` is ever set to `blocked`, reduce this.
+ */
+export const DEFAULT_CONTRACTS = 20
 export const DEFAULT_PERIODS_PER_CONTRACT = 10
 
 export const DEFAULT_RELIABILITY_HIGH = 0.7
@@ -309,6 +327,19 @@ export function loadScorecardTruth(raw: unknown): ScorecardTruth {
 /**
  * The marginal rule's threshold (spec §6.1): one scorecard point must be worth more
  * than this before high effort pays. 10 ECU high / 40 ECU low at defaults.
+ *
+ * ⚠⚠ DISPLAY ONLY. THE SOLVER MUST NEVER COMPARE AGAINST THIS (Elena, 08-07).
+ *
+ * `solve()` compares expected VALUES, which is algebraically the PRODUCT form
+ * `(reliability − p_low) · Δ > (c_high − c_low)`. It does not, and must not, evaluate
+ * `Δ > marginalThreshold(...)`. The two are equivalent in exact arithmetic and NOT in
+ * floating point: this quotient is `39.999999999999986` at the shipped low condition,
+ * because `0.4 − 0.3` is not exactly `0.1`. A quotient comparison would therefore decide
+ * a cell on a rounding artefact — at defaults nothing flips, but an instructor-edited
+ * parameter set could land exactly on the boundary and flip a policy cell invisibly.
+ *
+ * Callers: the §3.1 settings panel, the KC stems, the reveal. All of them RENDER it.
+ * A test pins that the product and quotient forms can disagree, so this stays true.
  *
  * ⚠ THE GENERAL FORM USES THE COST **DIFFERENCE**. Spec §6.1 writes it as `c /
  * (reliability − p_low)` because `lowEffortCost` is 0 at defaults; it is a setting, so

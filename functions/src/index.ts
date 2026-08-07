@@ -267,6 +267,12 @@ export { scorecardSubmitKcAnswer } from './scorecard/submitKcAnswer'
 // ⚠ The ONLY path that returns the reveal, and it is gated on the stored finish stamp.
 export { scorecardSubmitDebrief } from './scorecard/submitDebrief'
 
+// Instructor.
+export { scorecardSyncRoster } from './scorecard/syncRoster'
+export { scorecardScoreAndRecord } from './scorecard/scoreAndRecord'
+export { scorecardGetReport } from './scorecard/report'
+export { scorecardGetConfig, scorecardUpdateConfig } from './scorecard/instructorConfig'
+
 // ── Health probes (onRequest; not game endpoints) ─────────────────────────────
 
 function makeHealth(game: string, origins: string[]) {

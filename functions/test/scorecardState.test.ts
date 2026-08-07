@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   parseStoredContracts, positionOf, phaseOf, upcomingContract, completedResults,
-  totalEarnings, currentStanding, fullSchedule, toPeriodRecords,
-  type StoredContract,
+  totalEarnings, currentStanding, fullSchedule, toPeriodRecords, legalSubmit,
+  type StoredContract, type Position,
 } from '../src/scorecard/state'
 import { screenId, toClientContract, freshClientContract, clientParams } from '../src/scorecard/clientState'
 import {
@@ -87,6 +87,87 @@ describe('positionOf — the three resume boundaries (spec §13)', () => {
     ]
     expect(positionOf(contracts, config, false))
       .toEqual({ kind: 'effort-choice', contract: 3, period: 4 })
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠⚠ THE ADVANCE BOUNDARY — the CP2 bug, as an enforced structure (Elena, 08-07).
+//
+// "Two legal submit sources" was a comment inside submitPeriod. It is now `legalSubmit`,
+// pure and tested here, because a remembered rule is not an enforced one — and this is
+// exactly where the bug was: `advance` writes nothing, so `positionOf` still reports
+// `contract-result` after the student has advanced, and a single-case ordering check
+// rejected the next contract's first period. EVERY session died at contract 2, period 1.
+// ═══════════════════════════════════════════════════════════════════════════════
+describe('⚠ legalSubmit — the contract boundary', () => {
+  const midContract: Position = { kind: 'effort-choice', contract: 3, period: 5 }
+  const atResult: Position = { kind: 'contract-result', contract: 3 }
+  const over: Position = { kind: 'session-summary' }
+
+  it('accepts the period you are actually on', () => {
+    expect(legalSubmit(midContract, 3, 5, config)).toEqual({ legal: true, startsNewContract: false })
+  })
+
+  it('⚠ ACCEPTS the first period of the NEXT contract from contract-result', () => {
+    // THE REGRESSION. Without this branch every session dies at the first boundary.
+    expect(legalSubmit(atResult, 4, 1, config)).toEqual({ legal: true, startsNewContract: true })
+  })
+
+  it('flags a first period as starting a new contract', () => {
+    expect(legalSubmit({ kind: 'effort-choice', contract: 1, period: 1 }, 1, 1, config))
+      .toEqual({ legal: true, startsNewContract: true })
+  })
+
+  it('refuses skipping a period', () => {
+    expect(legalSubmit(midContract, 3, 6, config)).toEqual({ legal: false, reason: 'out-of-step' })
+    expect(legalSubmit(midContract, 3, 4, config)).toEqual({ legal: false, reason: 'out-of-step' })
+  })
+
+  it('refuses skipping a contract', () => {
+    expect(legalSubmit(atResult, 5, 1, config)).toEqual({ legal: false, reason: 'out-of-step' })
+    expect(legalSubmit(midContract, 4, 1, config)).toEqual({ legal: false, reason: 'out-of-step' })
+  })
+
+  it('⚠ refuses a MID-contract period of the next contract, not just a later contract', () => {
+    // The boundary opens exactly one door: period 1. Anything else through it would let
+    // a student skip the front of a contract entirely.
+    expect(legalSubmit(atResult, 4, 2, config)).toEqual({ legal: false, reason: 'out-of-step' })
+  })
+
+  it('refuses anything once the session is over', () => {
+    expect(legalSubmit(over, 1, 1, config)).toEqual({ legal: false, reason: 'session-over' })
+    expect(legalSubmit(over, config.contracts + 1, 1, config)).toEqual({ legal: false, reason: 'session-over' })
+  })
+
+  it('⚠ refuses a contract past the configured count, even from contract-result', () => {
+    const atLast: Position = { kind: 'contract-result', contract: config.contracts }
+    expect(legalSubmit(atLast, config.contracts + 1, 1, config))
+      .toEqual({ legal: false, reason: 'out-of-step' })
+  })
+
+  it('⚠ a whole session is walkable through legalSubmit alone', () => {
+    // The end-to-end proof: drive the state machine from position to position using only
+    // `positionOf` and `legalSubmit`, and confirm every step of a full N×T session is
+    // accepted. A single-case ordering check fails this at the first boundary.
+    const contracts: StoredContract[] = []
+    let accepted = 0
+    for (let k = 1; k <= config.contracts; k++) {
+      for (let p = 1; p <= config.periodsPerContract; p++) {
+        const pos = positionOf(contracts, config, false)
+        const verdict = legalSubmit(pos, k, p, config)
+        expect(verdict.legal, `contract ${k}, period ${p} was refused`).toBe(true)
+        accepted++
+        if (p === 1) contracts.push(contractWith(0, k, k % 2 === 1 ? 'high' : 'low'))
+        contracts[k - 1].periods.push({
+          period: p, action: 'low', u: 0.99, acceptable: false,
+          reliability_used: config.pAcceptableLow, score: 0,
+          balance: config.endowmentPerContract,
+        })
+      }
+    }
+    // ⚠ Size-asserted (T2): 20 × 10 = 200 accepted submits, not a vacuous zero.
+    expect(accepted).toBe(config.contracts * config.periodsPerContract)
+    expect(positionOf(contracts, config, false)).toEqual({ kind: 'session-summary' })
   })
 })
 

@@ -37,6 +37,47 @@ const th: React.CSSProperties = {
 }
 const td: React.CSSProperties = { padding: '0.3rem 0.6rem', borderBottom: '1px solid #eee' }
 
+/**
+ * One effort button. ⚠ Large hit area on purpose — 200 of these get pressed per session,
+ * often on a phone, and a cramped target is a mis-click that cannot be undone.
+ */
+function EffortButton({
+  label, sub, tone, disabled, onClick,
+}: {
+  label: string
+  sub: string
+  tone: string
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      data-testid={`sc-effort-${label.split(' ')[0].toLowerCase()}`}
+      style={{
+        flex: '1 1 12rem',
+        minWidth: '11rem',
+        padding: '0.9rem 1.1rem',
+        fontFamily: typography.fontFamily,
+        fontSize: '1rem',
+        textAlign: 'left',
+        borderRadius: 8,
+        border: `2px solid ${disabled ? '#cfcfcf' : tone}`,
+        background: disabled ? '#f2f2f2' : '#fff',
+        color: disabled ? '#8a8a8a' : tone,
+        cursor: disabled ? 'default' : 'pointer',
+      }}
+    >
+      <span style={{ display: 'block', fontWeight: 700 }}>{label}</span>
+      <span style={{ display: 'block', fontSize: '0.82rem', marginTop: '0.2rem', opacity: 0.85 }}>
+        {sub}
+      </span>
+    </button>
+  )
+}
+
 export function EffortScreen({
   contract, params, onSubmit, busy,
 }: {
@@ -45,10 +86,32 @@ export function EffortScreen({
   onSubmit: (action: 'high' | 'low') => void
   busy: boolean
 }) {
-  // ⚠ LOCAL, AND DELIBERATELY NOT SEEDED FROM ANY PRIOR SCREEN. Play.tsx remounts this
-  // component on every period AND every contract (`key={screen.id}`), so this state is
-  // always fresh — which is the PD bug class the key isolation exists to prevent.
-  const [choice, setChoice] = useState<'high' | 'low' | null>(null)
+  // ⚠⚠ GUARD 2 (spec §4) — THE ONE THAT WILL ACTUALLY BITE.
+  //
+  // With one click per period there is no confirmation step, so a double-click's second
+  // event has somewhere dangerous to land. Submissions are one-shot (S6) and the server
+  // rejects a duplicate for a period already stored — but that is not the failure mode.
+  // The failure is: click → server responds → THE NEXT PERIOD'S SCREEN PAINTS → the
+  // second click lands on it → and silently commits a choice the student never made.
+  // Over 200 periods that will happen without a guard.
+  //
+  // So there are TWO locks, and the belt-and-braces is deliberate:
+  //   • `busy` — owned by Play.tsx, true while the callable is in flight
+  //   • `fired` — LOCAL, latched on the first click and never released
+  //
+  // `fired` is what actually closes the window, because it is local to THIS period's
+  // component instance: Play.tsx remounts on `key={screen.id}`, so the next period gets a
+  // brand-new latch at false while this one stays locked forever. A shared flag reset in
+  // a `finally` cannot do that — there is a frame in which it is false and the old screen
+  // is still mounted.
+  const [fired, setFired] = useState(false)
+  const locked = fired || busy
+
+  function fire(action: 'high' | 'low') {
+    if (locked) return
+    setFired(true)
+    onSubmit(action)
+  }
 
   const noun = params.contractNoun
   const per = params.periodNoun
@@ -155,47 +218,59 @@ export function EffortScreen({
         </table>
       </div>
 
-      {/* ⚠ THE REACHED-TARGET BANNER. Appears once score ≥ target and stays for the rest
-          of the contract (spec §4). There is NO counterpart for an unreachable target. */}
-      {params.showTargetReachedBanner && contract.targetReached && (
-        <div style={{
-          ...card, background: '#e8f7ec', borderColor: '#a9d9b8', color: '#14532d',
-        }}>
+      {/* ⚠⚠ GUARD 1 (spec §4) — THE BANNER'S SPACE IS RESERVED AT ALL TIMES.
+          The reached-target banner appears MID-CONTRACT. If it were conditionally
+          mounted it would push the buttons down at exactly the moment the student's
+          situation changes — moving the click target under a finger already travelling
+          toward it. With one click per period and no confirmation step, that is a
+          mis-click that commits an unintended effort choice and cannot be undone.
+          So the box is always in the layout; only its CONTENTS are conditional. */}
+      <div style={{
+        ...card,
+        minHeight: '3.25rem',
+        display: 'flex',
+        alignItems: 'center',
+        background: contract.targetReached ? '#e8f7ec' : 'transparent',
+        borderColor: contract.targetReached ? '#a9d9b8' : 'transparent',
+        color: '#14532d',
+      }}>
+        {params.showTargetReachedBanner && contract.targetReached && (
           <strong>Congratulations — you reached the target {params.scorecardNoun} score.</strong>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* ── The choice ─────────────────────────────────────────────────────── */}
+      {/* ── The choice: TWO BUTTONS, ONE CLICK PER PERIOD (spec §4) ────────── */}
       <div style={card}>
-        <h4 style={{ margin: '0 0 0.5rem' }}>
-          Your effort for {per} {contract.period}
+        <h4 style={{ margin: '0 0 0.75rem' }}>
+          Choose your effort for {per} {contract.period}
         </h4>
-        <label style={{ display: 'block', margin: '0.45rem 0', cursor: 'pointer' }}>
-          <input
-            type="radio" name="effort" value="high"
-            checked={choice === 'high'} onChange={() => setChoice('high')} disabled={busy}
-          />{' '}
-          <strong>High Effort</strong> — costs {money(params.highEffortCost, params.currency)},
-          {' '}{pct(contract.reliability)} chance of an {params.deliveryNoun}
-        </label>
-        <label style={{ display: 'block', margin: '0.45rem 0', cursor: 'pointer' }}>
-          <input
-            type="radio" name="effort" value="low"
-            checked={choice === 'low'} onChange={() => setChoice('low')} disabled={busy}
-          />{' '}
-          <strong>Low Effort</strong> — costs {money(params.lowEffortCost, params.currency)},
-          {' '}{pct(params.pAcceptableLow)} chance of an {params.deliveryNoun}
-        </label>
-        <button
-          style={{
-            marginTop: '0.75rem', padding: '0.5rem 1.4rem', fontSize: '1rem',
-            fontFamily: typography.fontFamily, cursor: choice && !busy ? 'pointer' : 'default',
-          }}
-          disabled={choice === null || busy}
-          onClick={() => choice && onSubmit(choice)}
-        >
-          {busy ? 'Submitting…' : 'Submit'}
-        </button>
+        <div style={{ display: 'flex', gap: '2.5rem', flexWrap: 'wrap' }}>
+          {/* ⚠⚠ GUARD 3 — SEPARATED, AND NEITHER IS A DEFAULT. They are not a
+              confirm/cancel pair: both are legitimate choices, so they get real
+              horizontal space and distinct (not primary/secondary) styling. Nothing is
+              pre-selected and there is no autofocus. */}
+          <EffortButton
+            label="High Effort"
+            sub={`costs ${money(params.highEffortCost, params.currency)} · ${pct(contract.reliability)} chance`}
+            tone="#1f4e79"
+            disabled={locked}
+            onClick={() => fire('high')}
+          />
+          <EffortButton
+            label="Low Effort"
+            sub={`costs ${money(params.lowEffortCost, params.currency)} · ${pct(params.pAcceptableLow)} chance`}
+            tone="#5a4a1f"
+            disabled={locked}
+            onClick={() => fire('low')}
+          />
+        </div>
+        {locked && (
+          <p style={{ margin: '0.75rem 0 0', color: '#666', fontSize: '0.85rem' }}>
+            Recording your choice…
+          </p>
+        )}
+        {/* ⚠ NO UNDO, deliberately (spec §4). One-shot submission is a family rule, and a
+            period that can be taken back is a period whose draw can be re-rolled. */}
       </div>
 
       {/* ── This contract's history (spec §4, below the fold) ──────────────── */}

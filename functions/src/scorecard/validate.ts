@@ -1,5 +1,5 @@
 import {
-  marginalThreshold,
+  marginalThreshold, reliabilityOf,
   type ScorecardConfig,
   type ScorecardTruth,
   type Condition,
@@ -23,6 +23,83 @@ import { solve, type Benchmarks } from './dp'
 // optimizer robot (spec §16). If this file ever grows its own approximation of the
 // policy, the settings screen starts describing a game the students are not playing.
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠ THE OPTIMAL-POLICY GRID (spec §11 chart 4, added 08-07) — INSTRUCTOR ONLY.
+//
+// Reproduces lecture slide 6 from the instance's own parameters. It depends on NO student
+// data, which is why it renders in two places from one implementation: the §3.1 settings
+// panel (where an instructor can see what their edits induce before anyone plays) and the
+// Tier-3 reports (where it is a debrief asset).
+//
+// ⚠⚠ PANEL ORDER IS LOW LEFT, HIGH RIGHT — deliberately NOT §6.2's ordering. This is a
+// LECTURE ASSET FIRST and should drop into the deck without rework, so it follows the
+// slide rather than the spec's own prose. Do not "fix" it to match §6.2.
+//
+// ⚠ TITLES READ LIVE CONFIG. "Reliability = 40%" is rendered from `reliabilityLow`, never
+// typed in — the same rule as `labelHigh`/`labelLow`, and for the same reason: an
+// instructor who edits a probability must not be shown a grid captioned with the old one.
+//
+// ⚠ NEVER RENDERED ON A STUDENT SCREEN. This IS the DP, and spec §5/§10 removed the DP
+// from everything students see. It exists so the instructor can show the shape in debrief
+// without asking anyone to have derived it.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** One cell of the grid. `null` = unreachable and simply absent from the plot. */
+export type PolicyCell = 'high' | 'low' | null
+
+export interface PolicyPanel {
+  condition: Condition
+  reliability: number
+  /** ⚠ Rendered from the live value (see above). */
+  title: string
+  /**
+   * `cells[score][periodIndex]`, score 0…T and period 1…T (R10 — 1-based on the axis).
+   * A cell is `null` where `score > periodIndex` — you cannot hold a score higher than
+   * the number of periods already played.
+   */
+  cells: PolicyCell[][]
+  /** The marginal threshold, for the panel's subtitle. */
+  threshold: number
+}
+
+/**
+ * Both panels, in SLIDE ORDER: low reliability first (left), high second (right).
+ *
+ * ⚠ Scores run 0…T, not 0…S* with a "S*+" row. Spec §11 chart 4 says "y-axis Score 0–10"
+ * — a chart, unlike §6.2's text grid, has room for the coasting region above the target
+ * and showing it is the point: those open circles ARE the "stop paying once you have won"
+ * half of the threshold shape.
+ */
+export function policyGridPanels(
+  config: ScorecardConfig,
+  truth: ScorecardTruth,
+): PolicyPanel[] {
+  const T = config.periodsPerContract
+  const build = (condition: Condition): PolicyPanel => {
+    const reliability = reliabilityOf(truth, condition)
+    const sol = solve(config, reliability)
+    const cells: PolicyCell[][] = []
+    for (let s = 0; s <= T; s++) {
+      const row: PolicyCell[] = []
+      for (let p = 1; p <= T; p++) {
+        // Unreachable: at period p exactly p − 1 periods have been played.
+        if (s > p - 1) { row.push(null); continue }
+        row.push(sol.policy[T - p + 1][s] ? 'high' : 'low')
+      }
+      cells.push(row)
+    }
+    return {
+      condition,
+      reliability,
+      title: `Reliability = ${Math.round(reliability * 100)}%`,
+      cells,
+      threshold: marginalThreshold(config, reliability),
+    }
+  }
+  // ⚠ LOW FIRST. See the header — this follows the slide, not §6.2.
+  return [build('low'), build('high')]
+}
 
 export type WarningId =
   | 'separation'
@@ -57,6 +134,8 @@ export interface InducedBehaviour {
   /** E[#high | high] − E[#high | low]. 8.12 at defaults (spec §3.1). */
   separation: number
   warnings: Warning[]
+  /** ⚠ Tier-3 chart 4, on the settings screen too (spec §11). LOW LEFT, HIGH RIGHT. */
+  policyGrid: PolicyPanel[]
 }
 
 /**
@@ -185,5 +264,5 @@ export function inducedBehaviour(
     })
   }
 
-  return { high, low, separation, warnings }
+  return { high, low, separation, warnings, policyGrid: policyGridPanels(config, truth) }
 }

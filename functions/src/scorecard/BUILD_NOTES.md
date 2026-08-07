@@ -341,3 +341,78 @@ counter), `rng.ts`, `questions.ts`, `reveal.ts`; the frontend Play flow with
 Placeholders.tsx`) — App.tsx's per-game map requires the quartet, and scorecard needs a
 routing entry before Play is reachable. Each stub says on screen that it is not built.
 CP3 replaces all three.
+
+---
+
+## 12. ⚠⚠ The effort gap has a STRUCTURAL FLOOR — deadness, not reliability
+
+Found by the robot cohort, 08-07, and it matters because the effort gap is the Tier-1
+headline.
+
+A persona that ignores reliability entirely but **stops working on dead contracts**
+measured a gap of **+0.318**. Not because it responded to the treatment — it could not
+see it — but because **low-reliability contracts die more often**, so a deadness-aware
+student simply has more periods in which they have already given up on the low side.
+
+```
+grinder      always high, never checks deadness        gap  0.000
+learner v1   "ignores reliability" but stops when dead gap  0.318   ← the floor
+responder    genuinely responds                        gap  0.800
+```
+
+⚠ **So a positive effort gap is not by itself evidence that a student reasoned about
+reliability.** Part of it is the mechanical consequence of abandoning contracts that were
+already lost — which is a *different* (and also desirable) piece of reasoning.
+
+This is not a bug and nothing is filtered: the column measures what it measures, and
+abandoning dead contracts IS a real behavioural difference between the conditions. But
+when reading Tier 1, roughly the first third of a gap can come from deadness alone. The
+"periods paid for after the contract was already dead" column is the companion figure —
+a student with a large gap AND a high wasted count is responding to deadness, not to
+reliability.
+
+The robot persona was changed so its "ignoring reliability" phase ignores deadness too;
+otherwise it could not test what it claimed (`bot/scorecard-styles.mjs`).
+
+---
+
+## 13. Tier 1 excludes bots; Tier 3 does not
+
+Spec §11 states the bot rule under **Tier 1**, and Tier 1 is a grading roster — a
+simulated student on it is a row that could be graded by mistake.
+
+Tier 3 is a picture of behaviour, and excluding bots there makes the robot launcher
+useless: the first cohort run produced **four empty charts**, with `byPeriod` all-null and
+the two class lines reading `NaN vs NaN`. The launcher exists precisely so the charts can
+be looked at with real spread before a class runs.
+
+| | bots included? |
+|---|---|
+| Tier 1 roster | ❌ excluded (and humans get a ◆ marker) |
+| Tier 3 charts 1 & 2 (class averages) | ✅ included |
+| Tier 3 chart 3 (gap distribution) | ❌ **excluded** |
+| Tier 3 chart 4 (policy grid) | n/a — no student data |
+
+⚠ **Chart 3 is the exception among the Tier-3 charts** because it plots **one point per
+student**: a bot in it is a fake body in a bucket, and "a mass at zero is the finding"
+must be a mass of real students. Charts 1 and 2 are aggregates where a bot moves a mean.
+
+`botCount` travels with the payload and every Tier-3 caption states it — the R6 posture
+applied to *inclusion* rather than exclusion.
+
+---
+
+## 14. Checkpoint log
+
+**CP3 (reports, final screens, robots)** — `stats.ts` (the shared analysis layer),
+`report.ts`, `scoring.ts`, `scoreAndRecord.ts`, `syncRoster.ts`, `instructorConfig.ts`;
+frontend `Reports.tsx`, `Settings.tsx`, `Dashboard.tsx`, `PolicyGridSVG.tsx`,
+`ClassChartsSVG.tsx`; `bot/scorecard-styles.mjs` + `scorecard-robot-dryrun.mjs` (42
+checks) + `scorecard-shots.mjs`.
+
+Spec changes applied: `contracts` 10 → 20; the DP removed from every student surface;
+two-button effort control with its three guards; Tier-3 chart 4.
+
+⚠ The CP2 placeholder pages are **deleted** — `Placeholders.tsx` no longer exists, so the
+CP4 gate ("stubs must not be live at deploy") is satisfied by construction rather than by
+remembering to check.

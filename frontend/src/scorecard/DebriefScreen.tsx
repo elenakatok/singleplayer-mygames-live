@@ -17,7 +17,6 @@ const card: React.CSSProperties = {
   background: '#fafafa', marginBottom: '1rem',
 }
 const pct = (x: number) => `${Math.round(x * 100)}%`
-const ecu = (x: number, c: string) => `${x.toFixed(2)} ${c}`
 
 export function DebriefScreen({
   question, params, onDone,
@@ -80,80 +79,115 @@ export function DebriefScreen({
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// THE REVEAL (spec §10) — "their own two effort curves against the DP-optimal curve for
-// each condition, and the §6.3 table filled in at this instance's parameters".
+// THE REVEAL (spec §10) — "their own two effort curves against each other and against
+// the class average."
 //
-// ⚠ THE FRAMING IS A FRICTIONLESS BENCHMARK, NOT A GRADE (spec §5). Earnings are never
-// graded (spec §7) — correct play under low reliability EARNS LESS — and five contracts
-// per condition is far too short for realised earnings to converge, which the screen
-// says outright rather than leaving to inference.
+// ⚠⚠ NOT AGAINST THE DP (decided 08-07). This panel previously showed a §6.3 benchmark
+// table and an optimal-effort reference. Both are DELETED, not softened — spec §5.
+//
+// Elena's reason: **students are not asked to solve a dynamic program and must not be
+// framed as having failed to.** The lesson is the DIRECTION — low reliability produces
+// low effort — not the gap from optimal. Comparing against the room instead makes the
+// reliability effect visible as a shared pattern rather than a personal shortfall, which
+// is both kinder and more honest: a student who barely responded sees that the room
+// barely responded either, and THAT is the finding.
+//
+// ⚠ Spec §5 also fixes the tone of the headline: "one sentence, no interpretation, no
+// verdict." State the two percentages and stop. Do not add "you should have…".
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** Two effort curves on shared axes — yours solid, the class dashed. */
+function EffortCurves({ cond }: { cond: ScorecardReveal['high'] }) {
+  const W = 320, H = 150, padL = 34, padB = 26, padT = 10, padR = 8
+  const n = cond.yourEffortByPeriod.length
+  const x = (i: number) => padL + (i * (W - padL - padR)) / Math.max(1, n - 1)
+  const y = (v: number) => padT + (1 - v) * (H - padT - padB)
+
+  // ⚠ Nulls BREAK the line rather than being read as zero — a period nobody played is
+  // not a period nobody worked. Segments are drawn between consecutive defined points.
+  const path = (series: (number | null)[]) => {
+    const parts: string[] = []
+    let open = false
+    series.forEach((v, i) => {
+      if (v === null) { open = false; return }
+      parts.push(`${open ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`)
+      open = true
+    })
+    return parts.join(' ')
+  }
+
+  return (
+    <figure style={{ margin: 0, flex: '1 1 20rem' }}>
+      <figcaption style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '0.35rem' }}>
+        {cond.label}
+      </figcaption>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img"
+        aria-label={`High-effort rate by period, ${cond.label}`}>
+        {[0, 0.5, 1].map(g => (
+          <g key={g}>
+            <line x1={padL} x2={W - padR} y1={y(g)} y2={y(g)} stroke="#e6e6e6" />
+            <text x={padL - 6} y={y(g) + 3} textAnchor="end" fontSize="9" fill="#777">
+              {Math.round(g * 100)}%
+            </text>
+          </g>
+        ))}
+        {/* R10 — axis labels 1…N, not 0…N−1. */}
+        {cond.yourEffortByPeriod.map((_, i) => (
+          (i === 0 || i === n - 1 || (i + 1) % 5 === 0) && (
+            <text key={i} x={x(i)} y={H - padB + 14} textAnchor="middle" fontSize="9" fill="#777">
+              {i + 1}
+            </text>
+          )
+        ))}
+        <path d={path(cond.classEffortByPeriod)} fill="none" stroke="#9aa4b0"
+          strokeWidth="2" strokeDasharray="5 4" />
+        <path d={path(cond.yourEffortByPeriod)} fill="none" stroke="#1f4e79" strokeWidth="2.5" />
+      </svg>
+    </figure>
+  )
+}
+
 export function RevealPanel({ reveal, params }: { reveal: ScorecardReveal; params: ScorecardParams }) {
-  const rows: [string, (c: typeof reveal.high) => string][] = [
-    ['One more point had to be worth', c => ecu(c.threshold, params.currency)],
-    ['Best possible, per contract', c => ecu(c.benchmarks.optimal, params.currency)],
-    ['Always working hard, per contract', c => ecu(c.benchmarks.alwaysHigh, params.currency)],
-    ['Never working hard, per contract', c => ecu(c.benchmarks.alwaysLow, params.currency)],
-    ['High-effort periods, best play', c => c.benchmarks.expectedHighEffortPeriods.toFixed(2)],
-    ['— what YOU did', c => (c.yourHighEffortRate === null
-      ? '—' : `${pct(c.yourHighEffortRate)} of periods`)],
-    ['Your earnings, per contract', c => (c.yourMeanEarnings === null
-      ? '—' : ecu(c.yourMeanEarnings, params.currency))],
-  ]
+  const rate = (v: number | null) => (v === null ? '—' : pct(v))
 
   return (
     <div>
       <h3 style={{ marginTop: 0 }}>What was actually going on</h3>
       <p style={{ color: '#444' }}>
         Your {params.contractNoun}s alternated between two kinds of {params.scorecardNoun}.
-        On one, working hard really moved your rating. On the other, it barely did —
-        and the {params.scorecardNoun} was mostly noise.
+        On one, working hard really moved your rating. On the other it barely did — the
+        {' '}{params.scorecardNoun} was mostly noise, and no amount of effort changed that much.
       </p>
 
-      <table style={{ borderCollapse: 'collapse', width: '100%', margin: '1rem 0' }}>
-        <thead>
-          <tr>
-            <th style={{ textAlign: 'left', padding: '0.4rem 0.7rem', borderBottom: '2px solid #ddd' }} />
-            <th style={{ textAlign: 'left', padding: '0.4rem 0.7rem', borderBottom: '2px solid #ddd' }}>
-              {reveal.high.label}
-            </th>
-            <th style={{ textAlign: 'left', padding: '0.4rem 0.7rem', borderBottom: '2px solid #ddd' }}>
-              {reveal.low.label}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(([label, get]) => (
-            <tr key={label}>
-              <td style={{ padding: '0.35rem 0.7rem', borderBottom: '1px solid #eee' }}>{label}</td>
-              <td style={{ padding: '0.35rem 0.7rem', borderBottom: '1px solid #eee' }}>{get(reveal.high)}</td>
-              <td style={{ padding: '0.35rem 0.7rem', borderBottom: '1px solid #eee' }}>{get(reveal.low)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {/* ⚠ THE HEADLINE. How far they pulled back, against how far they should have. */}
+      {/* ⚠ SPEC §5's HEADLINE, VERBATIM IN SHAPE: two percentages, one sentence, no
+          verdict. There is deliberately nothing here about what they "should" have done. */}
       <div style={{ ...card, background: '#eef4ff', borderColor: '#b9cdf0' }}>
-        <strong>How much did you change?</strong>
-        <p style={{ margin: '0.4rem 0 0' }}>
-          You used high effort{' '}
-          <strong>
-            {reveal.yourEffortGap === null ? '—' : pct(Math.abs(reveal.yourEffortGap))}
-          </strong>{' '}
-          {reveal.yourEffortGap !== null && reveal.yourEffortGap < 0 ? 'more' : 'less'} often when
-          the {params.scorecardNoun} was unreliable. Best play would have pulled back by{' '}
-          <strong>{pct(reveal.optimalEffortGap)}</strong>.
+        <p style={{ margin: 0, fontSize: '1.02rem' }}>
+          You used high effort <strong>{rate(reveal.high.yourHighEffortRate)}</strong> of the
+          time under the {pct(reveal.high.reliability)} {params.scorecardNoun}, and{' '}
+          <strong>{rate(reveal.low.yourHighEffortRate)}</strong> under the{' '}
+          {pct(reveal.low.reliability)} one.
+        </p>
+        <p style={{ margin: '0.5rem 0 0', color: '#444', fontSize: '0.92rem' }}>
+          Across the {reveal.classSize === 1 ? 'class' : `${reveal.classSize} people in this class`},
+          the averages were <strong>{rate(reveal.high.classHighEffortRate)}</strong> and{' '}
+          <strong>{rate(reveal.low.classHighEffortRate)}</strong>.
         </p>
       </div>
 
+      <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', margin: '1.25rem 0' }}>
+        <EffortCurves cond={reveal.high} />
+        <EffortCurves cond={reveal.low} />
+      </div>
+      <p style={{ fontSize: '0.8rem', color: '#666', marginTop: '-0.5rem' }}>
+        Solid line: you. Dashed: the class. Both show the share of {params.periodNoun}s
+        using high effort, by {params.periodNoun} within a {params.contractNoun}.
+      </p>
+
       <p style={{ fontSize: '0.85rem', color: '#555' }}>
-        The per-contract figures above are the <em>frictionless benchmark</em> — what each way
-        of playing is worth on average, not a grade. You played{' '}
-        {reveal.contractsPerCondition.high} and {reveal.contractsPerCondition.low} contracts in
-        the two situations, which is far too few for what you actually earned to settle near
-        any of them. Your grade for this exercise is for completing it.
+        You played {reveal.contractsPerCondition.high} and {reveal.contractsPerCondition.low}
+        {' '}{params.contractNoun}s in the two situations. Your grade for this exercise is for
+        completing it — not for what you earned.
       </p>
     </div>
   )
