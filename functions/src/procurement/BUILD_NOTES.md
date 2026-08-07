@@ -1023,6 +1023,87 @@ the id misleads. Flagged, not changed — it is outside this prompt.
 
 ---
 
+## 6l. Sorting people by LAST name (Elena, 2026-08-07)
+
+§6k adopted `SortableTable` but sorted the **display string**, which is a **first-name**
+sort. Elena: *"the sort has to be by last name … find that algorithm that parses the name
+before sorting so that everything is consistent."*
+
+### The algorithm already existed, and it is not in a place a single-player game can reach
+
+`@mygames/game-ui`'s `RosterTable.tsx` has sorted by surname since it shipped:
+
+```ts
+function getLastName(name: string): string {
+  const tokens = name.trim().split(/\s+/)
+  return tokens[tokens.length - 1]
+}
+```
+
+⚠⚠ **But `getLastName` is module-private, and `RosterTable` is a MULTIPLAYER component**
+(`SharedParticipant`, `group_id`, "Negotiating"). No single-player game renders it. Exporting
+it would edit a package **every game consumes** — a seven-target deploy at minimum, and
+Elena's call, not a side effect of a procurement sort. So the rule is **copied verbatim**
+into `frontend/src/procurement/sortName.ts`, which says exactly that in its header, and
+`sortName.test.ts` pins it against an independent restatement of the shared source so the
+two cannot drift silently.
+
+⚠ **Behaviour is identical; only the code is duplicated.** That is the trade recorded: one
+duplicated three-line function against a cross-family package bump.
+
+### ⚠⚠ The wider finding: NO single-player game sorts by last name
+
+Checked, not assumed — all seven sort the whole display string:
+
+| family | surname sort? |
+|---|---|
+| multiplayer roster (`game-ui` `RosterTable`) | ✅ always has |
+| pennies · poll · pd · pricing · newsvendor · forecast | ❌ first-name, all six |
+| procurement | ❌ → ✅ **fixed here** |
+
+So procurement is now the ODD ONE OUT in its own family while matching the platform's
+older, larger one. **The real fix is to export `getLastName` from `game-ui` and adopt it in
+all six remaining single-player games** — one shared change, seven targets, Elena's
+decision. Flagged, deliberately not taken.
+
+### Every column tiebreaks on it
+
+`SortableTable`'s own `tiebreak` fires **only when both rows are null** (`SortableTable.tsx:88`),
+so a general tiebreak has to live inside `compare` — which is exactly what `RosterTable`
+does (`… || a.lastName.localeCompare(b.lastName)`). Without it the twenty students who are
+all "Not started" fall in **server order**, and the roster reshuffles under the instructor
+between refreshes. This closes the RISK flagged at §6k.
+
+⚠ A tiebreak folded into `compare` **reverses with the sort direction**. The shared roster
+behaves the same way; consistency was preferred over a stable secondary key.
+
+### Known limits, accepted deliberately
+
+"Ana de la Cruz" keys on **Cruz**; "Kim Jr." keys on **Jr.**. A cleverer parser would be a
+DIFFERENT algorithm from the rest of the platform's, and a roster that sorts one way in
+Baxter and another way here is worse than one that is uniformly imperfect. Improving it is a
+shared change, made once, for everybody.
+
+⚠ One deliberate divergence from `RosterTable`: procurement passes `{ sensitivity: 'base' }`
+so "de Souza" and "De Souza" sit together. It changes only which SPELLING of the same name
+comes first, never which name comes first.
+
+### Controls
+
+Two mutations, both bite:
+
+| mutation | result |
+|---|---|
+| `compareByLastName` → sort the display string (the pre-08-07 behaviour) | **6 of 25 fail** |
+| drop the full-name tiebreak | **3 of 25 fail** |
+
+⚠ And the browser harness now **clicks the real header**: it asserts the roster opens in
+surname order, that clicking Name reverses it, and that clicking Profit sorts numerically
+ascending. §6k listed "no test drives an actual header click" under NOT VERIFIED BY TEST;
+that gap is closed. Names come from the rendered roster, never hardcoded.
+
+---
+
 ## 7. Which hosting targets a frontend change needs — the standing rule
 
 Read off `frontend/vite.config.ts` and `firebase.json`, not off convention.

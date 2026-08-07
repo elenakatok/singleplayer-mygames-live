@@ -9,6 +9,7 @@ import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { ClassScatterSVG, classScatterPoints, classRivalPoints } from './ClassScatterSVG'
 import { OpenClassScatterSVG, openClassExitPoints, openClassBotExits } from './OpenClassScatterSVG'
+import { rowsByLastName } from './sortName'
 import {
   procurementGetReport, procurementInstructorSession, instructorErrorMessage,
   FORMAT_LABEL, type ProcurementReport, type ProcurementReportRow,
@@ -140,9 +141,10 @@ export const rosterColumns = (
         )}
       </span>
     ),
-    // ⚠ CASE-INSENSITIVE via localeCompare's collation, not a lowercased copy.
-    compare: (a, b) => (a.name ?? a.participantId).localeCompare(
-      b.name ?? b.participantId, undefined, { sensitivity: 'base' }),
+    // ⚠⚠ BY LAST NAME (`sortName.ts`), the platform's own parsing rule — and the SAME
+    // comparator the dashboard uses, so the two instructor surfaces cannot disagree
+    // about the order of the same class.
+    compare: rowsByLastName,
   },
   {
     key: 'status',
@@ -150,14 +152,15 @@ export const rosterColumns = (
     render: r => r.finished ? 'Finished' : r.roundsPlayed > 0 ? 'In progress' : 'Not started',
     // ⚠ RANKED, NOT ALPHABETICAL — alphabetically "Finished" precedes "Not started",
     // which orders the class by nothing anybody cares about.
-    compare: (a, b) => rosterRank(a) - rosterRank(b),
+    // ⚠ TIEBROKEN ON LAST NAME like every column here; see Dashboard's note.
+    compare: (a, b) => rosterRank(a) - rosterRank(b) || rowsByLastName(a, b),
   },
   // ⚠ THE CELL IS THE BARE COUNT, unchanged from the plain table this replaced. Adding
   // "of 8" would be a presentation change riding along on a sorting change, and the
   // browser harness reads this cell by value.
-  { key: 'rounds', label: 'Rounds', render: r => r.roundsPlayed, compare: (a, b) => a.roundsPlayed - b.roundsPlayed },
-  { key: 'won', label: 'Won', render: r => r.roundsWon, compare: (a, b) => a.roundsWon - b.roundsWon },
-  { key: 'profit', label: 'Profit', render: r => r.profitTotal, compare: (a, b) => a.profitTotal - b.profitTotal },
+  { key: 'rounds', label: 'Rounds', render: r => r.roundsPlayed, compare: (a, b) => a.roundsPlayed - b.roundsPlayed || rowsByLastName(a, b) },
+  { key: 'won', label: 'Won', render: r => r.roundsWon, compare: (a, b) => a.roundsWon - b.roundsWon || rowsByLastName(a, b) },
+  { key: 'profit', label: 'Profit', render: r => r.profitTotal, compare: (a, b) => a.profitTotal - b.profitTotal || rowsByLastName(a, b) },
 ]
 
 /** Not started < in progress < finished. ⚠ The report has no `finalized` state of its

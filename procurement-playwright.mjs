@@ -978,6 +978,43 @@ async function main() {
     // ── the per-student rounds modal, format-gated ──────────────────────────
     await orp.locator('[data-testid="proc-tile-roster"]').click()
     await orp.waitForSelector('[data-testid="proc-rep-roster"]', { timeout: 30_000 })
+
+    // ── ⚠ SORTING, DRIVEN BY A REAL HEADER CLICK IN A REAL BROWSER ──────────
+    // The unit tests pin the COMPARATORS; only this proves the header is wired to them
+    // and that the widget re-orders the rendered rows. It is asserted on the robot
+    // cohort because it is the only place with a class big enough for order to mean
+    // anything. ⚠ Names come from the roster itself, never hardcoded.
+    const rosterNames = async () => (await orp
+      .locator('[data-testid="proc-rep-roster"] tbody tr td:first-child').allInnerTexts())
+      .map(s => s.replace(/See rounds.*$/s, '').trim())
+
+    const surname = n => { const t = n.trim().split(/\s+/); return t[t.length - 1] }
+    const asShown = await rosterNames()
+    check(asShown.length > 1, '[open reports] the roster has a class to sort')
+
+    // Default is Name ascending → already by SURNAME, not by the display string.
+    const bySurname = [...asShown].sort((a, b) =>
+      surname(a).localeCompare(surname(b), undefined, { sensitivity: 'base' })
+      || a.localeCompare(b, undefined, { sensitivity: 'base' }))
+    check(JSON.stringify(asShown) === JSON.stringify(bySurname),
+      '⚠⚠ [open reports] the roster opens sorted by LAST name (Elena, 08-07)')
+
+    // Clicking the active header reverses it.
+    await orp.locator('[data-testid="proc-rep-roster"] thead th').first().click()
+    const reversed = await rosterNames()
+    check(JSON.stringify(reversed) === JSON.stringify([...bySurname].reverse()),
+      '[open reports] and clicking the Name header reverses that order')
+
+    // Clicking a DIFFERENT header re-sorts on that column, ascending.
+    await orp.locator('[data-testid="proc-rep-roster"] thead th').nth(4).click()
+    const byProfit = await orp
+      .locator('[data-testid="proc-rep-roster"] tbody tr td:nth-child(5)').allInnerTexts()
+    const nums = byProfit.map(Number)
+    check(nums.every((v, i) => i === 0 || nums[i - 1] <= v),
+      '⚠ [open reports] and clicking Profit sorts NUMERICALLY, ascending')
+    // ⚠ Back to Name so the drill-through below sees the order it expects.
+    await orp.locator('[data-testid="proc-rep-roster"] thead th').first().click()
+
     const firstOpen = robotRepO.rows[0].participantId
     await orp.locator(`[data-testid="proc-rep-open-${firstOpen}"]`).click()
     await orp.waitForSelector('[data-testid="proc-rep-detail"]', { timeout: 30_000 })

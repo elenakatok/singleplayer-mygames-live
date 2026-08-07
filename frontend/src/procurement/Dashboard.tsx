@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { SortableTable, colors, type SortableColumn } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
+import { rowsByLastName } from './sortName'
 import {
   procurementGetReport, procurementScoreAndRecord, procurementSyncRoster,
   procurementInstructorSession, instructorErrorMessage,
@@ -53,10 +54,10 @@ export const buildColumns = (
     key: 'name',
     label: 'Name',
     render: r => r.name ?? r.participantId,
-    // ⚠ CASE-INSENSITIVE, via localeCompare's own collation rather than a lowercased
-    // copy: "de Souza" and "De Souza" belong next to each other.
-    compare: (a, b) => (a.name ?? a.participantId).localeCompare(
-      b.name ?? b.participantId, undefined, { sensitivity: 'base' }),
+    // ⚠⚠ BY LAST NAME, using the platform's own parsing rule (`sortName.ts`) — the same
+    // one `game-ui`'s multiplayer roster has always used. Sorting the display string
+    // sorts by FIRST name, which is not how anybody reads a class list.
+    compare: rowsByLastName,
   },
   {
     key: 'status',
@@ -65,23 +66,28 @@ export const buildColumns = (
     // ⚠ RANKED, NOT ALPHABETICAL. Alphabetically "Finished" sorts before "Not started",
     // which puts the class in an order that means nothing. `statusRank` walks the
     // assignment: not started → in progress → finished → finalized.
-    compare: (a, b) => statusRank(a) - statusRank(b),
+    // ⚠ EVERY COLUMN TIEBREAKS ON LAST NAME, exactly as the shared roster does. Without
+    // it the 20 students who are all "Not started" fall in whatever order the server
+    // sent, and the table reshuffles under the instructor on each refresh.
+    compare: (a, b) => statusRank(a) - statusRank(b) || rowsByLastName(a, b),
   },
-  { key: 'rounds', label: 'Rounds', render: r => r.roundsPlayed, compare: (a, b) => a.roundsPlayed - b.roundsPlayed },
-  { key: 'won', label: 'Won', render: r => r.roundsWon, compare: (a, b) => a.roundsWon - b.roundsWon },
+  { key: 'rounds', label: 'Rounds', render: r => r.roundsPlayed, compare: (a, b) => a.roundsPlayed - b.roundsPlayed || rowsByLastName(a, b) },
+  { key: 'won', label: 'Won', render: r => r.roundsWon, compare: (a, b) => a.roundsWon - b.roundsWon || rowsByLastName(a, b) },
   // ⚠ NUMERIC, on the underlying number. The rendered cell is a string; comparing those
   // would sort 10 before 9 — the string-sort bug pennies' header records twice shipping.
-  { key: 'profit', label: 'Profit', render: r => r.profitTotal, compare: (a, b) => a.profitTotal - b.profitTotal },
+  { key: 'profit', label: 'Profit', render: r => r.profitTotal, compare: (a, b) => a.profitTotal - b.profitTotal || rowsByLastName(a, b) },
   {
     key: 'kc',
     label: 'KC',
     render: r => r.knowledgeCheckScore === null ? '—' : `${Math.round(r.knowledgeCheckScore * 100)}%`,
-    compare: (a, b) => (a.knowledgeCheckScore ?? 0) - (b.knowledgeCheckScore ?? 0),
+    compare: (a, b) => (a.knowledgeCheckScore ?? 0) - (b.knowledgeCheckScore ?? 0) || rowsByLastName(a, b),
     // ⚠ A STUDENT WHO HAS NOT TAKEN THE KC IS NOT A ZERO — they are absent. Sorting them
     // among the zeroes would read as "scored nothing" rather than "has not sat it".
     nullsLast: true,
     isNull: r => r.knowledgeCheckScore === null,
-    tiebreak: (a, b) => (a.name ?? a.participantId).localeCompare(b.name ?? b.participantId),
+    // ⚠ Reached only when BOTH rows are null (SortableTable:88), so the has-not-sat-it
+    // block is itself ordered by last name rather than by arrival.
+    tiebreak: rowsByLastName,
   },
 ]
 
