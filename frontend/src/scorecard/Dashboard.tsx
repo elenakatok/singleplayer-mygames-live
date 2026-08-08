@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { SortableTable, colors, type SortableColumn } from '@mygames/game-ui'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { InstructorChrome } from '../shared/InstructorChrome'
@@ -33,6 +34,7 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  const navigate = useNavigate()
 
   const load = () => scorecardGetReport().then(setReport).catch(e => setError(instructorErrorMessage(e)))
 
@@ -74,10 +76,21 @@ export default function Dashboard() {
       compare: (a, b) => (a.contracts_completed - b.contracts_completed) || tie(a, b),
     },
     {
-      key: 'gap', label: 'Effort gap',
-      render: r => <span style={tnum}>{r.effort_gap === null ? '—' : `${r.effort_gap > 0 ? '+' : ''}${Math.round(r.effort_gap * 100)}%`}</span>,
-      nullsLast: true, isNull: r => r.effort_gap == null,
-      compare: (a, b) => (num(a.effort_gap) - num(b.effort_gap)) || tie(a, b),
+      // ⚠⚠ THE CONTESTED GAP, matching Tier 1 (spec §11). It was showing the RAW
+      // all-period gap under the same "Effort gap" label, so the dashboard and the reports
+      // printed DIFFERENT NUMBERS for a column with the same name — and the raw one is the
+      // one that manufactures a signal out of students who never thought about
+      // reliability. Two surfaces, one definition.
+      key: 'gap', label: 'Contested gap',
+      render: r => (
+        <span style={tnum}>
+          {r.contested_gap === null
+            ? '—'
+            : `${r.contested_gap > 0 ? '+' : ''}${Math.round(r.contested_gap * 100)}%`}
+        </span>
+      ),
+      nullsLast: true, isNull: r => r.contested_gap == null,
+      compare: (a, b) => (num(a.contested_gap) - num(b.contested_gap)) || tie(a, b),
     },
     {
       key: 'earnings', label: `Total ${params.currency}`,
@@ -92,20 +105,51 @@ export default function Dashboard() {
     },
   ]
 
+  // ⚠⚠ THE QUERY STRING IS CARRIED FORWARD. `?token=`/`?_gid=` is how the instructor
+  // session identifies the instance across pages; a nav link that dropped it would land on
+  // a page with no session and no way to recover one.
+  const navLinks = [
+    { label: 'Settings →', href: `/settings${window.location.search}` },
+    { label: 'Reports →', href: `/reports${window.location.search}` },
+  ]
+
+  const button = (label: string, key: string, onClick: () => void) => (
+    <button
+      data-testid={`sc-dash-${key}`}
+      onClick={onClick}
+      disabled={busy !== null}
+      style={{
+        padding: '0.5rem 1rem', fontSize: '0.85rem', fontWeight: 600, marginRight: '0.5rem',
+        cursor: busy ? 'not-allowed' : 'pointer',
+        background: colors.white, color: colors.text,
+        border: `1px solid ${colors.borderMid}`, borderRadius: 6,
+      }}
+    >
+      {busy === key ? 'Working…' : label}
+    </button>
+  )
+
+  // ⚠ PASSED AS `actions` so they land in the STICKY bar with the nav rather than
+  // scrolling away in the page body — matching forecast, procurement and the rest.
+  const actions = (
+    <>
+      {button('Refresh', 'refresh', () => void load())}
+      {button('Sync roster', 'sync', () => void run('Sync roster', scorecardSyncRoster))}
+      {button('Score & Record', 'score', () => void run('Score & Record', scorecardScoreAndRecord))}
+      <span data-testid="sc-dash-counts"
+        style={{ marginLeft: '0.5rem', fontSize: '0.85rem', color: colors.textSecondary }}>
+        {finished} finished · {participants.length} enrolled
+        {report.scored && ' · finalized'}
+      </span>
+    </>
+  )
+
   return (
     <InstructorChrome
-      title="Supplier Scorecard — Dashboard"
-      actions={
-        <>
-          <button disabled={busy !== null} onClick={() => run('Sync roster', scorecardSyncRoster)}>
-            Sync roster
-          </button>
-          <button disabled={busy !== null} onClick={() => run('Score & Record', scorecardScoreAndRecord)}
-            style={{ marginLeft: '0.5rem' }}>
-            Score &amp; Record
-          </button>
-        </>
-      }
+      title="Supplier Scorecard — dashboard"
+      actions={actions}
+      navLinks={navLinks}
+      onNavigate={navigate}
     >
       <p style={{ fontSize: '0.87rem', color: colors.textSecondary }}>
         {participants.length} on the roster · {finished} finished ·{' '}

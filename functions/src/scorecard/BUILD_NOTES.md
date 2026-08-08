@@ -608,3 +608,45 @@ or driver would have been misled the same way.
 **Result: 7/7 robots walk the complete flow** — pre-play KC, every contract, session
 summary, noticing, the reveal, post-play KC, linking — verified from the stored documents
 rather than from the driver's own logs (`scorecard-robot-browser.mjs`).
+
+---
+
+## 21. Two more, found by looking at the running product (Elena, 08-08)
+
+### 21a. ⚠ Robot windows stacked instead of tiling
+
+`--window-position` is a **browser-launch argument** in Chromium, not a context property.
+The driver launched ONE browser and gave each robot its own `newContext({ viewport })` —
+which sized the pages correctly and left every window at the default position, full-screen,
+one on top of another.
+
+Forecast, pricing and newsvendor all launch **one browser per robot**; this driver was the
+odd one out. Fixed to match, with `viewport: null` (a viewport override would re-clamp the
+page and defeat `--window-size`).
+
+Verified rather than assumed: three headed windows asked for x = 0 / 640 / 1280 and landed
+at exactly those. The 30px y-offset is macOS clamping y = 0 below the menu bar.
+
+⚠ Closing now iterates the browsers that were actually opened, including for robots that
+threw — a failed robot used to leave a live browser and the process never exited.
+
+### 21b. ⚠⚠ The dashboard and the reports printed DIFFERENT NUMBERS under the same label
+
+The dashboard's "Effort gap" column was `effort_gap` — the **raw all-period** gap — while
+Tier 1 had moved to `contested_gap`. Same column name, two different definitions, on two
+screens an instructor moves between.
+
+Worse than an inconsistency: the raw gap is the one that **manufactures a signal out of
+students who never thought about reliability** (§15). An instructor reading the dashboard
+would have been ranking the class by an artifact.
+
+Both surfaces now read `contested_gap` and both call it **"Contested gap"**. ⚠ If a raw-gap
+column is ever wanted on the dashboard it must be labelled as such and sit BESIDE the
+contested one, exactly as it does in Tier 1 — never under the shared name.
+
+### 21c. The dashboard was missing its chrome
+
+No Refresh, no Settings/Reports nav — every other game in the family has all three in the
+sticky action bar. Added, with the query string carried forward on both nav links: `?token=`
+/ `?_gid=` is how the instructor session identifies the instance across pages, and a link
+that dropped it lands on a page with no session and no way to recover one.

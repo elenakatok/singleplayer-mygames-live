@@ -387,12 +387,28 @@ async function playContracts(page, styleName, log) {
   return { periods, contracts }
 }
 
-/** One robot's entire session. */
-async function runRobot(browser, index, log) {
+/**
+ * One robot's entire session, in ITS OWN BROWSER.
+ *
+ * ⚠⚠ ONE BROWSER PER ROBOT, NOT ONE BROWSER WITH N CONTEXTS. Window POSITION is a
+ * browser-launch argument in Chromium (`--window-position`), not a context property — so
+ * sharing one browser and setting each context's `viewport` sized the pages correctly but
+ * left every window stacked at the default position, full-screen, one on top of another.
+ * That is what forecast, pricing and newsvendor all do, and this driver was the odd one
+ * out.
+ *
+ * ⚠ `viewport: null` is required with it: a viewport override would re-clamp the page to
+ * a fixed size and defeat `--window-size`.
+ */
+async function runRobot(index, log) {
   const styleName = styleFor(index)
   const { name, url } = await mintUrl(index)
   const cell = gridCell(index, COUNT)
-  const ctx = await browser.newContext({ viewport: { width: cell.w, height: cell.h } })
+  const browser = await chromium.launch({
+    headless: HEADLESS,
+    args: [`--window-position=${cell.x},${cell.y}`, `--window-size=${cell.w},${cell.h}`],
+  })
+  const ctx = await browser.newContext({ viewport: null })
   const page = await ctx.newPage()
 
   log(`[${name}] style=${styleName}`)
@@ -445,8 +461,11 @@ async function runRobot(browser, index, log) {
   await page.waitForSelector('[data-testid="sc-done"], [data-testid="sc-reveal"]', { timeout: 60_000 })
   log(`[${name}] DONE — ${played.periods} periods, ${played.contracts} contracts`)
 
-  if (!KEEP_OPEN) await ctx.close()
-  return { name, styleName, ...played }
+  // ⚠ The WINDOW is what Elena scrolls back through, so a live run closes neither the
+  // context nor the browser. A dry run tears both down, or a wrapper waiting on the child
+  // hangs (T9's cousin: an un-closed browser keeps the process alive).
+  if (!KEEP_OPEN) { await ctx.close(); await browser.close() }
+  return { name, styleName, browser, ...played }
 }
 
 // ── main ───────────────────────────────────────────────────────────────────────
@@ -462,24 +481,22 @@ const main = async () => {
     process.exit(1)
   }
 
-  const browser = await chromium.launch({
-    headless: HEADLESS,
-    args: HEADLESS ? [] : [`--window-size=${SCREEN_W},${SCREEN_H}`],
-  })
   const log = (m) => console.log(`  ${m}`)
   const results = []
-  try {
-    // ⚠ NO BARRIER ANYWHERE. Each robot is an independent student; one that finishes early
-    // must not wait, and one that fails must not take the cohort with it.
-    const settled = await Promise.allSettled(
-      Array.from({ length: COUNT }, (_, i) => runRobot(browser, i, log)),
-    )
-    settled.forEach((r, i) => {
-      if (r.status === 'fulfilled') results.push(r.value)
-      else console.error(`  ✗ robot ${i + 1} failed: ${r.reason?.message ?? r.reason}`)
-    })
-  } finally {
-    if (!KEEP_OPEN) await browser.close()
+  const opened = []
+  // ⚠ NO BARRIER ANYWHERE. Each robot is an independent student; one that finishes early
+  // must not wait, and one that fails must not take the cohort with it.
+  const settled = await Promise.allSettled(
+    Array.from({ length: COUNT }, (_, i) => runRobot(i, log)),
+  )
+  settled.forEach((r, i) => {
+    if (r.status === 'fulfilled') { results.push(r.value); opened.push(r.value.browser) }
+    else console.error(`  ✗ robot ${i + 1} failed: ${r.reason?.message ?? r.reason}`)
+  })
+  // ⚠ A robot that THREW may still have left a browser running; without this the process
+  // never exits on a partial failure.
+  if (!KEEP_OPEN) {
+    for (const b of opened) { try { await b.close() } catch { /* already gone */ } }
   }
 
   console.log('\n' + '─'.repeat(70))
