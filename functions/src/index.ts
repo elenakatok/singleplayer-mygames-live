@@ -10,6 +10,7 @@ import { NEWSVENDOR_COLLECTION_PREFIX, NEWSVENDOR_CORS_ORIGINS } from './newsven
 import { FORECAST_COLLECTION_PREFIX, FORECAST_CORS_ORIGINS } from './forecast/config'
 import { PROCUREMENT_COLLECTION_PREFIX, PROCUREMENT_CORS_ORIGINS } from './procurement/config'
 import { SCORECARD_COLLECTION_PREFIX, SCORECARD_CORS_ORIGINS } from './scorecard/config'
+import { buildStamp } from './buildInfo'
 
 admin.initializeApp()
 
@@ -285,7 +286,7 @@ function makeHealth(game: string, origins: string[]) {
       res.set('Vary', 'Origin')
     }
     if (req.method === 'OPTIONS') { res.status(204).send(''); return }
-    res.json({ ok: true, game })
+    res.json({ ok: true, game, build: buildStamp() })
   })
 }
 
