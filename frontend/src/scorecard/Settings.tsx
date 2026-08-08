@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { colors } from '@mygames/game-ui'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { InstructorChrome } from '../shared/InstructorChrome'
@@ -38,6 +39,7 @@ export default function Settings() {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<string | null>(null)
+  const navigate = useNavigate()
 
   useEffect(() => {
     if (session.kind !== 'ready') return
@@ -127,7 +129,14 @@ export default function Settings() {
   const ecu = (x: number) => (Number.isFinite(x) ? (Math.round(x * 100) / 100).toString() : '—')
 
   return (
-    <InstructorChrome title="Supplier Scorecard — Settings">
+    <InstructorChrome
+      title="Supplier Scorecard — settings"
+      navLinks={[
+        { label: '← Dashboard', href: `/dashboard${window.location.search}` },
+        { label: 'Reports →', href: `/reports${window.location.search}` },
+      ]}
+      onNavigate={navigate}
+    >
       {data.started && (
         <p style={{
           background: '#fff8e6', border: '1px solid #e6d3a3', borderRadius: 6,

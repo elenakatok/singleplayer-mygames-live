@@ -8,9 +8,12 @@
 // Run:  npm run robots:scorecard:browser
 // ═══════════════════════════════════════════════════════════════════════════════
 import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+const require = createRequire(import.meta.url)
+const { chromium } = require('playwright')
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 const PROJECT = 'demo-singleplayer'
 const VITE_PORT = 5199
@@ -78,10 +81,23 @@ let vite
 let code = 1
 try {
   vite = await startVite()
+  // ⚠ WARM THE DEV SERVER before the cohort. Vite compiles the app on the FIRST request;
+  // fourteen pages hitting a cold server all block on that one compile, and the resulting
+  // timeout looks like a game failure. One throwaway load pays it once.
+  console.log('warming vite…')
+  {
+    const b = await chromium.launch({ headless: true })
+    const p0 = await (await b.newContext()).newPage()
+    await p0.goto(`${APP}/?game=scorecard`, { waitUntil: 'networkidle', timeout: 120_000 })
+    await b.close()
+  }
   code = await new Promise((resolve) => {
     const drv = spawn(process.execPath, [
       path.join(ROOT, 'bot', 'scorecard-robot-driver.mjs'),
-      '--instance', gid, '--students', '7', '--pace', 'fast',
+      // ⚠ NO --students: exercise the SHIPPED DEFAULT (14), so what runs here is what
+      // the launcher's Robots button runs. Pinning 7 here meant the default was never
+      // tested by anything.
+      '--instance', gid, '--pace', 'fast',
       '--emulator', '--app', APP, '--headless', '--exit-when-done',
     ], { stdio: 'inherit' })
     drv.on('exit', resolve)
@@ -111,4 +127,4 @@ for (const d of docs) {
 }
 console.log('  ' + '-'.repeat(62))
 console.log(`  ${ok}/${docs.length} robots completed the FULL flow (3 contracts, 10 KC answers, both free-text steps)`)
-process.exit(ok === 7 && docs.length === 7 ? 0 : 1)
+process.exit(ok === docs.length && docs.length >= 14 ? 0 : 1)

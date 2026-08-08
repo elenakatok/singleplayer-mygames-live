@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import {
   ReportBoard, SortableTable, colors,
@@ -53,7 +54,12 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 
 const tnum: React.CSSProperties = { fontVariantNumeric: 'tabular-nums' }
 const pct = (v: number | null) => (v === null ? '—' : `${Math.round(v * 100)}%`)
-const money = (v: number | null, c: string) => (v === null ? '—' : `${Math.round(v)} ${c}`)
+// ⚠ NO UNIT ON EVERY CELL. 13 columns × 16 rows of "125 ECU" is 200 repetitions of a
+// constant, and it is what pushed the table off the screen. The unit goes in the HEADER.
+const money = (v: number | null) => (v === null ? '—' : String(Math.round(v)))
+// ⚠ The SUMMARY keeps its unit — it is four figures read in prose, not 200 cells in a
+// grid, and there the unit carries its weight instead of costing horizontal space.
+const moneyUnit = (v: number | null, c: string) => (v === null ? '—' : `${Math.round(v)} ${c}`)
 const signedPct = (v: number | null) =>
   v === null ? '—' : `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`
 
@@ -67,11 +73,17 @@ const tie = (a: ScorecardReportParticipant, b: ScorecardReportParticipant) =>
 /** Numeric coercion for nullsLast columns: the value never decides order for nulls. */
 const num = (v: number | null) => (v === null ? 0 : v)
 
+// ⚠ `pre-line` is what turns the `\n` in a label into an actual second line — the label
+// type is a plain string, so the break has to be honoured by CSS. Applied to EVERY column
+// from one constant, so a column added later cannot forget it and silently render
+// "Con-tracts" on one line.
+const hdr: React.CSSProperties = { whiteSpace: 'pre-line', lineHeight: 1.25 }
+
 type RosterKey =
   | 'name' | 'status' | 'contracts' | 'earnings'
   | 'rate_high' | 'rate_low' | 'gap' | 'raw_gap'
   | 'earn_high' | 'earn_low' | 'bonus_high' | 'bonus_low'
-  | 'wasted' | 'kc'
+  | 'wasted'
 
 export default function Reports() {
   const session = useInstructorSession(scorecardInstructorSession)
@@ -80,6 +92,7 @@ export default function Reports() {
   /** ⚠ Spec §11: the DP overlay on chart 2 is DEFAULT OFF. */
   const [showOptimal, setShowOptimal] = useState(false)
   const [active, setActive] = useState<string | null>(null)
+  const navigate = useNavigate()
 
   useEffect(() => {
     if (session.kind !== 'ready') return
@@ -136,6 +149,10 @@ export default function Reports() {
     {
       key: 'name',
       label: 'Student',
+      // ⚠ Pinned: the table is wide, and a name column that scrolls away makes every
+      // other column unreadable.
+      sticky: 'left',
+      headerStyle: hdr,
       // ⚠ R9 — an unnamed row gets an explicit label, never a blank cell.
       render: r => (r.name ?? <em style={{ color: colors.textSecondary }}>(no name on the roster)</em>),
       compare: (a, b) => compareByLastName(nameOf(a), nameOf(b)),
@@ -143,6 +160,7 @@ export default function Reports() {
     {
       key: 'status',
       label: 'Status',
+      headerStyle: hdr,
       render: r => (
         <>
           {r.completed ? 'Finished' : r.launched ? 'In progress' : 'Not started'}
@@ -157,24 +175,28 @@ export default function Reports() {
         ((a.completed ? 2 : a.launched ? 1 : 0) - (b.completed ? 2 : b.launched ? 1 : 0)) || tie(a, b),
     },
     {
-      key: 'contracts', label: 'Contracts',
+      key: 'contracts', label: 'Con-\ntracts',
+      headerStyle: hdr,
       render: r => <span style={tnum}>{r.contracts_completed}</span>,
       compare: (a, b) => (a.contracts_completed - b.contracts_completed) || tie(a, b),
     },
     {
-      key: 'earnings', label: `Total ${cur}`,
+      key: 'earnings', label: `Total\n${cur}`,
+      headerStyle: hdr,
       render: r => <span style={tnum}>{Math.round(r.total_earnings)}</span>,
       compare: (a, b) => (a.total_earnings - b.total_earnings) || tie(a, b),
     },
     // ── The paired per-condition columns (spec §11) ─────────────────────────
     {
-      key: 'rate_high', label: `Effort · ${Math.round(treatment.reliabilityHigh * 100)}%`,
+      key: 'rate_high', label: `Effort\n${Math.round(treatment.reliabilityHigh * 100)}%`,
+      headerStyle: hdr,
       render: r => <span style={tnum}>{pct(r.high_effort_rate_high)}</span>,
       nullsLast: true, isNull: r => r.high_effort_rate_high == null,
       compare: (a, b) => (num(a.high_effort_rate_high) - num(b.high_effort_rate_high)) || tie(a, b),
     },
     {
-      key: 'rate_low', label: `Effort · ${Math.round(treatment.reliabilityLow * 100)}%`,
+      key: 'rate_low', label: `Effort\n${Math.round(treatment.reliabilityLow * 100)}%`,
+      headerStyle: hdr,
       render: r => <span style={tnum}>{pct(r.high_effort_rate_low)}</span>,
       nullsLast: true, isNull: r => r.high_effort_rate_low == null,
       compare: (a, b) => (num(a.high_effort_rate_low) - num(b.high_effort_rate_low)) || tie(a, b),
@@ -190,7 +212,8 @@ export default function Reports() {
       //
       // `nullsLast` matters more here than anywhere: a null means the student faced no
       // contested periods in one condition, and must not sort as if it were zero.
-      key: 'gap', label: 'Contested gap',
+      key: 'gap', label: 'Contested\ngap',
+      headerStyle: hdr,
       render: r => (
         <strong style={{ ...tnum, color: r.contested_gap === null ? colors.textSecondary : undefined }}>
           {signedPct(r.contested_gap)}
@@ -203,7 +226,8 @@ export default function Reports() {
       // ⚠ SECONDARY. Shown BESIDE the contested gap precisely so the mechanical component
       // is legible: a large raw gap next to a near-zero contested one IS the deadness
       // artifact, and the "paid after dead" column names it.
-      key: 'raw_gap', label: 'Raw gap (all periods)',
+      key: 'raw_gap', label: 'Raw gap\n(all periods)',
+      headerStyle: hdr,
       render: r => (
         <span style={{ ...tnum, color: colors.textSecondary }}>{signedPct(r.effort_gap)}</span>
       ),
@@ -211,39 +235,38 @@ export default function Reports() {
       compare: (a, b) => (num(a.effort_gap) - num(b.effort_gap)) || tie(a, b),
     },
     {
-      key: 'earn_high', label: `${cur}/contract · high`,
-      render: r => <span style={tnum}>{money(r.earnings_high, cur)}</span>,
+      key: 'earn_high', label: `${cur}/contract\n${Math.round(treatment.reliabilityHigh * 100)}%`,
+      headerStyle: hdr,
+      render: r => <span style={tnum}>{money(r.earnings_high)}</span>,
       nullsLast: true, isNull: r => r.earnings_high == null,
       compare: (a, b) => (num(a.earnings_high) - num(b.earnings_high)) || tie(a, b),
     },
     {
-      key: 'earn_low', label: `${cur}/contract · low`,
-      render: r => <span style={tnum}>{money(r.earnings_low, cur)}</span>,
+      key: 'earn_low', label: `${cur}/contract\n${Math.round(treatment.reliabilityLow * 100)}%`,
+      headerStyle: hdr,
+      render: r => <span style={tnum}>{money(r.earnings_low)}</span>,
       nullsLast: true, isNull: r => r.earnings_low == null,
       compare: (a, b) => (num(a.earnings_low) - num(b.earnings_low)) || tie(a, b),
     },
     {
-      key: 'bonus_high', label: 'Bonuses · high',
+      key: 'bonus_high', label: `Bonuses\n${Math.round(treatment.reliabilityHigh * 100)}%`,
+      headerStyle: hdr,
       render: r => <span style={tnum}>{r.bonuses_high}</span>,
       compare: (a, b) => (a.bonuses_high - b.bonuses_high) || tie(a, b),
     },
     {
-      key: 'bonus_low', label: 'Bonuses · low',
+      key: 'bonus_low', label: `Bonuses\n${Math.round(treatment.reliabilityLow * 100)}%`,
+      headerStyle: hdr,
       render: r => <span style={tnum}>{r.bonuses_low}</span>,
       compare: (a, b) => (a.bonuses_low - b.bonuses_low) || tie(a, b),
     },
     {
       // ⚠ Strict `isDead` server-side — periods paid for on a contract that was ALREADY
       // IMPOSSIBLE, not one the DP would have abandoned (BUILD_NOTES §1a).
-      key: 'wasted', label: 'Paid after dead',
+      key: 'wasted', label: 'Wasted\nperiods',
+      headerStyle: hdr,
       render: r => <span style={tnum}>{r.periods_paid_after_dead}</span>,
       compare: (a, b) => (a.periods_paid_after_dead - b.periods_paid_after_dead) || tie(a, b),
-    },
-    {
-      key: 'kc', label: 'KC',
-      render: r => <span style={tnum}>{r.knowledge_check_score === null ? '—' : pct(r.knowledge_check_score)}</span>,
-      nullsLast: true, isNull: r => r.knowledge_check_score == null,
-      compare: (a, b) => (num(a.knowledge_check_score) - num(b.knowledge_check_score)) || tie(a, b),
     },
   ]
 
@@ -279,13 +302,28 @@ export default function Reports() {
       title: 'Tier 1 — outcomes roster',
       body: (
         <>
-          <p style={{ margin: '0 0 0.75rem', fontSize: '0.82rem', color: colors.textSecondary }}>
-            <strong>The effort gap is the headline.</strong> It is each student against
-            themselves across the two conditions — sort on it to rank the class by who acted
-            on what they were shown. {labelCaption}
-            {botCount > 0 && <> Simulated students are excluded from this roster; a ◆ marks
-              humans in a cohort that contains them.</>}
-          </p>
+          <div style={{ margin: '0 0 0.75rem', fontSize: '0.82rem', color: colors.textSecondary }}>
+            <p style={{ margin: '0 0 0.5rem' }}>
+              <strong>Contested gap is the headline.</strong> It is each student against
+              themselves across the two conditions, counted only over periods where the bonus
+              was <em>still winnable and not yet won</em> — sort on it to rank the class by who
+              acted on what they were shown. {labelCaption}
+              {botCount > 0 && <> Simulated students are excluded from this roster; a ◆ marks
+                humans in a cohort that contains them.</>}
+            </p>
+            {/* ⚠ THE THREE COLUMNS THAT NEED A GLOSS. Without this the roster is a wall of
+                numbers whose definitions live only in the spec. */}
+            <p style={{ margin: 0 }}>
+              <strong>Raw gap</strong> is the same comparison over <em>all</em> periods — shown
+              beside the contested one because the difference between them is informative: a
+              large raw gap with a near-zero contested gap means the student was reacting to
+              contracts being <em>already lost</em>, not to reliability.{' '}
+              <strong>Wasted periods</strong> counts periods where they paid for high effort on
+              a contract that was <em>already mathematically impossible</em> — the bonus could
+              no longer be reached no matter what they did. The game never tells them that;
+              noticing it is part of what is being measured.
+            </p>
+          </div>
           <SortableTable
             rows={participants}
             columns={columns}
@@ -461,13 +499,13 @@ export default function Reports() {
             </tr>
             <tr>
               <td style={{ padding: '0.3rem 0.8rem 0.3rem 0' }}>Mean earnings / contract</td>
-              <td style={{ padding: '0.3rem 0.8rem', ...tnum }}>{money(summary.classEarningsHigh, cur)}</td>
-              <td style={{ padding: '0.3rem 0.8rem', ...tnum }}>{money(summary.classEarningsLow, cur)}</td>
+              <td style={{ padding: '0.3rem 0.8rem', ...tnum }}>{moneyUnit(summary.classEarningsHigh, cur)}</td>
+              <td style={{ padding: '0.3rem 0.8rem', ...tnum }}>{moneyUnit(summary.classEarningsLow, cur)}</td>
             </tr>
             <tr>
               <td style={{ padding: '0.3rem 0.8rem 0.3rem 0' }}>Best possible</td>
-              <td style={{ padding: '0.3rem 0.8rem', ...tnum }}>{money(summary.optimalEarningsHigh, cur)}</td>
-              <td style={{ padding: '0.3rem 0.8rem', ...tnum }}>{money(summary.optimalEarningsLow, cur)}</td>
+              <td style={{ padding: '0.3rem 0.8rem', ...tnum }}>{moneyUnit(summary.optimalEarningsHigh, cur)}</td>
+              <td style={{ padding: '0.3rem 0.8rem', ...tnum }}>{moneyUnit(summary.optimalEarningsLow, cur)}</td>
             </tr>
             <tr>
               <td colSpan={3} style={{ paddingTop: '0.8rem', color: colors.textSecondary, fontSize: '0.85rem' }}>
@@ -507,8 +545,21 @@ export default function Reports() {
   }))
   const open = sectionDefs.find(sec => sec.id === active)
 
+  // ⚠ THE WAY BACK. Reports had no nav at all, so an instructor who opened it was stranded
+  // — the only exit was the browser's back button. The query string is carried forward
+  // because `?token=`/`?_gid=` is how the instructor session identifies the instance across
+  // pages; a link that dropped it lands somewhere with no session and no way to recover one.
+  const navLinks = [
+    { label: '← Dashboard', href: `/dashboard${window.location.search}` },
+    { label: 'Settings →', href: `/settings${window.location.search}` },
+  ]
+
   return (
-    <InstructorChrome title="Supplier Scorecard — Reports">
+    <InstructorChrome
+      title="Supplier Scorecard — reports"
+      navLinks={navLinks}
+      onNavigate={navigate}
+    >
       {report.isDemoCohort && (
         <p data-testid="sc-demo-banner" style={{
           background: '#fff3cd', border: '1px solid #e0c877', borderRadius: 6,

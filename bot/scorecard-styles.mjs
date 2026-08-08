@@ -200,10 +200,38 @@ export const ARTIFACT_NAMES = Object.keys(ARTIFACT_STYLES)
  */
 export const STYLE_NAMES = Object.keys(STYLES).filter(n => !ARTIFACT_NAMES.includes(n))
 
-/** Round-robin assignment, so a cohort of N always contains every persona. */
+/**
+ * Round-robin assignment, so a cohort of N always contains every persona.
+ *
+ * ⚠⚠ KEEP IT ROUND-ROBIN. A SHUFFLE WAS TRIED AND IS STRICTLY WORSE (measured, 08-08).
+ *
+ * THE PROBLEM IT WAS MEANT TO SOLVE: style is `index % 7` and the condition ARM is
+ * `joinOrdinal % 2` (`assignStartsWith`). In a robot run those are the SAME index, so
+ * style and arm become CORRELATED — with 16 robots the high-starting arm got 2 grinders
+ * and 1 coaster while the low-starting arm got 1 grinder and 2 coasters.
+ *
+ * WHY THAT WRECKS TIER-3 CHART 1: under `alternating`, the "high reliability" series at
+ * round k is whichever half of the class is in the high condition at round k — which
+ * alternates between the two ARMS every round. Two arms with different persona mixes ⇒
+ * the series ZIGZAGS round to round. It looks like a dramatic order effect and is nothing
+ * of the kind. ⚠ A REAL CLASS CANNOT HAVE THIS: arm is join order, and how hard a student
+ * works is not keyed on their position in the queue.
+ *
+ * ⚠⚠ THE MEASURED FIX IS COHORT SIZE, NOT SHUFFLING. Style/arm imbalance, summed over
+ * personas:
+ *
+ *   n:            7    8   14   16   21   28
+ *   round-robin:  7    6    0    2    7    0
+ *   shuffled:     7    6    8    6   11   12     ← worse, and it destroys 14 and 28
+ *
+ * 7 styles and 2 arms means **every multiple of 14 is EXACTLY balanced** — each style
+ * lands once in each arm. Shuffling replaces a solvable structure with noise. So: keep
+ * round-robin, and use a multiple of 14 when chart 1 has to be read as a real order effect.
+ */
 export function styleFor(index) {
   return STYLE_NAMES[index % STYLE_NAMES.length]
 }
+
 
 /**
  * ⚠ EXPECTED RESPONSE DIRECTION per persona, asserted by the dry run.

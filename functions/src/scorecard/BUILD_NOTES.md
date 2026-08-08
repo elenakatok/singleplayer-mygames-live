@@ -716,3 +716,58 @@ stopped being a raw dump. The dump was masking a wrong type.
 the summary appends `⚠ N FAILED` and logs the failures when it is non-empty. A push that
 lost some students used to be indistinguishable from a clean one — and a silently ungraded
 student is the worst failure this button has.
+
+---
+
+## 24. ⚠⚠ Tier-3 chart 1 zigzagged — a ROBOT artifact, and the fix is cohort size
+
+Elena read a real cohort's "effort by contract round" and asked whether the sawtooth was
+real. It was not. **A real class cannot produce it.**
+
+**The mechanism.** Style is `index % 7` (`styleFor`) and the condition ARM is
+`joinOrdinal % 2` (`assignStartsWith`). In a robot run those are **the same index**, so
+style and arm are CORRELATED. With 16 robots the high-starting arm held 2 grinders and 1
+coaster; the low-starting arm held 1 grinder and 2 coasters.
+
+Under `alternating`, the "high reliability" series at round *k* is whichever half of the
+class is in the high condition at round *k* — and that **alternates between the two arms
+every round**. Two arms with different persona mixes ⇒ the series zigzags, at roughly
+±(100/n) per swapped grinder. It reads as a dramatic order effect and is nothing of the
+kind. ⚠ In a real class, arm is join order and how hard a student works is not keyed on
+their position in the queue.
+
+### ⚠ A shuffle was tried and is STRICTLY WORSE — measured, not assumed
+
+| n | 7 | 8 | 14 | 16 | 21 | 28 |
+|---|---|---|---|---|---|---|
+| round-robin | 7 | 6 | **0** | 2 | 7 | **0** |
+| shuffled | 7 | 6 | 8 | 6 | 11 | 12 |
+
+(Summed style/arm imbalance.) 7 styles against 2 arms means **every multiple of 14 is
+exactly balanced** — each style lands once in each arm. Shuffling replaces a solvable
+structure with noise and destroys 14 and 28 outright.
+
+**So: keep round-robin, and change the DEFAULT COHORT from 7 to 14.** Seven was the *worst*
+case — four styles in one arm, three in the other, every time. The driver now warns when
+`n % 14 ≠ 0` that chart 1 will zigzag for robot reasons.
+
+### 24a. Two cold-start problems the bigger cohort exposed
+
+Raising the default to 14 broke the run in a way that looked like a product bug: three,
+then seven, robots died on `waitForSelector` timeouts. **Both causes were cold start.**
+
+⚠ **A concurrency cap was tried FIRST and made it worse** (3 failures → 7). That ruled out
+"too many browsers" and pointed at a shared one-time cost instead:
+
+- **Vite compiles the app on the first request.** Fourteen pages hitting a cold dev server
+  all block on that one compile. The wrapper now does a throwaway load first, paying it once.
+- **Every robot's first touch takes a transaction on ONE join-counter document**
+  (`instance.ts`). Fourteen arriving together serialise through it. Starts are staggered by
+  150ms past the first batch, and the **first** wait — and only the first — gets a longer
+  timeout. ⚠ Raising every timeout would hide a real hang behind a longer one.
+
+The worker pool was kept regardless: it caps browsers in flight **without a barrier**, so a
+robot still never waits on another robot's progress, only on a free slot. Batching would
+have been a barrier and is what the single-player family forbids.
+
+**Result: 14/14 through the complete flow, with every style in both arms exactly once.**

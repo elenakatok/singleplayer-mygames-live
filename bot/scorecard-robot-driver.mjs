@@ -104,10 +104,12 @@ const args = parseArgs(process.argv.slice(2))
 const INSTANCE = args.instance
 // ⚠ --students, not --seats. `--seats` is accepted as an alias because the launcher spawns
 // every driver with the same flag name; only the MEANING differs per family.
-// ⚠ THE DEFAULT IS SEVEN, and it is deliberate: there are exactly seven styles and they
-// are assigned round-robin, so seven students covers every response profile exactly once.
-// Fewer, and the Tier-3 gap distribution loses either the mass at zero or the tail.
-const COUNT = Math.max(1, Math.min(16, Number(args.students ?? args.seats) || STYLE_NAMES.length))
+// ⚠⚠ THE DEFAULT IS FOURTEEN, NOT SEVEN (changed 08-08). Seven covers every persona once,
+// which is what the gap distribution needs — but it is the WORST case for chart 1: with 7
+// styles and 2 condition arms, seven students put four styles in one arm and three in the
+// other, and the "effort by contract round" series zigzags as a result. Fourteen gives every
+// style exactly one of each arm. See `styleFor` for the measured comparison.
+const COUNT = Math.max(1, Math.min(28, Number(args.students ?? args.seats) || STYLE_NAMES.length * 2))
 const PACE = String(args.pace || 'watch')
 const LAUNCHER = String(args.launcher || 'http://localhost:5180').replace(/\/$/, '')
 const [SCREEN_W, SCREEN_H] = String(args.screen || '1920x1080').split('x').map(Number)
@@ -116,6 +118,14 @@ const HEADLESS = args.headless === true || args.headless === 'true'
 const EMULATOR = args.emulator === true || args.emulator === 'true'
 const APP = String(args.app || 'http://localhost:5199').replace(/\/$/, '')
 const KEEP_OPEN = !EMULATOR && args['exit-when-done'] !== true && args['exit-when-done'] !== 'true'
+// ⚠⚠ HOW MANY BROWSERS RUN AT ONCE. Not a barrier — see the worker pool below.
+//
+// THE BUG THIS FIXES: the driver used to launch ALL robots at once. At the old default of 7
+// that was fine; at 14 (the balanced cohort size) three robots timed out waiting for a
+// selector, because fourteen full Chromium instances plus the emulator is more than the
+// machine sustains. Symptom is a 60s `waitForSelector` timeout on a page that WOULD have
+// loaded, so it reads as a product bug rather than as resource starvation.
+const CONCURRENCY = Math.max(1, Number(args.concurrency) || 6)
 
 if (!INSTANCE || INSTANCE === true) {
   console.error('ERROR: --instance <gameInstanceId> is required.')
@@ -400,8 +410,7 @@ async function playContracts(page, styleName, log) {
  * ⚠ `viewport: null` is required with it: a viewport override would re-clamp the page to
  * a fixed size and defeat `--window-size`.
  */
-async function runRobot(index, log) {
-  const styleName = styleFor(index)
+async function runRobot(index, styleName, log) {
   const { name, url } = await mintUrl(index)
   const cell = gridCell(index, COUNT)
   const browser = await chromium.launch({
@@ -415,8 +424,18 @@ async function runRobot(index, log) {
   await page.goto(url, { waitUntil: 'domcontentloaded' })
 
   // ── §9.1 — the PRE-PLAY knowledge check ────────────────────────────────
+  // ⚠⚠ A LONGER TIMEOUT ON THE **FIRST** WAIT ONLY, and the reason is not the game.
+  //
+  // Every robot's first screen is behind (a) the app's initial JS load and (b) the
+  // first-touch transaction that assigns `starts_with` from a single counter document
+  // (instance.ts). Both are cold-start costs paid once per robot, and under a cohort they
+  // land together. At 14 robots this wait — and ONLY this wait — was timing out at 60s,
+  // which reads as a product failure and is not one.
+  //
+  // ⚠ Every LATER wait keeps the ordinary timeout. Raising them all would hide a real
+  // hang behind a longer one.
   await page.waitForSelector(
-    '[data-testid="sc-kc-prompt"], [data-testid="sc-effort-high"]', { timeout: 60_000 })
+    '[data-testid="sc-kc-prompt"], [data-testid="sc-effort-high"]', { timeout: 180_000 })
   await doKnowledgeCheck(page, m => log(`[${name}] ${m}`))
 
   // ── The contract loop ──────────────────────────────────────────────────
@@ -486,8 +505,17 @@ const main = async () => {
   const opened = []
   // ⚠ NO BARRIER ANYWHERE. Each robot is an independent student; one that finishes early
   // must not wait, and one that fails must not take the cohort with it.
+  // ⚠ ROUND-ROBIN — measured strictly better than shuffling (scorecard-styles.mjs).
+  const styles = Array.from({ length: COUNT }, (_, i) => styleFor(i))
+  console.log(`  styles: ${styles.join(', ')}`)
+  if (COUNT % 14 !== 0) {
+    console.log(`  ⚠ ${COUNT} students — style and condition-arm are both keyed on the robot`)
+    console.log('    index, so they correlate and "effort by contract round" will ZIGZAG.')
+    console.log('    That is a ROBOT artifact, not a game finding. Use a multiple of 14')
+    console.log('    (14 or 28) for an exactly balanced cohort before reading that chart.')
+  }
   const settled = await Promise.allSettled(
-    Array.from({ length: COUNT }, (_, i) => runRobot(i, log)),
+    Array.from({ length: COUNT }, (_, i) => runRobot(i, styles[i], log)),
   )
   settled.forEach((r, i) => {
     if (r.status === 'fulfilled') { results.push(r.value); opened.push(r.value.browser) }
