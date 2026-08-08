@@ -40,10 +40,39 @@ export default function Dashboard() {
 
   useEffect(() => { if (session.kind === 'ready') { void load() } }, [session])
 
-  async function run(label: string, fn: () => Promise<unknown>) {
-    setBusy(label); setNote(null); setError(null)
-    try { const r = await fn() as Record<string, unknown>; setNote(`${label}: ${JSON.stringify(r)}`); await load() }
-    catch (e) { setError(instructorErrorMessage(e)) }
+  // ⚠ A GENERIC `JSON.stringify(r)` USED TO GO STRAIGHT TO THE SCREEN, and on a real
+  // class that meant dumping every participant id and name into the action bar — the
+  // Score & Record response carries a `names` map keyed by participant id. Unreadable,
+  // and it put internal ids on a screen that had no reason to show them.
+  //
+  // Each action now formats its OWN summary, matching forecast and the rest of the family.
+  const onSync = async () => {
+    setBusy('sync'); setNote(null); setError(null)
+    try {
+      const r = await scorecardSyncRoster()
+      setNote(`Roster synced — ${r.synced} students.`)
+      await load()
+    } catch (e) { setError(instructorErrorMessage(e)) }
+    finally { setBusy(null) }
+  }
+
+  const onScore = async () => {
+    setBusy('score'); setNote(null); setError(null)
+    try {
+      const r = await scorecardScoreAndRecord()
+      const push = r.push
+      setNote(
+        `Scored ${r.scored} students (${r.finishers} finished).`
+        + (push
+          ? ` Pushed ${push.succeeded}/${push.total} to the gradebook.`
+            // ⚠ A FAILED PUSH IS NAMED, not folded into the success count. A partial push
+            // that read as a success is how a student ends up ungraded silently.
+            + (push.failed?.length ? ` ⚠ ${push.failed.length} FAILED — see the console.` : '')
+          : ' No gradebook configured.'),
+      )
+      if (push?.failed?.length) console.error('[scorecard] gradebook push failures:', push.failed)
+      await load()
+    } catch (e) { setError(instructorErrorMessage(e)) }
     finally { setBusy(null) }
   }
 
@@ -134,8 +163,8 @@ export default function Dashboard() {
   const actions = (
     <>
       {button('Refresh', 'refresh', () => void load())}
-      {button('Sync roster', 'sync', () => void run('Sync roster', scorecardSyncRoster))}
-      {button('Score & Record', 'score', () => void run('Score & Record', scorecardScoreAndRecord))}
+      {button('Sync roster', 'sync', () => void onSync())}
+      {button('Score & Record', 'score', () => void onScore())}
       <span data-testid="sc-dash-counts"
         style={{ marginLeft: '0.5rem', fontSize: '0.85rem', color: colors.textSecondary }}>
         {finished} finished · {participants.length} enrolled

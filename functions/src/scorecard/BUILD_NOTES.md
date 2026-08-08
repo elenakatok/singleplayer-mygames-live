@@ -684,3 +684,35 @@ Splitting the tiles surfaced both:
 **Three of these now** (§20c, and both above): a `data-testid` is an identity, and two
 things that are not the same thing must not share one. When a component is reused, or a
 wrapper wraps something that already has an id, the ids must diverge.
+
+---
+
+## 23. ⚠ The dashboard dumped raw JSON after Score & Record (Elena, 08-08)
+
+The first real gradebook push succeeded — **17/17, zero failures** — but the action bar
+reported it as `JSON.stringify(the whole response)`, which put **every internal participant
+id and name** on screen:
+
+```
+Score & Record: {"ok":true,"scored":17,"finishers":16,"names":{"4CJq05V7cNwBuO2cYfl4":"Fiona Foster", … }}
+```
+
+A generic `run(label, fn)` helper was formatting every action's result the same way. That
+is fine for `{ok, synced}` and wrong for a response that carries a `names` map — and there
+was no reason for internal ids to reach a screen at all.
+
+Each action now formats its own summary, matching forecast and the rest of the family:
+
+- `Roster synced — 17 students.`
+- `Scored 17 students (16 finished). Pushed 17/17 to the gradebook.`
+
+Two things fixed alongside it, both of which the JSON dump had been HIDING:
+
+⚠ **`syncRoster` returns `synced`, not `created`** — the API type said `created`, so the
+sync summary would have rendered *"Roster synced — undefined students."* the moment it
+stopped being a raw dump. The dump was masking a wrong type.
+
+⚠ **A partial gradebook push is now NAMED, not rounded up.** `push.failed` is an array, and
+the summary appends `⚠ N FAILED` and logs the failures when it is non-empty. A push that
+lost some students used to be indistinguishable from a clean one — and a silently ungraded
+student is the worst failure this button has.

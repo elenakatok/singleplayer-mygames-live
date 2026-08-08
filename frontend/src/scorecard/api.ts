@@ -390,11 +390,32 @@ export function scorecardGetConfig() {
 export function scorecardUpdateConfig(patch: Record<string, unknown>) {
   return callFn<ScorecardConfigResponse>('scorecardUpdateConfig', patch)
 }
-export function scorecardScoreAndRecord() {
-  return callFn<{ ok: true; scored: number; finishers: number; push: unknown }>('scorecardScoreAndRecord')
+/** ⚠ `push.failed` is an ARRAY of failures, not a count — a partial push must be
+ *  reportable as a partial push, not rounded up to a success. */
+export interface ScorecardPushSummary {
+  total: number
+  succeeded: number
+  failed: unknown[]
 }
+
+export function scorecardScoreAndRecord() {
+  return callFn<{
+    ok: true
+    scored: number
+    finishers: number
+    /** Null when no gradebook callback URL is configured. */
+    push: ScorecardPushSummary | null
+    /** ⚠ participant_id → name. INSTRUCTOR-ONLY, and deliberately NOT rendered: an
+     *  earlier dashboard `JSON.stringify`d the whole response and put every internal
+     *  participant id on screen. */
+    names: Record<string, string | null>
+  }>('scorecardScoreAndRecord')
+}
+
+// ⚠ `synced`, not `created` — the callable returns `{ ok, synced }` (syncRoster.ts).
+// The type said `created`, so the dashboard rendered "Roster synced — undefined students."
 export function scorecardSyncRoster() {
-  return callFn<{ ok: true; created: number }>('scorecardSyncRoster')
+  return callFn<{ ok: true; synced: number }>('scorecardSyncRoster')
 }
 
 /** Instructor session exchange — the argument `useInstructorSession` takes. */
