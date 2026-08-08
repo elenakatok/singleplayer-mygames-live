@@ -6,8 +6,8 @@ import {
 } from './config'
 import { loadInstance } from './instance'
 import {
-  scorecardKcQuestions, questionsForStage, toClientKcQuestions, kcDenominator,
-  noticingQuestion, linkingQuestion,
+  scorecardKcQuestions, questionsForStage, toClientKcQuestions, addedToClientKcQuestions,
+  kcDenominator, noticingQuestion, linkingQuestion,
 } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -49,25 +49,48 @@ export const scorecardGetQuestions = onCall({ cors: SCORECARD_CORS_ORIGINS }, as
   const pData = snap.data() ?? {}
 
   const all = scorecardKcQuestions(config, truth)
-  const pre = questionsForStage(all, 'pre')
-  const post = questionsForStage(all, 'post')
   const answered = (pData.kc_answers ?? {}) as Record<string, { answer?: unknown }>
   const freeText = (pData.free_text_answers ?? {}) as Record<string, unknown>
+
+  // ⚠⚠ `kcEnabled: false` EMPTIES BOTH STAGES RATHER THAN ADDING A CLIENT BRANCH.
+  //
+  // The flow in Play.tsx already advances past an empty stage at every point it can reach
+  // one — resume skips `kc-pre` when `pre` has no unanswered question, and the reveal goes
+  // straight to `linking` when `post` is empty. Returning two empty arrays therefore skips
+  // the KC everywhere, INCLUDING a resume mid-flow, with no client change at all.
+  //
+  // ⚠ That matters more here than in the other four games: §10's ordering
+  // (noticing → REVEAL → linking) is enforced by MECHANISM on the server — `linking` is
+  // refused until `noticing` is stored, and the reveal is returned only by the noticing
+  // submit. A `kcEnabled` branch in the client would be a second place that decides
+  // sequence, and the two could disagree. There is no such branch.
+  const pre = config.kcEnabled ? questionsForStage(all, 'pre') : []
+  const post = config.kcEnabled ? questionsForStage(all, 'post') : []
+  const added = config.kcEnabled ? config.addedKcQuestions : []
 
   const noticing = noticingQuestion(config)
   const linking = linkingQuestion(config)
 
+  // ⚠ APPENDED, so instructor questions come after the built-in four of §9.2 — "asked
+  // after the built-in ten", the same placement pd and pricing give theirs.
+  const postClient = [
+    ...toClientKcQuestions(post, participantId),
+    ...addedToClientKcQuestions(added, participantId),
+  ]
+
   return {
     ok: true as const,
     kc: {
-      /** Asked BEFORE the contracts begin. */
+      /** Whether this instance has a knowledge check at all. */
+      enabled: config.kcEnabled,
+      /** Asked BEFORE the contracts begin. ⚠ Built-in only — §9.1 keeps this set closed. */
       pre: toClientKcQuestions(pre, participantId),
       /** ⚠ Asked only AFTER the §10 reveal. Never rendered before it. */
-      post: toClientKcQuestions(post, participantId),
-      /** ⚠ DYNAMIC denominator over BOTH stages — never a hardcoded count. */
-      total: kcDenominator(all),
+      post: postClient,
+      /** ⚠ DYNAMIC denominator over BOTH stages AND the graded additions. */
+      total: kcDenominator(config.kcEnabled ? all : [], added),
       preTotal: pre.length,
-      postTotal: post.length,
+      postTotal: postClient.length,
       answeredIds: Object.keys(answered),
       score: typeof pData.knowledge_check_score === 'number' ? pData.knowledge_check_score : null,
       complete: pData.knowledge_check_completed_at != null,

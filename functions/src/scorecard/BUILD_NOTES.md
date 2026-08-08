@@ -859,3 +859,152 @@ order. The authored sets were shuffled; these never went through that path. An i
 typing a question into Settings has no reason to think about where they put the right
 answer — and most people type it first, which is how the derived sets got this way in the
 first place. All four now shuffle added options too.
+
+---
+
+## 26. ⚠⚠ DEPARTURE — §3 lists the KC set and the debrief prompt as SETTINGS; they shipped fixed
+
+**Reported as a departure only now, at Elena's prompt, having been invisible since CP2.**
+That is itself the failure: the standing rule on this project is that a departure from the
+FINAL spec goes under its own heading, as a departure, with the reason — and this one passed
+four checkpoints without being written down anywhere.
+
+**What §3 says.** The Labels paragraph ends: *"…**`seed`** (blank = random…). KC set (§9),
+debrief prompt (§10)."* Both are listed as instance settings.
+
+**What shipped.** The built-in ten and both §10 prompts are FIXED CONTENT, compiled into the
+function. An instructor could not add, edit, reorder, disable or reword any of them.
+
+**Why it happened, as far as the record shows.** §9 and §10 were rewritten at CP3, and the
+rewrite is where the ten questions and the three ordered steps got their final form. The
+work went into *what the questions should be* — §9.1's constraint that nothing pre-play may
+state a target can become unreachable, §10's ordering enforced by mechanism. The one-clause
+mention in §3's Labels paragraph, three sections earlier, was never reconciled against it.
+A settings-shaped requirement written outside the settings tables is easy to miss; that is
+an explanation, not a defence, and the fix is that departures get checked against the whole
+spec rather than the section being worked on.
+
+**Where it stands now.** Instructor-added questions and a `kcEnabled` switch exist (§27).
+⚠ The built-in ten and both §10 prompts REMAIN FIXED CONTENT — the editable surface is
+additions only, and Elena is amending §3 to match rather than the build growing to meet it.
+Both prompts still interpolate config (`contractNoun`, `buyerName`, `scorecardNoun`), so
+label edits change their wording; that is not the same as being editable.
+
+---
+
+## 27. KC parity with the rest of the family — and what the four reference games disagree about
+
+`addedKcQuestions` + `kcEnabled`, ported from pd, pricing, forecast and newsvendor.
+
+### ⚠ The four are NOT uniform. pd and pricing are canonical.
+
+| | data model + parser | updateConfig | serve + grade | **Settings editor** |
+|---|---|---|---|---|
+| **pd** | ✅ | ✅ | ✅ | ✅ |
+| **pricing** | ✅ | ✅ | ✅ | ✅ |
+| newsvendor | ✅ | ✅ | ✅ | ❌ — has the `kcEnabled` toggle, no editor |
+| forecast | ✅ | ✅ | ✅ | ❌ — no toggle either, and its client type is `unknown[]` |
+
+The **server halves are identical across all four** — `parseAddedKcQuestion` is the same
+function four times over, down to the comment about Firestore rejecting `undefined`. The
+divergence is entirely in the UI: **forecast and newsvendor accept and serve added questions
+that no instructor can create.** They have the same shape of gap scorecard's `productName`
+has — a capability with no surface — and neither was touched here.
+
+pd and pricing were therefore taken as canonical, and where they differ from each other only
+in comment density, pd's fuller comments were followed.
+
+### Two things scorecard could not copy
+
+1. **The id-collision rule.** All four reject an added id starting with `kc_`, because their
+   built-in questions own that namespace. ⚠ Scorecard's built-in ids are NOT prefixed —
+   `q1_negotiated_ppm`, `q5_earnings_arithmetic` — so a prefix rule would protect nothing.
+   `instructorConfig` checks against the built-in id SET instead. It needs no Firestore read:
+   a built-in id is a literal, and only its prompt and options interpolate config.
+2. **The stage.** The other four have no stages. ⚠⚠ Scorecard's additions are ALWAYS
+   post-play, because §9.1 forbids the pre set from stating a target can become unreachable
+   — that inference is the behaviour under measurement — and an instructor writing a question
+   has no way to know that constraint. Making the stage a choice would make it violable.
+
+### `kcEnabled: false` needed no client branch, and that is deliberate
+
+The gate empties BOTH stages server-side. `Play.tsx` already advances past an empty stage
+everywhere it can reach one — resume skips `kc-pre` when nothing is unanswered, and the
+reveal goes straight to `linking` when `post` is empty — so the KC disappears everywhere
+including a resume mid-flow, with no client change at all.
+
+⚠⚠ That matters more here than in the other four: §10's ordering is enforced by MECHANISM on
+the server (`linking` is refused until `noticing` is stored; the reveal is returned only by
+the noticing submit). A `kcEnabled` branch in the client would be a second place that decides
+sequence, and the two could disagree. The harness asserts §10 still works with the KC off.
+
+The SUBMIT path is gated separately. A stale client, or a hand-made call, must not be able to
+write an answer to a check the instance does not have.
+
+### ⚠ Added questions go through the same shuffle, and the test is calibrated
+
+`cef36fe` fixed instructor-added questions being served in typed order across all four games.
+Scorecard's path was written after that fix and must not reintroduce it, so
+`addedToClientKcQuestions` runs the same `shuffleFor`. Three mutants were run against the
+tests to confirm they are not decorative:
+
+| mutant | caught by |
+|---|---|
+| seed drops the question id → all of a student's questions share one permutation | the INDEPENDENCE test, and only that one |
+| permutation degraded to a two-slot swap | both "reaches every position" tests |
+| the added path not shuffled at all (the exact `cef36fe` regression) | 4 tests |
+
+"Not always first" alone would have passed the two-slot mutant while three-quarters of the
+information still leaked. The every-position assertion is what actually pins it down; at 200
+students over 4 options a spurious failure has probability ≈10⁻²⁴, so it cannot flake.
+
+### ⚠ Unknown fields are STILL silently dropped — in all five games
+
+`scorecardUpdateConfig` builds its patch from a NAMED list and never inspects the incoming key
+set, so an unsupported or misspelt field is discarded without a word. That is how a
+question-shaped payload failed quietly before this change. **Every one of the four reference
+games does exactly the same** — none of them validates the key set — so it was left alone
+rather than making scorecard the only game that rejects. It is a platform-wide gap, recorded
+here rather than fixed in one place.
+
+---
+
+## 28. ⚠ `productName` is accepted, plumbed, and rendered by nothing
+
+The five label settings missing from the Settings page were traced individually before any
+control was added, because a settings input that changes nothing looks like it works.
+
+| setting | rendered by | added? |
+|---|---|---|
+| `contractNoun` | EffortScreen, SessionSummary, DebriefScreen + 6 KC prompts | ✅ |
+| `periodNoun` | EffortScreen, SessionSummary, DebriefScreen + KC prompts/options | ✅ |
+| `deliveryNoun` | EffortScreen (4 places, incl. a table heading) | ✅ |
+| `scorecardNoun` | EffortScreen, DebriefScreen + KC prompts, §10 follow-ups | ✅ |
+| **`productName`** | **nothing** | ❌ **NOT ADDED** |
+
+`productName` is accepted by `scorecardUpdateConfig`, stored, carried through
+`clientState.ts` into the student params payload, typed in `api.ts`, and asserted present by
+the harness's leak audit — and **no scorecard screen prints it**. It is live in *forecast*
+(EndScreen), which is where the field came from when the game was spawned.
+
+⚠ No control was shipped for it. An input that changes nothing visible is worse than no
+input, because it looks like it works and the instructor discovers otherwise in front of a
+class. Add the control when a screen uses the value — not before.
+
+---
+
+## 29. Known divergence: scorecard's KC is a BESPOKE callable
+
+`scorecardGetQuestions` / `scorecardSubmitKcAnswer` are game-local and sit off the shared
+`makeGetStudentPrepQuestions` path that the 13 negotiation games use, and off the
+`PrepTextQuestion` model that pd, pricing, forecast and newsvendor build on.
+
+The reason is the SPLIT: §9's pre/post staging and §10's mechanism-enforced ordering have no
+representation in the shared model, which serves one flat role-filtered list. Moving
+scorecard onto it would mean teaching the shared model about stages — a shared-package change
+affecting 17 games to serve one.
+
+⚠ Recorded as a KNOWN DIVERGENCE, not a defect, and deliberately not changed (Elena, 08-08:
+"that's a bigger change than this warrants"). The cost is that every KC fix has to be applied
+here separately — which is exactly what happened with `cef36fe`, and why §27's shuffle tests
+exist as scorecard-local copies rather than inherited coverage.

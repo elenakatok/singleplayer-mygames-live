@@ -174,6 +174,94 @@ export interface ScorecardConfig extends ScorecardRules {
   scorecardNoun: string
   buyerName: string
   productName: string
+  /**
+   * ⚠ OFF SKIPS THE KC ENTIRELY — both stages, and every gate that reads them.
+   * The §10 ordering (noticing → reveal → linking) is enforced by MECHANISM on the
+   * server and does not involve the KC at all, so switching this off removes questions
+   * without touching the sequence that carries the measurement.
+   */
+  kcEnabled: boolean
+  /** Instructor-written questions, asked AFTER the built-in ten. See the note on
+   *  ScorecardAddedKcQuestion for why they are post-stage and not pre. */
+  addedKcQuestions: ScorecardAddedKcQuestion[]
+}
+
+/**
+ * An instructor-written knowledge-check question. ⚠ SHAPE COPIED VERBATIM from
+ * `PdAddedKcQuestion` / `PricingAddedKcQuestion` — the four single-player games that
+ * already have this agree exactly, and a scorecard-shaped variant would be a fifth
+ * dialect of a settled model for no reason.
+ *
+ * ⚠⚠ ADDED QUESTIONS ARE ALWAYS POST-STAGE, and that is a scorecard-specific decision
+ * the other four did not have to make because they have no stages. Spec §9.1 forbids the
+ * PRE set from stating that a target can become unreachable — that inference IS the
+ * behaviour under measurement, and handing it over before play destroys it. An instructor
+ * writing a pre-play question cannot be expected to know that, so the pre set stays closed
+ * and additions land after the built-in ten, where §9.2's questions already live.
+ */
+export interface ScorecardAddedKcQuestion {
+  /** Stable id, also the answers-map key. Minted with an `akc_` prefix, so it can never
+   *  collide with a built-in question's id. */
+  id: string
+  type: 'mc' | 'text'
+  prompt: string
+  /** mc only: the offered choices, in order. ⚠ Order as TYPED — the serve path shuffles. */
+  options?: { value: string; label: string }[]
+  /** mc only: the correct option value. Absent ⇒ recorded but UNGRADED. */
+  correct_value?: string
+  /** Shown after answering, like the built-in ten. */
+  explanation?: string
+}
+
+/**
+ * Parse one stored/incoming added question, or null if unusable.
+ *
+ * ⚠ PORTED FROM pd/pricing UNCHANGED except for the id-collision rule, which differs
+ * because scorecard's built-in ids are not prefixed: pd rejects `kc_*`, and scorecard has
+ * to reject any id that a built-in question actually uses. That check lives in
+ * instructorConfig, which is the only place the built-in set is available.
+ */
+export function parseAddedKcQuestion(raw: unknown): ScorecardAddedKcQuestion | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const q = raw as Record<string, unknown>
+  const id = typeof q.id === 'string' ? q.id.trim() : ''
+  const prompt = typeof q.prompt === 'string' ? q.prompt.trim() : ''
+  if (!id || !prompt) return null
+
+  // ⚠ OPTIONAL FIELDS ARE OMITTED, NEVER SET TO undefined. These objects are written
+  // straight into Firestore, which REJECTS an undefined value outright — so an
+  // explanation-less question would fail the whole save rather than store cleanly.
+  const explanation = typeof q.explanation === 'string' && q.explanation.trim()
+    ? q.explanation.trim() : null
+
+  const type: 'mc' | 'text' = q.type === 'mc' ? 'mc' : 'text'
+  if (type === 'text') {
+    // Free text cannot be auto-graded, so it is recorded and left UNGRADED — it never
+    // enters the KC score's numerator or denominator.
+    return { id, type, prompt, ...(explanation ? { explanation } : {}) }
+  }
+
+  const optionsRaw = Array.isArray(q.options) ? q.options : []
+  const options: { value: string; label: string }[] = []
+  for (const o of optionsRaw) {
+    if (typeof o !== 'object' || o === null) continue
+    const oo = o as Record<string, unknown>
+    const value = typeof oo.value === 'string' ? oo.value : ''
+    const label = typeof oo.label === 'string' ? oo.label : ''
+    if (value && label) options.push({ value, label })
+  }
+  if (options.length < 2) return null   // an mc question needs something to choose between
+
+  const key = typeof q.correct_value === 'string' ? q.correct_value : ''
+  // A key that names no offered option is dropped rather than kept: it would mark every
+  // student wrong, silently.
+  const hasKey = options.some(o => o.value === key)
+
+  return {
+    id, type, prompt, options,
+    ...(hasKey ? { correct_value: key } : {}),
+    ...(explanation ? { explanation } : {}),
+  }
 }
 
 /**
@@ -214,6 +302,8 @@ export const DEFAULT_CONFIG: ScorecardConfig = {
   scorecardNoun: DEFAULT_SCORECARD_NOUN,
   buyerName: DEFAULT_BUYER_NAME,
   productName: DEFAULT_PRODUCT_NAME,
+  kcEnabled: true,
+  addedKcQuestions: [],
 }
 
 export const DEFAULT_TRUTH: ScorecardTruth = {
@@ -300,6 +390,13 @@ export function loadScorecardConfig(raw: unknown): ScorecardConfig {
     scorecardNoun: str(d.scorecard_noun, DEFAULT_SCORECARD_NOUN),
     buyerName: str(d.buyer_name, DEFAULT_BUYER_NAME),
     productName: str(d.product_name, DEFAULT_PRODUCT_NAME),
+    // ⚠ `!== false`, not `=== true`. Every instance created before this field existed has
+    // no `kc_enabled` at all, and those instances have a KC — defaulting the absent case
+    // to OFF would silently strip the knowledge check from every live game.
+    kcEnabled: d.kc_enabled !== false,
+    addedKcQuestions: (Array.isArray(d.added_kc_questions) ? d.added_kc_questions : [])
+      .map(parseAddedKcQuestion)
+      .filter((q): q is ScorecardAddedKcQuestion => q !== null),
   }
 }
 

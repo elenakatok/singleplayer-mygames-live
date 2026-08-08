@@ -5,8 +5,10 @@ import {
   SCORECARD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION,
   CONFIG_DOC, TRUTH_DOC,
   HARD_MIN_CONTRACTS, HARD_MAX_CONTRACTS, HARD_MIN_PERIODS, HARD_MAX_PERIODS,
-  loadScorecardConfig, loadScorecardTruth,
+  loadScorecardConfig, loadScorecardTruth, parseAddedKcQuestion,
+  DEFAULT_CONFIG, DEFAULT_TRUTH, type ScorecardAddedKcQuestion,
 } from './config'
+import { scorecardKcQuestions } from './questions'
 import { inducedBehaviour } from './validate'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -140,6 +142,61 @@ export const scorecardUpdateConfig = onCall({ cors: SCORECARD_CORS_ORIGINS }, as
   setC('scorecard_noun', opt(data.scorecardNoun, text('scorecardNoun', 40)))
   setC('buyer_name', opt(data.buyerName, text('buyerName', 80)))
   setC('product_name', opt(data.productName, text('productName', 80)))
+
+  // ── The knowledge check (spec §9) ─────────────────────────────────────────
+  //
+  // ⚠ UNKNOWN FIELDS ARE STILL SILENTLY IGNORED, here and in all four reference games.
+  // Every one of them builds its patch from a NAMED list and never inspects the incoming
+  // key set, so a misspelt or unsupported field is dropped without a word. That is how a
+  // question-shaped payload failed quietly before this change, and it is unchanged now
+  // because changing it in scorecard alone would make scorecard the odd one out. Recorded
+  // in BUILD_NOTES as a platform-wide gap rather than fixed in one game.
+  if (data.kcEnabled !== undefined) {
+    if (typeof data.kcEnabled !== 'boolean') {
+      throw new HttpsError('invalid-argument', 'kcEnabled must be true or false.')
+    }
+    configPatch.kc_enabled = data.kcEnabled
+  }
+
+  if (data.addedKcQuestions !== undefined) {
+    if (!Array.isArray(data.addedKcQuestions)) {
+      throw new HttpsError('invalid-argument', 'addedKcQuestions must be an array.')
+    }
+    // ⚠⚠ THE COLLISION CHECK IS SCORECARD-SPECIFIC AND HAS TO BE. pd, pricing, forecast
+    // and newsvendor reject any added id starting with `kc_`, because their built-in
+    // questions own that namespace. Scorecard's built-in ids are NOT prefixed — they are
+    // `q1_negotiated_ppm`, `q5_earnings_arithmetic` and so on — so a prefix rule would
+    // protect nothing. The set itself is the authority, and it is available here.
+    //
+    // ⚠ Resolved against the DEFAULTS, deliberately, and it needs no Firestore read: a
+    // built-in question's ID is a literal ('q1_negotiated_ppm'), while only its prompt and
+    // options interpolate config. The id set is therefore the same for every instance.
+    const builtIn = new Set(
+      scorecardKcQuestions(DEFAULT_CONFIG, DEFAULT_TRUTH).map(q => q.id),
+    )
+
+    const parsed: ScorecardAddedKcQuestion[] = []
+    const seen = new Set<string>()
+    for (const raw of data.addedKcQuestions) {
+      const q = parseAddedKcQuestion(raw)
+      if (!q) {
+        throw new HttpsError('invalid-argument',
+          'An added question is incomplete — every question needs a prompt, and a multiple-choice question needs at least two options and a correct answer among them.')
+      }
+      if (builtIn.has(q.id)) {
+        // The grader looks built-in questions up FIRST, so a collision would silently
+        // shadow the instructor's key and mark students against the built-in answer.
+        throw new HttpsError('invalid-argument',
+          `'${q.id}' is the id of a built-in question and cannot be reused.`)
+      }
+      if (seen.has(q.id)) {
+        throw new HttpsError('invalid-argument', `Duplicate question id '${q.id}'.`)
+      }
+      seen.add(q.id)
+      parsed.push(q)
+    }
+    configPatch.added_kc_questions = parsed
+  }
 
   // ── truth/main — RULES-DENIED ─────────────────────────────────────────────
   const truthPatch: Record<string, unknown> = {}

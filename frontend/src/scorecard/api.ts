@@ -136,8 +136,12 @@ export interface ScorecardQuestions {
      * so a client cannot concatenate them by accident.
      */
     pre: ScorecardKcQuestion[]
+    /** ⚠ Built-in §9.2 questions FOLLOWED BY any instructor additions. §9.1 keeps `pre`
+     *  closed, so additions are always post-stage. */
     post: ScorecardKcQuestion[]
-    /** ⚠ DYNAMIC, over BOTH stages. */
+    /** False ⇒ this instance has no knowledge check; `pre` and `post` are both empty. */
+    enabled: boolean
+    /** ⚠ DYNAMIC, over BOTH stages and the graded additions. */
     total: number
     preTotal: number
     postTotal: number
@@ -365,9 +369,34 @@ export interface ScorecardReport {
   }
 }
 
+/** An instructor-written knowledge-check question. ⚠ Shape shared verbatim with pd and
+ *  pricing — see `ScorecardAddedKcQuestion` on the server for why it is not a variant. */
+export interface ScorecardAddedKcQuestion {
+  id: string
+  type: 'mc' | 'text'
+  prompt: string
+  options?: { value: string; label: string }[]
+  /** mc only. Absent ⇒ recorded but UNGRADED — in neither numerator nor denominator. */
+  correct_value?: string
+  explanation?: string
+}
+
+/**
+ * What the INSTRUCTOR sees — the student parameter block plus the two knowledge-check
+ * settings.
+ *
+ * ⚠ `kcEnabled` and `addedKcQuestions` are deliberately NOT on `ScorecardParams`. That type
+ * is the student payload (`clientState.ts`), and an added question carries `correct_value`
+ * — putting it there would ship the answer key to every student on every screen.
+ */
+export interface ScorecardInstructorConfig extends ScorecardParams {
+  kcEnabled: boolean
+  addedKcQuestions: ScorecardAddedKcQuestion[]
+}
+
 export interface ScorecardConfigResponse {
   ok: true
-  config: ScorecardParams
+  config: ScorecardInstructorConfig
   truth: {
     reliabilityHigh: number
     reliabilityLow: number

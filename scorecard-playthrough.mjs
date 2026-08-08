@@ -161,6 +161,8 @@ async function openInstance(gid, opts = {}) {
     show_running_balance: boolVal(true),
     show_reliability_label: boolVal(opts.showLabel ?? true),
     currency: strVal('ECU'),
+    ...(opts.kcEnabled === false ? { kc_enabled: boolVal(false) } : {}),
+    ...(opts.addedKc ? { added_kc_questions: opts.addedKc } : {}),
   })
   // ⚠ THE TREATMENT GOES IN truth/, NEVER config/ (spec §8). If it ever has to move,
   // the leak audit in §7 is what should stop it.
@@ -898,6 +900,102 @@ const run = async () => {
       `${name}: a 2-ECU shift would still sit inside the band`)
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  section('§10c ⚠ KC parity — added questions and the kcEnabled gate')
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ⚠⚠ THROUGH THE REAL CALLABLES. The unit tests prove the permutation and the
+  // denominator; this proves scorecardGetQuestions actually serves added questions,
+  // scorecardSubmitKcAnswer actually grades them, and kcEnabled: false actually removes
+  // the check at BOTH gates.
+
+  const ADDED = {
+    arrayValue: {
+      values: [
+        { mapValue: { fields: {
+          id: strVal('akc_graded'), type: strVal('mc'),
+          prompt: strVal('An instructor question with the answer typed first?'),
+          correct_value: strVal('o0'),
+          options: { arrayValue: { values: [
+            { mapValue: { fields: { value: strVal('o0'), label: strVal('The right one') } } },
+            { mapValue: { fields: { value: strVal('o1'), label: strVal('Wrong A') } } },
+            { mapValue: { fields: { value: strVal('o2'), label: strVal('Wrong B') } } },
+            { mapValue: { fields: { value: strVal('o3'), label: strVal('Wrong C') } } },
+          ] } },
+        } } },
+        { mapValue: { fields: {
+          id: strVal('akc_text'), type: strVal('text'),
+          prompt: strVal('Say something in your own words.'),
+        } } },
+      ],
+    },
+  }
+
+  const gidAdd = `sc-added-${Date.now()}`
+  await openInstance(gidAdd, { seed: 'added-fixed', addedKc: ADDED })
+  const addQ = await callFn('scorecardGetQuestions', asStudent(gidAdd, 'stu-add'))
+  check(addQ.ok, 'scorecardGetQuestions responds on an instance with added questions')
+  const postIds = addQ.result.kc.post.map(x => x.id)
+  check(postIds.includes('akc_graded') && postIds.includes('akc_text'),
+    'both added questions are served')
+  check(!addQ.result.kc.pre.some(x => x.id.startsWith('akc_')),
+    '⚠⚠ …and NEITHER is in the PRE set — §9.1 keeps that set closed')
+  check(postIds.slice(-2).join() === 'akc_graded,akc_text',
+    '⚠ added questions come AFTER the built-in four of §9.2, in instructor order')
+  check(addQ.result.kc.total === 11,
+    `⚠ the denominator counts the GRADED addition only (got ${addQ.result.kc.total}, want 11)`)
+  const txt = addQ.result.kc.post.find(x => x.id === 'akc_text')
+  check(txt.options.length === 0,
+    '⚠ the free-text addition ships with no options — the client renders a box on that')
+
+  // ⚠ THE SHUFFLE, ACROSS REAL PARTICIPANTS. The composer types the answer first; over a
+  // cohort it must not stay there. Distinct students, one call each.
+  const firstOptionPer = []
+  for (let i = 0; i < 12; i++) {
+    const r = await callFn('scorecardGetQuestions', asStudent(gidAdd, `stu-shuf-${i}`))
+    firstOptionPer.push(r.result.kc.post.find(x => x.id === 'akc_graded').options[0].id)
+  }
+  check(new Set(firstOptionPer).size > 1,
+    '⚠⚠ the added question\'s options are shuffled per student — the typed-first answer moves')
+  check(firstOptionPer.filter(x => x === 'o0').length < firstOptionPer.length,
+    '⚠ …and the key is NOT first for every student (the cef36fe regression)')
+
+  // Grading: the graded addition marks, the free-text one records.
+  const gradeRight = await callFn('scorecardSubmitKcAnswer',
+    asStudent(gidAdd, 'stu-add', { questionId: 'akc_graded', answer: 'o0' }))
+  check(gradeRight.ok && gradeRight.result.correct === true,
+    'a correct answer to an added question is marked correct')
+  const gradeText = await callFn('scorecardSubmitKcAnswer',
+    asStudent(gidAdd, 'stu-add', { questionId: 'akc_text', answer: 'my answer' }))
+  check(gradeText.ok && gradeText.result.correct === false,
+    '⚠ a free-text addition is RECORDED, never marked right')
+  const blank = await callFn('scorecardSubmitKcAnswer',
+    asStudent(gidAdd, 'stu-add', { questionId: 'akc_text', answer: '   ' }))
+  check(!blank.ok, '⚠ …and a blank free-text answer is refused, not stored as answered')
+
+  // ── kcEnabled: false ──────────────────────────────────────────────────────
+  const gidOff = `sc-kcoff-${Date.now()}`
+  await openInstance(gidOff, { seed: 'off-fixed', kcEnabled: false })
+  const offQ = await callFn('scorecardGetQuestions', asStudent(gidOff, 'stu-off'))
+  check(offQ.ok, 'scorecardGetQuestions responds with the KC switched off')
+  check(offQ.result.kc.enabled === false, 'it reports the check as disabled')
+  check(offQ.result.kc.pre.length === 0 && offQ.result.kc.post.length === 0,
+    '⚠⚠ BOTH stages are empty — which is what makes the client skip them with no branch')
+  check(offQ.result.kc.total === 0, 'the denominator is 0, not 10')
+  const offSubmit = await callFn('scorecardSubmitKcAnswer',
+    asStudent(gidOff, 'stu-off', { questionId: 'q1_negotiated_ppm', answer: 'a' }))
+  check(!offSubmit.ok,
+    '⚠⚠ …and the SUBMIT gate refuses too — a stale client cannot write to a check that is off')
+
+  // ⚠⚠ §10's THREE ORDERED STEPS SURVIVE THE KC BEING OFF. They are a different mechanism
+  // and must not be collateral damage: noticing is still gated on the finish stamp, and
+  // linking is still refused until noticing is stored.
+  check(offQ.result.freeText.noticing.prompt.length > 0 && offQ.result.freeText.linking.prompt.length > 0,
+    '⚠ both §10 prompts are still served with the KC off')
+  const offEarlyLink = await callFn('scorecardSubmitDebrief',
+    asStudent(gidOff, 'stu-off', { step: 'linking', answer: 'skipping ahead' }))
+  check(!offEarlyLink.ok,
+    '⚠⚠ …and linking is STILL refused before noticing — §10 ordering is untouched by the KC gate')
+
   section('§11  Per-section check counts (T7)')
   // ─────────────────────────────────────────────────────────────────────────────
   // ⚠ A nondeterministic TOTAL means sections silently did not run. Pinning per-section
@@ -914,6 +1012,7 @@ const run = async () => {
     '§9  The classroom-shaped case: blank seed, NO truth/main (T4)': 9,
     '§10  The split KC (§9) and the three ordered steps (§10)': 47,
     '§10b ⚠ Solver vs the slide-6 fixtures, and Monte Carlo vs analytic (spec §13)': 17,
+    '§10c ⚠ KC parity — added questions and the kcEnabled gate': 18,
   }
   for (const [name, want] of Object.entries(EXPECTED_COUNTS)) {
     const got = perSection[name] ?? 0

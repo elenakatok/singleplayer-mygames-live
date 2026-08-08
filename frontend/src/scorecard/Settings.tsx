@@ -5,7 +5,7 @@ import { useInstructorSession } from '../shared/useInstructorSession'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import {
   scorecardGetConfig, scorecardUpdateConfig, scorecardInstructorSession, instructorErrorMessage,
-  type ScorecardConfigResponse, type ScorecardConditionPanel,
+  type ScorecardConfigResponse, type ScorecardConditionPanel, type ScorecardAddedKcQuestion,
 } from './api'
 import { PolicyGridSVG, PolicyGridLegend } from './PolicyGridSVG'
 
@@ -41,6 +41,44 @@ export default function Settings() {
   const [savedAt, setSavedAt] = useState<string | null>(null)
   const navigate = useNavigate()
 
+  // ── The added-question composer (ported from pd/pricing) ───────────────────
+  const [newType, setNewType] = useState<'mc' | 'text'>('mc')
+  const [newPrompt, setNewPrompt] = useState('')
+  const [newOptions, setNewOptions] = useState<string[]>(['', ''])
+  const [newCorrect, setNewCorrect] = useState(0)
+  const [addError, setAddError] = useState<string | null>(null)
+
+  const addedQuestions = (form.addedKcQuestions ?? []) as ScorecardAddedKcQuestion[]
+
+  /** Short, collision-resistant enough for ids the instructor never types. */
+  const shortId = () => Math.random().toString(36).slice(2, 8)
+
+  function addQuestion() {
+    setAddError(null)
+    if (!newPrompt.trim()) { setAddError('A question needs a prompt.'); return }
+
+    let options: { value: string; label: string }[] | undefined
+    let correct_value: string | undefined
+    if (newType === 'mc') {
+      const labels = newOptions.map(o => o.trim()).filter(Boolean)
+      if (labels.length < 2) { setAddError('A multiple-choice question needs at least two options.'); return }
+      options = labels.map(label => ({ value: `o_${shortId()}`, label }))
+      correct_value = options[Math.min(newCorrect, options.length - 1)].value
+    }
+    const q: ScorecardAddedKcQuestion = {
+      // ⚠ `akc_` — never a built-in id. The server refuses any id in the built-in set
+      // outright, because the grader looks built-ins up FIRST and a collision would grade
+      // the student against the built-in key instead of this one.
+      id: `akc_${shortId()}`,
+      type: newType,
+      prompt: newPrompt.trim(),
+      ...(options ? { options } : {}),
+      ...(correct_value ? { correct_value } : {}),
+    }
+    set('addedKcQuestions')([...addedQuestions, q])
+    setNewPrompt(''); setNewOptions(['', '']); setNewCorrect(0)
+  }
+
   useEffect(() => {
     if (session.kind !== 'ready') return
     let cancelled = false
@@ -66,6 +104,15 @@ export default function Settings() {
       showRunningBalance: r.config.showRunningBalance,
       currency: r.config.currency,
       buyerName: r.config.buyerName,
+      // ⚠ The four nouns that the student screens ACTUALLY RENDER. `productName` is
+      // accepted by the callable and carried in the student params, but no scorecard
+      // screen prints it — see the note beside the Labels fields below.
+      contractNoun: r.config.contractNoun,
+      periodNoun: r.config.periodNoun,
+      deliveryNoun: r.config.deliveryNoun,
+      scorecardNoun: r.config.scorecardNoun,
+      kcEnabled: r.config.kcEnabled,
+      addedKcQuestions: r.config.addedKcQuestions,
       reliabilityHigh: r.truth.reliabilityHigh,
       reliabilityLow: r.truth.reliabilityLow,
       reliabilitySchedule: r.truth.reliabilitySchedule,
@@ -193,7 +240,120 @@ export default function Settings() {
       <h3>Other</h3>
       {textField('currency', 'Currency')}
       {textField('buyerName', 'Buyer name')}
+      {/* ⚠ These four are RENDERED on the student screens — EffortScreen, SessionSummary
+          and DebriefScreen — and three of them are also interpolated into the knowledge
+          check's prompts and options, so an edit here changes what students read.
+
+          ⚠⚠ `productName` IS DELIBERATELY ABSENT. The callable accepts it and
+          `clientState.ts` carries it all the way to the browser, but NO scorecard screen
+          prints it — it is live in forecast (EndScreen) and dead here. A field for it
+          would look like it worked and change nothing, which is worse than not offering
+          it. Recorded in BUILD_NOTES; add the control if a screen ever uses it. */}
+      {textField('contractNoun', 'Noun — contract')}
+      {textField('periodNoun', 'Noun — period')}
+      {textField('deliveryNoun', 'Noun — acceptable delivery')}
+      {textField('scorecardNoun', 'Noun — scorecard')}
       {textField('seed', 'Seed (blank = random)')}
+
+      {/* ═══ THE KNOWLEDGE CHECK (spec §9) ═══════════════════════════════════ */}
+      <h3>Knowledge check</h3>
+      {boolField('kcEnabled', 'Include the knowledge check')}
+      <p style={{ fontSize: '0.8rem', color: colors.textSecondary, marginTop: 0 }}>
+        Off removes both stages — the six asked before play and the four asked after the
+        reveal — along with anything added below. ⚠ The three ordered steps of the debrief
+        are <em>not</em> part of the knowledge check and are unaffected: students still
+        answer the noticing question, see their two curves, and answer the linking
+        question.
+      </p>
+
+      <p style={{ fontSize: '0.85rem', color: colors.textSecondary, marginBottom: '0.4rem' }}>
+        The built-in ten are fixed and cannot be edited or reordered. Your own questions are
+        asked <strong>after</strong> them, once the reveal has been shown.
+      </p>
+      {/* ⚠ ALWAYS POST-REVEAL, and not a choice offered here. Nothing asked BEFORE play may
+          hint that a target can become unreachable (spec §9.1) — noticing that is the
+          behaviour being measured, and an instructor writing a question has no way to know
+          the constraint. Placing additions after the reveal makes it impossible to
+          violate by accident. */}
+
+      {addedQuestions.length === 0 && (
+        <p style={{ fontSize: '0.85rem', fontStyle: 'italic', color: colors.textSecondary }}>
+          None yet.
+        </p>
+      )}
+      <ul style={{ listStyle: 'none', margin: '0.5rem 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+        {addedQuestions.map(q => (
+          <li key={q.id} data-testid={`sc-set-added-${q.id}`}
+            style={{ border: `1px solid ${colors.borderMid}`, borderRadius: 6, padding: '0.6rem 0.8rem' }}>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.3rem' }}>
+              <span style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: colors.textSecondary }}>
+                {q.type === 'mc' ? 'multiple choice' : 'free text (not graded)'}
+              </span>
+              <span style={{ flex: 1 }} />
+              <button
+                data-testid={`sc-set-delete-${q.id}`}
+                onClick={() => set('addedKcQuestions')(addedQuestions.filter(x => x.id !== q.id))}
+                style={{ fontSize: '0.8rem', padding: '0.15rem 0.5rem', color: '#c00' }}
+              >
+                Delete
+              </button>
+            </div>
+            <div style={{ fontSize: '0.9rem' }}>{q.prompt}</div>
+            {q.type === 'mc' && (
+              <div style={{ fontSize: '0.78rem', color: colors.textSecondary, marginTop: '0.2rem' }}>
+                {/* Bold marks the key. ⚠ Instructor-side only — the student payload drops
+                    `correct_value` entirely (api.ts ScorecardInstructorConfig). */}
+                {(q.options ?? []).map(o => (
+                  <span key={o.value} style={{ marginRight: '0.6rem', fontWeight: o.value === q.correct_value ? 700 : 400 }}>
+                    {o.label}
+                  </span>
+                ))}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      <div style={{ border: `1px dashed ${colors.borderMid}`, borderRadius: 6, padding: '0.75rem', marginTop: '0.75rem' }}>
+        <div style={row}>
+          <label style={lbl}>New question</label>
+          <select style={inp} value={newType} data-testid="sc-set-new-type"
+            onChange={e => setNewType(e.target.value as 'mc' | 'text')}>
+            <option value="mc">Multiple choice</option>
+            <option value="text">Free text (not graded)</option>
+          </select>
+        </div>
+        <div style={row}>
+          <label style={lbl}>Prompt</label>
+          <input style={{ ...inp, width: '24rem' }} type="text" value={newPrompt}
+            data-testid="sc-set-new-prompt" onChange={e => setNewPrompt(e.target.value)} />
+        </div>
+        {newType === 'mc' && newOptions.map((o, i) => (
+          <div style={row} key={i}>
+            <label style={lbl}>
+              <input type="radio" name="sc-new-correct" checked={newCorrect === i}
+                data-testid={`sc-set-new-correct-${i}`}
+                onChange={() => setNewCorrect(i)} /> Option {i + 1}
+            </label>
+            <input style={{ ...inp, width: '20rem' }} type="text" value={o}
+              data-testid={`sc-set-new-option-${i}`}
+              onChange={e => setNewOptions(newOptions.map((x, j) => (j === i ? e.target.value : x)))} />
+          </div>
+        ))}
+        {newType === 'mc' && (
+          <button style={{ fontSize: '0.8rem', marginRight: '0.5rem' }}
+            data-testid="sc-set-new-option-add"
+            onClick={() => setNewOptions([...newOptions, ''])}>Add option</button>
+        )}
+        <button data-testid="sc-set-new-add" onClick={addQuestion}
+          style={{ fontSize: '0.9rem', padding: '0.3rem 0.9rem' }}>Add question</button>
+        {addError && <p style={{ color: '#c00', fontSize: '0.85rem' }}>{addError}</p>}
+        <p style={{ fontSize: '0.78rem', color: colors.textSecondary, margin: '0.5rem 0 0' }}>
+          ⚠ Added questions are saved with the rest of the page — the Save button below.
+          Options are shown to students in a different order for each student, so the
+          position of the right answer is never a hint.
+        </p>
+      </div>
 
       <div style={{ margin: '1.25rem 0' }}>
         <button onClick={save} disabled={saving} style={{ padding: '0.5rem 1.5rem', fontSize: '1rem' }}>

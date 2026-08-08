@@ -1,4 +1,4 @@
-import type { ScorecardConfig, ScorecardTruth } from './config'
+import type { ScorecardAddedKcQuestion, ScorecardConfig, ScorecardTruth } from './config'
 import { hash32 } from './rng'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -377,9 +377,56 @@ export function toClientKcQuestions(
   }))
 }
 
-/** ⚠ DYNAMIC denominator, never a hardcoded count. */
-export function kcDenominator(questions: readonly KcQuestion[]): number {
-  return questions.length
+/**
+ * Instructor-added questions in the SAME client shape as the built-in ten, so the student
+ * screen and the resume logic cannot tell them apart.
+ *
+ * ⚠⚠ ALWAYS `stage: 'post'` — see `ScorecardAddedKcQuestion` in config.ts. Spec §9.1 keeps
+ * the PRE set closed because nothing before play may state that a target can become
+ * unreachable, and an instructor writing a question has no way to know that constraint.
+ *
+ * ⚠⚠ THE SAME SHUFFLE, DELIBERATELY. `cef36fe` fixed instructor-added questions being
+ * served in typed order across forecast, newsvendor, pricing and pd — an instructor has no
+ * reason to think about where they put the right answer, and most people type it first.
+ * Scorecard's added path was written after that fix and must not reintroduce it, so it
+ * goes through `shuffleFor` exactly as the built-in ten do.
+ *
+ * ⚠ A free-text added question keeps `options: []`. That is the signal the client renders a
+ * textarea on; it is never a shuffled empty list by accident.
+ */
+export function addedToClientKcQuestions(
+  added: readonly ScorecardAddedKcQuestion[],
+  participantId: string,
+): ClientKcQuestion[] {
+  return added.map(q => {
+    const options: KcOption[] = (q.options ?? []).map(o => ({ id: o.value, text: o.label }))
+    return {
+      id: q.id,
+      stage: 'post' as const,
+      prompt: q.prompt,
+      options: options.length > 1 ? shuffleFor(participantId, q.id, options) : options,
+    }
+  })
+}
+
+/**
+ * ⚠ DYNAMIC denominator, never a hardcoded count.
+ *
+ * ⚠⚠ AN UNGRADED ADDED QUESTION COUNTS NOWHERE. A free-text addition, or an mc addition
+ * whose key named no offered option (dropped by `parseAddedKcQuestion`), is RECORDED but is
+ * absent from both the numerator and this denominator — so adding one cannot silently lower
+ * every student's score. Same rule as the other four single-player games.
+ */
+export function kcDenominator(
+  questions: readonly KcQuestion[],
+  added: readonly ScorecardAddedKcQuestion[] = [],
+): number {
+  return questions.length + added.filter(isGradedAdded).length
+}
+
+/** An added question that carries a usable key, and therefore a mark. */
+export function isGradedAdded(q: ScorecardAddedKcQuestion): boolean {
+  return q.type === 'mc' && typeof q.correct_value === 'string'
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
