@@ -121,17 +121,118 @@ export function classEffortByPeriod(
   return effortByPeriod(all, config)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠⚠ CONTESTED PERIODS — THE DENOMINATOR THE HEADLINE GAP IS MEASURED OVER (spec §11).
+//
+// A period is CONTESTED when the bonus is still live AND not yet won:
+//
+//     score < targetScore   AND   score + periodsRemaining >= targetScore
+//
+// ⚠ THIS IS NOT A REFINEMENT, IT IS A CORRECTION. Measured over ALL periods, the effort
+// gap manufactures a signal out of students who never thought about reliability at all:
+//
+//   | reliability-blind persona          | gap, ALL periods | gap, CONTESTED |
+//   | stops on dead contracts            |      +0.275      |     0.000      |
+//   | stops on dead + coasts at target   |      +0.198      |     0.000      |
+//   | coasts at target only              |      −0.077      |     0.000      |
+//   | genuine responder                  |      +0.850      |    +1.000      |
+//
+// WHY IT ZEROES THEM EXACTLY, BY CONSTRUCTION — not approximately. A reliability-blind
+// student's action is a function of the STATE (dead / coasting / contested) and nothing
+// else. Restricted to contested periods the state is constant, so the action is constant,
+// so the rate is identical in both conditions and the gap is exactly 0. The artifacts came
+// entirely from the MIX of states differing between conditions: low-reliability contracts
+// die more often, so more low-side periods are already abandoned (biasing the gap UP), and
+// high-reliability contracts reach the target more often, so more high-side periods are
+// coasting (biasing it DOWN). Conditioning on contested removes the mix.
+//
+// And the genuine signal STRENGTHENS: a responder works every contested high period and no
+// contested low period, so their gap goes from +0.85 to +1.00.
+//
+// ⚠ TIER-3 CHART 3's "MASS AT ZERO" ONLY EXISTS UNDER THIS DENOMINATOR. Under the raw one
+// the mass sits near +0.3 and the finding — "how many students responded at all?" — is
+// invisible. The raw gap may ship as a SECONDARY column; it is never the headline.
+//
+// ⚠ The companion figure for the mechanical part is `periodsPaidAfterDead`, which measures
+// the deadness behaviour directly instead of letting it contaminate the gap.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Is this period contested — bonus still live, not yet won? */
+export function isContested(
+  scoreBefore: number,
+  periodsRemaining: number,
+  targetScore: number,
+): boolean {
+  return scoreBefore < targetScore && scoreBefore + periodsRemaining >= targetScore
+}
+
 /**
- * ONE STUDENT'S EFFORT GAP — the Tier-1 headline (spec §11).
+ * High-effort rate over CONTESTED periods only. Null when the student faced none —
+ * which is a real possibility for someone who never got into contention.
+ */
+export function contestedEffortRate(
+  contracts: readonly StoredContract[],
+  config: ScorecardConfig,
+): number | null {
+  let high = 0
+  let total = 0
+  for (const c of contracts) {
+    for (let i = 0; i < c.periods.length; i++) {
+      const scoreBefore = i === 0 ? 0 : c.periods[i - 1].score
+      const remaining = config.periodsPerContract - i
+      if (!isContested(scoreBefore, remaining, config.targetScore)) continue
+      total++
+      if (c.periods[i].action === 'high') high++
+    }
+  }
+  return total === 0 ? null : high / total
+}
+
+/** How many contested periods a student faced, per condition — the denominator, shown. */
+export function contestedPeriodCount(
+  contracts: readonly StoredContract[],
+  config: ScorecardConfig,
+): number {
+  let total = 0
+  for (const c of contracts) {
+    for (let i = 0; i < c.periods.length; i++) {
+      const scoreBefore = i === 0 ? 0 : c.periods[i - 1].score
+      const remaining = config.periodsPerContract - i
+      if (isContested(scoreBefore, remaining, config.targetScore)) total++
+    }
+  }
+  return total
+}
+
+/**
+ * ⚠⚠ THE TIER-1 HEADLINE (spec §11) — the contested-period effort gap.
  *
- * `rate(high) − rate(low)`. Positive means they worked harder when the scorecard was
- * responsive, which is the direction the lesson predicts.
+ * `contestedRate(high) − contestedRate(low)`. Positive means they worked harder when the
+ * scorecard was responsive, in the periods where working could still change the outcome.
  *
- * ⚠⚠ NULL WHEN EITHER CONDITION IS MISSING, AND THAT DISTINCTION IS LOAD-BEARING. A
- * student who played only one condition has an **undefined** gap, not a gap of nought —
- * and "0" is precisely the finding Tier-3 chart 3 is looking for ("a mass at zero is the
- * finding"). Collapsing undefined into zero would manufacture the headline result out of
- * students who never had the chance to show one. `nullsLast` on the column, always.
+ * ⚠ NULL WHEN EITHER CONDITION HAS NO CONTESTED PERIODS, and that distinction is
+ * load-bearing: an undefined gap is not a gap of nought, and "0" is precisely the finding
+ * chart 3 looks for. Collapsing them would manufacture the headline out of students who
+ * never had the chance to show one. `nullsLast` on the column, always.
+ */
+export function contestedEffortGap(
+  contracts: readonly StoredContract[],
+  config: ScorecardConfig,
+): number | null {
+  const hi = contestedEffortRate(contractsIn(contracts, 'high', config), config)
+  const lo = contestedEffortRate(contractsIn(contracts, 'low', config), config)
+  if (hi === null || lo === null) return null
+  return hi - lo
+}
+
+/**
+ * The RAW all-period gap.
+ *
+ * ⚠⚠ SECONDARY COLUMN ONLY — never the headline, never what chart 3 distributes, never
+ * what the roster sorts on by default (spec §11). It is retained because it is what a
+ * student's whole session actually looked like, and because seeing it beside the contested
+ * gap is how the mechanical component becomes visible: a large raw gap with a contested gap
+ * near zero IS the deadness artifact, made legible.
  */
 export function effortGap(
   contracts: readonly StoredContract[],
@@ -227,13 +328,16 @@ export function gapDistribution(
   config: ScorecardConfig,
   binWidth = 0.1,
 ): GapDistribution {
+  // ⚠⚠ DISTRIBUTES THE CONTESTED GAP, NOT THE RAW ONE (spec §11). Under the raw
+  // denominator the "mass at zero" this chart exists to show does not exist — it sits near
+  // +0.3, manufactured by deadness rather than by anyone responding.
   const gaps: number[] = []
   let excludedUndefined = 0
   let excludedNoPlay = 0
 
   for (const p of population) {
     if (p.contracts.length === 0) { excludedNoPlay++; continue }
-    const g = effortGap(p.contracts, config)
+    const g = contestedEffortGap(p.contracts, config)
     if (g === null) { excludedUndefined++; continue }
     gaps.push(g)
   }

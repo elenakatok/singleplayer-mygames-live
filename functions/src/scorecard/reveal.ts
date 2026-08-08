@@ -47,6 +47,18 @@ export interface RevealCondition {
   yourMeanEarnings: number | null
 }
 
+/**
+ * ⚠⚠ THE MINIMUM CLASS SIZE FOR THE STUDENT-FACING AVERAGE (spec §11, 08-07).
+ *
+ * The FIRST STUDENT TO FINISH would otherwise be shown a "class average" consisting
+ * entirely of themselves — two curves that coincide exactly, presented as though the room
+ * had independently done the same thing. That is not a weak comparison, it is a false one.
+ *
+ * Below this, `classEffortByPeriod` and `classHighEffortRate` are NULL and the screen says
+ * the class comparison is not available yet. ⚠ Null, never a silently-thinner average.
+ */
+export const MIN_CLASS_N_FOR_STUDENT_AVERAGE = 5
+
 export interface Reveal {
   high: RevealCondition
   low: RevealCondition
@@ -60,9 +72,12 @@ export interface Reveal {
   /** The same figure for the class, so the student sees the shared pattern. */
   classEffortGap: number | null
   contractsPerCondition: { high: number; low: number }
-  /** How many students the class comparison rests on. ⚠ Shown, so a class of one
-   *  cannot read as a consensus. */
+  /** ⚠ How many students the comparison rests on. Shown, so a thin class cannot read as
+   *  a consensus. */
   classSize: number
+  /** False below `MIN_CLASS_N_FOR_STUDENT_AVERAGE` — the screen then says the class
+   *  comparison is not available yet rather than drawing a curve of one person. */
+  classAvailable: boolean
 }
 
 function buildCondition(
@@ -71,21 +86,44 @@ function buildCondition(
   population: readonly ParticipantContracts[],
   config: ScorecardConfig,
   truth: ScorecardTruth,
+  classAvailable: boolean,
 ): RevealCondition {
   const mine = contractsIn(contracts, condition, config)
   const classContracts = population.flatMap(p => contractsIn(p.contracts, condition, config))
+  const emptyCurve = Array.from({ length: config.periodsPerContract }, () => null)
 
   return {
     condition,
     reliability: reliabilityOf(truth, condition),
     label: renderLabel(truth, condition),
     yourEffortByPeriod: effortByPeriod(mine, config),
-    classEffortByPeriod: classEffortByPeriod(population, condition, config),
+    // ⚠ SUPPRESSED, NOT THINNED, below the minimum n — see the constant above.
+    classEffortByPeriod: classAvailable
+      ? classEffortByPeriod(population, condition, config)
+      : emptyCurve,
     contractsPlayed: mine.length,
     yourHighEffortRate: highEffortRate(mine),
-    classHighEffortRate: highEffortRate(classContracts),
+    classHighEffortRate: classAvailable ? highEffortRate(classContracts) : null,
     yourMeanEarnings: meanEarnings(contracts, condition, config),
   }
+}
+
+/**
+ * The HUMANS of a participant collection, shaped for `buildReveal`.
+ *
+ * ⚠ The student-facing class average is humans-only ALWAYS, with no demo-cohort fallback
+ * (botFilter.ts). An instructor looking at a robot cohort gets a banner; a student never
+ * gets robots at all.
+ */
+export function humanPopulation(
+  docs: readonly { id: string; data: Record<string, unknown> }[],
+  isBot: (id: string, data: Record<string, unknown>) => boolean,
+  config: ScorecardConfig,
+  parse: (raw: unknown, config: ScorecardConfig) => StoredContract[],
+): ParticipantContracts[] {
+  return docs
+    .filter(d => !isBot(d.id, d.data))
+    .map(d => ({ participantId: d.id, contracts: parse(d.data.contracts, config) }))
 }
 
 /**
@@ -101,17 +139,23 @@ export function buildReveal(
   config: ScorecardConfig,
   truth: ScorecardTruth,
 ): Reveal {
-  const high = buildCondition('high', contracts, population, config, truth)
-  const low = buildCondition('low', contracts, population, config, truth)
+  // ⚠ Counted over students who have PLAYED — a roster of never-started classmates is not
+  // a class average, and including them in the n would let the suppression open early.
+  const played = population.filter(p => p.contracts.length > 0)
+  const classAvailable = played.length >= MIN_CLASS_N_FOR_STUDENT_AVERAGE
+
+  const high = buildCondition('high', contracts, played, config, truth, classAvailable)
+  const low = buildCondition('low', contracts, played, config, truth, classAvailable)
 
   const gap = (h: number | null, l: number | null) => (h === null || l === null ? null : h - l)
 
   return {
     high,
     low,
+    classAvailable,
     yourEffortGap: gap(high.yourHighEffortRate, low.yourHighEffortRate),
     classEffortGap: gap(high.classHighEffortRate, low.classHighEffortRate),
     contractsPerCondition: { high: high.contractsPlayed, low: low.contractsPlayed },
-    classSize: population.length,
+    classSize: played.length,
   }
 }

@@ -25,6 +25,9 @@
         ],
         "procurement": [
           "procurement-mygames"
+        ],
+        "scorecard": [
+          "scorecard-mygames-live"
         ]
       }
     }

@@ -416,3 +416,131 @@ two-button effort control with its three guards; Tier-3 chart 4.
 ⚠ The CP2 placeholder pages are **deleted** — `Placeholders.tsx` no longer exists, so the
 CP4 gate ("stubs must not be live at deploy") is satisfied by construction rather than by
 remembering to check.
+
+---
+
+## 15. ⚠⚠ The contested-period denominator — the fix for §12's floor
+
+BUILD_NOTES §12 recorded that the effort gap has a structural floor from abandoning dead
+contracts. Elena reproduced it independently and supplied the fix: **measure the gap over
+CONTESTED periods only** — `score < targetScore` AND `score + periodsRemaining >= targetScore`.
+
+### Why it zeroes the artifacts EXACTLY, not approximately
+
+A reliability-blind student's action is a function of the **state** — dead, coasting, or
+contested — and of nothing else. Restricted to contested periods the state is constant, so
+the action is constant, so the rate is **identical in both conditions** and the gap is
+exactly 0. The artifacts came entirely from the *mix* of states differing between
+conditions:
+
+- low-reliability contracts **die more often** ⇒ more low-side periods already abandoned ⇒ gap biased **up**
+- high-reliability contracts **reach the target more often** ⇒ more high-side periods coasting ⇒ gap biased **down**
+
+Conditioning on contested removes the mix. Measured in the robot dry run, recomputed
+independently of `stats.ts`:
+
+| reliability-blind persona | raw gap | contested gap |
+|---|---|---|
+| stops on dead contracts | **+0.360** | **0.0000** |
+| stops on dead + coasts at target | **+0.220** | **0.0000** |
+| coasts at target only | **−0.030** | **0.0000** |
+| *genuine responder* | *+0.850* | ***+1.000*** |
+
+⚠ **The bias points BOTH ways**, which is why the raw gap cannot be corrected with an
+offset — the direction depends on which stopping rule a student happens to use.
+
+⚠ **Chart 3's "mass at zero" only exists under this denominator.** Under the raw one the
+mass sits near +0.3 and the finding is invisible. Pinned by a test that asserts the blind
+personas land at exactly zero AND that their raw gaps do not.
+
+⚠ **The concrete harm avoided**, asserted as a calibration: sorted on the RAW gap, a
+student who never thought about reliability out-ranks a genuine weak responder. The
+contested gap puts them back in the right order.
+
+The raw gap still ships as a **secondary column**, deliberately — a large raw gap beside a
+near-zero contested one *is* the deadness artifact made legible, and the "paid after dead"
+column names it.
+
+---
+
+## 16. One bot rule, and where the earlier reasoning fell short
+
+CP3 shipped Tier 1 humans-only and Tier 3 bots-included, with chart 3 as an exception. The
+reasoning for chart 3 was right; it did not go far enough:
+
+⚠⚠ **THE §10 STUDENT REVEAL DRAWS ITS CLASS AVERAGE FROM THE SAME POPULATION.** Bots in
+charts 1 and 2 meant students were being compared against robots — on a screen with no
+banner and no way to tell.
+
+So the rule is now the same everywhere: **humans only** (`botFilter.ts`, applied once).
+Two concessions, both deliberate and asymmetric:
+
+| | behaviour |
+|---|---|
+| Instructor charts, **zero** humans | render bot data behind a **"demo cohort — robot data"** banner |
+| Student reveal | humans-only **always**, no fallback, **suppressed below n = 5** |
+
+⚠ **The suppression exists because the first student to finish would otherwise be shown a
+"class average" consisting of themselves** — two curves that coincide exactly, presented as
+though the room had independently done the same thing. That is not a weak comparison, it is
+a false one. Below the minimum the curves are null and the screen says so; it is never
+silently thinned.
+
+⚠ "Zero humans", not "zero humans who played" — a roster of never-started students is a
+real class, and showing them robot data under a demo banner would be a lie.
+
+---
+
+## 17. The KC split, and what was deleted rather than moved
+
+Spec §9 was rewritten. Three things worth keeping:
+
+**The strategy questions moved AFTER play** because asking them first *taught the answer
+before measuring the behaviour*. The pre and post sets are returned as **two named fields**,
+never one list with a stage flag to filter on — a client that concatenated them would
+silently undo the decision, and two field names make that impossible to do by accident.
+
+**All threshold arithmetic is DELETED from the game**, before and after. Elena does not
+teach it. The old Q1/Q2 ("how much must one point be worth?") are gone, not relocated. The
+harness asserts no question anywhere says "worth more than", "threshold" or "marginal", and
+that neither computed threshold value appears as an answer option.
+
+⚠ **Nothing pre-play may state that a target can become unreachable.** An earlier draft
+asked "two periods left, score 4 — can you still earn the bonus?", which hands over §4.1's
+inference outright. The harness checks the pre set for that language AND checks the POST set
+*does* contain it — otherwise the first check could pass vacuously.
+
+**No HBS case text, exhibits or figures.** Students buy the case. Every stem names a person
+or situation and stands on its own sentence.
+
+---
+
+## 18. §10's three steps are ordered by MECHANISM, not by screen sequence
+
+```
+noticing (ungraded)  →  REVEAL  →  post-play KC  →  linking (graded offline)
+```
+
+⚠ **The reveal is returned ONLY by the `noticing` submit**, and `linking` is refused
+server-side until `noticing` is stored. So the ordering is physical: a client that
+reordered its screens is simply refused, and there is no path that shows the reveal to a
+student who has not first committed an answer they cannot retrofit.
+
+⚠ **The linking answer is not scored in the game** — which is exactly why the Tier-2 export
+carries each student's own figures beside the text. Elena grades it offline, and "I eased
+off when it got unreliable" is unassessable without the numbers next to it; otherwise the
+grade rewards plausible prose over actual insight.
+
+---
+
+## 19. Checkpoint log
+
+**CP4** — the contested denominator; one bot rule + demo fallback + student-average
+suppression; §9's split KC; §10's three ordered steps; the standard report grid; the Tier-2
+export with figures; `botFilter.ts`; `scorecardStats.test.ts`.
+
+Harness: **203 checks, 12 pinned sections**, including the §13 set with calibrations —
+Monte Carlo vs analytic at 200k runs per condition inside 3σ/√n, the slide-6 grid off the
+wire with a p_low perturbation proving it is not hardcoded, the write-off silence with two
+injected-contamination calibrations, and **T4's classroom-shaped case with S1 shown
+reverted**. Unit suite 882. Robot cohort 49.

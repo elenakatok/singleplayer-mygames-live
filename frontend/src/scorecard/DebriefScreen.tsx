@@ -19,11 +19,13 @@ const card: React.CSSProperties = {
 const pct = (x: number) => `${Math.round(x * 100)}%`
 
 export function DebriefScreen({
-  question, params, onDone,
+  step, question, params, onDone,
 }: {
+  /** ⚠ `noticing` comes BEFORE the reveal and its submit RETURNS it; `linking` after. */
+  step: 'noticing' | 'linking'
   question: { id: string; prompt: string; followUps: string[] }
   params: ScorecardParams
-  onDone: (reveal: ScorecardReveal) => void
+  onDone: (reveal: ScorecardReveal | null) => void
 }) {
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
@@ -34,7 +36,7 @@ export function DebriefScreen({
     setBusy(true)
     setError(null)
     try {
-      const r = await scorecardSubmitDebrief(text)
+      const r = await scorecardSubmitDebrief(step, text)
       onDone(r.reveal)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not record your answer.')
@@ -44,7 +46,9 @@ export function DebriefScreen({
 
   return (
     <div>
-      <h3 style={{ marginTop: 0 }}>One last question</h3>
+      <h3 style={{ marginTop: 0 }}>
+        {step === 'noticing' ? 'Before you see your results' : 'One last question'}
+      </h3>
       <div style={card}>
         <p style={{ margin: 0, fontSize: '1.05rem', fontWeight: 600 }}>{question.prompt}</p>
         <ul style={{ margin: '0.6rem 0 0', paddingLeft: '1.2rem', color: '#444' }}>
@@ -147,17 +151,24 @@ function EffortCurves({ cond }: { cond: ScorecardReveal['high'] }) {
   )
 }
 
-export function RevealPanel({ reveal, params }: { reveal: ScorecardReveal; params: ScorecardParams }) {
+export function RevealPanel({
+  reveal, params, compact = false,
+}: {
+  reveal: ScorecardReveal
+  params: ScorecardParams
+  /** Trimmed for the linking step, where the student has already read it in full. */
+  compact?: boolean
+}) {
   const rate = (v: number | null) => (v === null ? '—' : pct(v))
 
   return (
     <div>
       <h3 style={{ marginTop: 0 }}>What was actually going on</h3>
-      <p style={{ color: '#444' }}>
+      {!compact && <p style={{ color: '#444' }}>
         Your {params.contractNoun}s alternated between two kinds of {params.scorecardNoun}.
         On one, working hard really moved your rating. On the other it barely did — the
         {' '}{params.scorecardNoun} was mostly noise, and no amount of effort changed that much.
-      </p>
+      </p>}
 
       {/* ⚠ SPEC §5's HEADLINE, VERBATIM IN SHAPE: two percentages, one sentence, no
           verdict. There is deliberately nothing here about what they "should" have done. */}

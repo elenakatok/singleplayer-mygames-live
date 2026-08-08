@@ -113,21 +113,43 @@ export interface ScorecardState {
 
 export interface ScorecardKcQuestion {
   id: string
+  /** ⚠ 'pre' is asked before the contracts; 'post' only AFTER the §10 reveal. */
+  stage: 'pre' | 'post'
   prompt: string
   options: { id: string; text: string }[]
+}
+
+export interface ScorecardFreeTextQuestion {
+  id: string
+  prompt: string
+  followUps: string[]
+  answered: boolean
 }
 
 export interface ScorecardQuestions {
   ok: true
   kc: {
-    questions: ScorecardKcQuestion[]
-    /** ⚠ DYNAMIC — never assume 8. */
+    /**
+     * ⚠⚠ TWO SEPARATE ARRAYS, AND MERGING THEM UNDOES THE DESIGN (spec §9). The strategy
+     * questions moved after play because asking them first TAUGHT THE ANSWER BEFORE
+     * MEASURING THE BEHAVIOUR. They arrive as two named fields, not one list with a flag,
+     * so a client cannot concatenate them by accident.
+     */
+    pre: ScorecardKcQuestion[]
+    post: ScorecardKcQuestion[]
+    /** ⚠ DYNAMIC, over BOTH stages. */
     total: number
+    preTotal: number
+    postTotal: number
     answeredIds: string[]
     score: number | null
     complete: boolean
   }
-  debrief: { id: string; prompt: string; followUps: string[]; answered: boolean }
+  /** §10's two free-text steps. ⚠ The reveal sits BETWEEN them. */
+  freeText: {
+    noticing: ScorecardFreeTextQuestion
+    linking: ScorecardFreeTextQuestion
+  }
 }
 
 /**
@@ -160,6 +182,9 @@ export interface ScorecardReveal {
   classEffortGap: number | null
   contractsPerCondition: { high: number; low: number }
   classSize: number
+  /** ⚠ False below the minimum n — the class comparison is SUPPRESSED, not thinned.
+   *  The first student to finish must not be shown an "average" of themselves. */
+  classAvailable: boolean
 }
 
 // ── Student callables ─────────────────────────────────────────────────────────
@@ -196,10 +221,23 @@ export function scorecardSubmitKcAnswer(questionId: string, answer: string) {
   )
 }
 
-export function scorecardSubmitDebrief(answer: string) {
-  return callFn<{ ok: true; questionId: string; stored: boolean; answer: string; reveal: ScorecardReveal }>(
-    'scorecardSubmitDebrief', { answer },
-  )
+/**
+ * §10's ordered free-text steps.
+ *
+ * ⚠⚠ THE REVEAL COMES BACK ONLY ON THE `noticing` STEP — which is what makes the ordering
+ * physical rather than conventional. `linking` is refused server-side until `noticing` is
+ * stored, so a client that reordered its screens still could not reach the reveal early.
+ */
+export function scorecardSubmitDebrief(step: 'noticing' | 'linking', answer: string) {
+  return callFn<{
+    ok: true
+    step: 'noticing' | 'linking'
+    questionId: string
+    stored: boolean
+    answer: string
+    /** Non-null on `noticing` only. */
+    reveal: ScorecardReveal | null
+  }>('scorecardSubmitDebrief', { step, answer })
 }
 
 // ── Instructor callables ──────────────────────────────────────────────────────
@@ -235,7 +273,14 @@ export interface ScorecardReportParticipant {
   starts_with: 'high' | 'low' | null
   high_effort_rate_high: number | null
   high_effort_rate_low: number | null
-  /** ⚠ Null means "played only one condition" — an UNDEFINED gap, never a zero. */
+  /** ⚠⚠ THE HEADLINE — contested periods only (spec §11). Null when either condition
+   *  had none; never 0 for an absent condition. */
+  contested_gap: number | null
+  contested_rate_high: number | null
+  contested_rate_low: number | null
+  contested_periods_high: number
+  contested_periods_low: number
+  /** ⚠ SECONDARY ONLY. The raw all-period gap — never the default sort, never chart 3. */
   effort_gap: number | null
   earnings_high: number | null
   earnings_low: number | null
@@ -244,7 +289,10 @@ export interface ScorecardReportParticipant {
   periods_paid_after_dead: number
   knowledge_check_score: number | null
   participation_score: number | null
-  debrief: string | null
+  /** §10 step 1 — ungraded, captured before the reveal. */
+  noticing: string | null
+  /** §10 step 3 — ⚠ graded by Elena OFFLINE. */
+  linking: string | null
   from_bot_cohort: boolean
 }
 
@@ -281,7 +329,13 @@ export interface ScorecardReport {
   }
   participants: ScorecardReportParticipant[]
   botCount: number
-  debriefPrompt: string
+  humanCount: number
+  /** ⚠ Instructor-only: zero humans ⇒ the charts show ROBOT data behind a banner. */
+  isDemoCohort: boolean
+  freeTextQuestions: {
+    id: string; step: 'noticing' | 'linking'; prompt: string
+    followUps: string[]; gradedNote: string
+  }[]
   tier3: {
     byRound: { high: ScorecardRoundPoint[]; low: ScorecardRoundPoint[] }
     byPeriod: {

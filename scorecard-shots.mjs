@@ -129,13 +129,19 @@ async function play(gid, pid, styleName, o, rand) {
   }
   const q = await callFn('scorecardGetQuestions', asStudent(gid, pid))
   if (q.ok) {
-    for (const question of q.result.kc.questions) {
+    for (const question of [...q.result.kc.pre, ...q.result.kc.post]) {
       const idx = styleName === 'optimizer' ? 0 : Math.floor(rand() * question.options.length)
       await callFn('scorecardSubmitKcAnswer', asStudent(gid, pid, { questionId: question.id, answer: question.options[idx].id }))
     }
   }
   await callFn('scorecardSubmitDebrief', asStudent(gid, pid, {
+    step: 'noticing',
     answer: `I worked when the rating seemed to respond and eased off when it did not. (${styleName})`,
+  }))
+  await callFn('scorecardSubmitDebrief', asStudent(gid, pid, {
+    step: 'linking',
+    answer: `The two curves are closer than I thought. At Metalcraft the score stops depending `
+      + `on the supplier once rejects can be negotiated or miscoded. (${styleName})`,
   }))
 }
 

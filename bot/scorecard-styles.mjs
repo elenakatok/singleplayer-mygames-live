@@ -157,7 +157,48 @@ export const STYLES = {
   },
 }
 
-export const STYLE_NAMES = Object.keys(STYLES)
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠⚠ THE ARTIFACT PERSONAS — reliability-blind, and they exist to PROVE the contested
+// denominator (spec §11).
+//
+// Each one's action is a pure function of the STATE — dead, coasting, or contested — and
+// contains no reference whatsoever to `reliability`. Over ALL periods each nonetheless
+// produces a fake effort gap, because the MIX of states differs between conditions:
+// low-reliability contracts die more often (biasing the gap UP) and high-reliability
+// contracts reach the target more often (biasing it DOWN).
+//
+// Over CONTESTED periods each must measure EXACTLY 0.000 — not approximately. Restricted
+// to contested periods the state is constant, so the action is constant, so the rate is
+// identical in both conditions.
+//
+// ⚠ IF ANY OF THESE EVER MEASURES NON-ZERO ON THE CONTESTED DENOMINATOR, the headline
+// column is manufacturing signal again and the Tier-1 ranking is not measuring response.
+// The dry run asserts it to 3 decimal places.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Dead: the bonus is arithmetically impossible. */
+const dead = (s) => s.score + s.periodsRemaining < s.targetScore
+/** Coasting: the target is already met. */
+const coasting = (s) => s.score >= s.targetScore
+
+export const ARTIFACT_STYLES = {
+  /** Stops only on dead contracts. Spec §11 measures +0.275 over all periods. */
+  artifact_dead_stopper: (s) => (dead(s) ? 'low' : 'high'),
+  /** Stops on dead AND coasts once the target is met. Spec §11: +0.198. */
+  artifact_dead_and_coast: (s) => (dead(s) || coasting(s) ? 'low' : 'high'),
+  /** Coasts at target only, never writes anything off. Spec §11: −0.077. */
+  artifact_coast_only: (s) => (coasting(s) ? 'low' : 'high'),
+}
+
+Object.assign(STYLES, ARTIFACT_STYLES)
+
+export const ARTIFACT_NAMES = Object.keys(ARTIFACT_STYLES)
+
+/**
+ * The seven CLASS personas — the cohort that fills a realistic roster. The artifact
+ * personas are deliberately NOT in this list: they are a control, not a student.
+ */
+export const STYLE_NAMES = Object.keys(STYLES).filter(n => !ARTIFACT_NAMES.includes(n))
 
 /** Round-robin assignment, so a cohort of N always contains every persona. */
 export function styleFor(index) {

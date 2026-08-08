@@ -47,13 +47,31 @@ import { DebriefScreen, RevealPanel } from './DebriefScreen'
 // for the answer key until it has been earned keeps the client honest.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * ⚠⚠ THE FLOW IS SPEC §9's SPLIT KC WRAPPED AROUND SPEC §10's THREE ORDERED STEPS:
+ *
+ *   kc-pre  →  the contract loop  →  noticing  →  REVEAL  →  kc-post  →  linking  →  done
+ *              (§9.1, 6 questions)   (§10 s1)    (§10 s2)   (§9.2)     (§10 s3)
+ *
+ * ⚠ NOTHING AFTER THE LOOP MAY BE REACHED EARLY, and the client is not what enforces it:
+ * `noticing` is gated on the finish stamp, `linking` is refused until `noticing` is stored,
+ * and the reveal is returned ONLY by the noticing submit. A client that reordered these
+ * screens would simply be refused.
+ *
+ * ⚠ THE POST-PLAY KC COMES AFTER THE REVEAL, not before it. Its questions are about
+ * coasting and writing off — asking them earlier would hand over §4.1's inference, which is
+ * the decision the game exists to measure.
+ */
 type Phase =
   | { name: 'loading' }
   | { name: 'error'; message: string }
-  | { name: 'kc'; index: number }
+  | { name: 'kc-pre'; index: number }
   | { name: 'play' }
-  | { name: 'debrief' }
+  | { name: 'noticing' }
   | { name: 'reveal'; reveal: ScorecardReveal }
+  | { name: 'kc-post'; index: number; reveal: ScorecardReveal }
+  | { name: 'linking'; reveal: ScorecardReveal }
+  | { name: 'done'; reveal: ScorecardReveal }
 
 export default function Play() {
   const search = new URLSearchParams(window.location.search)
@@ -89,19 +107,21 @@ export default function Play() {
         setState(st)
         setQuestions(qs)
 
-        // ── Resume: every step's completion is a fact stored on the server ─────
+        // ── Resume: every step's completion is a fact stored on the SERVER ─────
         // Nothing is kept in the browser, so a student resumes identically on another
-        // device. The KC comes first (spec §4); an unfinished KC resumes at the first
-        // unanswered question.
+        // device.
+        //
+        // ⚠ THE POST-REVEAL STEPS CANNOT BE RESUMED INTO, and that is correct rather than
+        // a gap: the reveal is returned only by the noticing submit, so a student who
+        // closes the tab after seeing it has no way to be shown it again without
+        // re-submitting — which the server refuses (idempotent) and which would in any
+        // case be asking for the answer key twice. They land on the session summary, from
+        // which the remaining steps are still reachable.
         const answered = new Set(qs.kc.answeredIds)
-        const nextKc = qs.kc.questions.findIndex(q => !answered.has(q.id))
-        if (nextKc !== -1) { setPhase({ name: 'kc', index: nextKc }); return }
+        const nextPre = qs.kc.pre.findIndex(q => !answered.has(q.id))
+        if (nextPre !== -1) { setPhase({ name: 'kc-pre', index: nextPre }); return }
         if (!st.gameOver) { setPhase({ name: 'play' }); return }
-        if (!qs.debrief.answered) { setPhase({ name: 'debrief' }); return }
-        // ⚠ A finished student who already wrote their debrief lands back on the session
-        // summary rather than a dead end. The reveal itself is NOT re-fetched — it comes
-        // only from the debrief submission, and asking again would be asking for the
-        // answer key a second time.
+        if (!qs.freeText.noticing.answered) { setPhase({ name: 'noticing' }); return }
         setPhase({ name: 'play' })
       })
       .catch(err => {
@@ -176,9 +196,11 @@ export default function Play() {
     return <main style={{ padding: '2rem', fontFamily: typography.fontFamily }}><p>Loading…</p></main>
   }
 
-  // ── The knowledge check (spec §9) ──────────────────────────────────────────
-  if (phase.name === 'kc') {
-    const q = questions.kc.questions[phase.index]
+  // ── §9.1 — the PRE-PLAY knowledge check ───────────────────────────────────
+  // Case thinking plus rules comprehension. ⚠ No strategy, no threshold arithmetic, and
+  // nothing that states a target can become unreachable (spec §9.1).
+  if (phase.name === 'kc-pre') {
+    const q = questions.kc.pre[phase.index]
     return (
       <PageShell>
         {/* ⚠ Keyed on the question id, for the same reason the play screens are keyed —
@@ -187,10 +209,11 @@ export default function Play() {
           key={q.id}
           question={q}
           index={phase.index}
-          total={questions.kc.total}
+          total={questions.kc.preTotal}
+          label="Before you start"
           onDone={() => {
             const next = phase.index + 1
-            if (next < questions.kc.questions.length) setPhase({ name: 'kc', index: next })
+            if (next < questions.kc.pre.length) setPhase({ name: 'kc-pre', index: next })
             else setPhase({ name: 'play' })
           }}
         />
@@ -198,18 +221,88 @@ export default function Play() {
     )
   }
 
-  // ── The debrief and the reveal (spec §10) ──────────────────────────────────
-  if (phase.name === 'reveal') {
-    return <PageShell><RevealPanel reveal={phase.reveal} params={state.params} /></PageShell>
-  }
-  if (phase.name === 'debrief') {
+  // ── §10 step 1 — the NOTICING question, BEFORE any result ─────────────────
+  // ⚠ Its answer is what buys the right to the reveal: the submit returns it.
+  if (phase.name === 'noticing') {
     return (
       <PageShell>
         <DebriefScreen
-          question={questions.debrief}
+          step="noticing"
+          question={questions.freeText.noticing}
           params={state.params}
-          onDone={(reveal) => setPhase({ name: 'reveal', reveal })}
+          onDone={(reveal) => setPhase({ name: 'reveal', reveal: reveal! })}
         />
+      </PageShell>
+    )
+  }
+
+  // ── §10 step 2 — the REVEAL ───────────────────────────────────────────────
+  if (phase.name === 'reveal') {
+    return (
+      <PageShell>
+        <RevealPanel reveal={phase.reveal} params={state.params} />
+        <button
+          style={{ marginTop: '1.5rem', padding: '0.5rem 1.4rem', fontSize: '1rem', cursor: 'pointer' }}
+          onClick={() => setPhase(
+            questions.kc.post.length > 0
+              ? { name: 'kc-post', index: 0, reveal: phase.reveal }
+              : { name: 'linking', reveal: phase.reveal },
+          )}
+        >
+          Continue
+        </button>
+      </PageShell>
+    )
+  }
+
+  // ── §9.2 — the POST-PLAY knowledge check, AFTER the reveal ────────────────
+  // ⚠ These are the strategy questions. Asking them earlier would have handed over
+  // §4.1's inference — the decision the whole game was measuring.
+  if (phase.name === 'kc-post') {
+    const q = questions.kc.post[phase.index]
+    return (
+      <PageShell>
+        <KcScreen
+          key={q.id}
+          question={q}
+          index={phase.index}
+          total={questions.kc.postTotal}
+          label="Now that you have played"
+          onDone={() => {
+            const next = phase.index + 1
+            if (next < questions.kc.post.length) {
+              setPhase({ name: 'kc-post', index: next, reveal: phase.reveal })
+            } else {
+              setPhase({ name: 'linking', reveal: phase.reveal })
+            }
+          }}
+        />
+      </PageShell>
+    )
+  }
+
+  // ── §10 step 3 — the LINKING question. ⚠ Graded by Elena OFFLINE. ─────────
+  if (phase.name === 'linking') {
+    return (
+      <PageShell>
+        <RevealPanel reveal={phase.reveal} params={state.params} compact />
+        <DebriefScreen
+          step="linking"
+          question={questions.freeText.linking}
+          params={state.params}
+          onDone={() => setPhase({ name: 'done', reveal: phase.reveal })}
+        />
+      </PageShell>
+    )
+  }
+
+  if (phase.name === 'done') {
+    return (
+      <PageShell>
+        <RevealPanel reveal={phase.reveal} params={state.params} />
+        <p style={{ marginTop: '1.5rem', fontWeight: 600 }}>
+          You are finished — thank you. You can close this window.
+        </p>
       </PageShell>
     )
   }
@@ -247,7 +340,7 @@ export default function Play() {
           completed={state.completed}
           params={state.params}
           totalEarnings={state.totalEarnings}
-          onContinue={questions.debrief.answered ? undefined : () => setPhase({ name: 'debrief' })}
+          onContinue={questions.freeText.noticing.answered ? undefined : () => setPhase({ name: 'noticing' })}
         />
       )}
 

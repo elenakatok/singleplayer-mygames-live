@@ -5,19 +5,26 @@ import {
   SCORECARD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION,
 } from './config'
 import { loadInstance } from './instance'
-import { scorecardKcQuestions, toClientKcQuestions, scorecardDebriefQuestion, kcDenominator } from './questions'
+import {
+  scorecardKcQuestions, questionsForStage, toClientKcQuestions, kcDenominator,
+  noticingQuestion, linkingQuestion,
+} from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// scorecardGetQuestions (student) — the knowledge check (spec §9) and the debrief prompt
-// (spec §10) in one call, plus which of them this student has already answered.
+// scorecardGetQuestions (student) — the split knowledge check (§9) and the two free-text
+// steps (§10), plus which of them this student has already answered.
+//
+// ⚠⚠ THE PRE AND POST SETS ARE RETURNED SEPARATELY AND MUST NEVER BE MERGED. The split is
+// the point (spec §9): the strategy questions moved after play because asking them first
+// TAUGHT THE ANSWER BEFORE MEASURING THE BEHAVIOUR. A client that concatenated the two
+// arrays and rendered them up front would silently undo the decision — so they arrive as
+// two fields with two names, not one list with a flag to filter on.
 //
 // ⚠ THE ANSWER KEY NEVER SHIPS. `toClientKcQuestions` drops `correctOptionId` and
-// `explanation`; the explanation is EARNED by answering (scorecardSubmitKcAnswer returns
-// it).
+// `explanation`; the explanation is EARNED by answering.
 //
-// ⚠ THE STEMS ARE DERIVED FROM LIVE CONFIG (spec §9) — unlike forecast, where an authored
-// stem is a leak control. Here every number in a stem is one spec §8 says the student is
-// told anyway, and a hardcoded "10 ECU" would be wrong the moment a probability is edited.
+// ⚠ NOTHING PRE-PLAY STATES THAT A TARGET CAN BECOME UNREACHABLE (spec §9.1). Q8 asks it,
+// and Q8 is in the POST set.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const scorecardGetQuestions = onCall({ cors: SCORECARD_CORS_ORIGINS }, async (request) => {
@@ -36,26 +43,44 @@ export const scorecardGetQuestions = onCall({ cors: SCORECARD_CORS_ORIGINS }, as
     .get()
   const pData = snap.data() ?? {}
 
-  const questions = scorecardKcQuestions(config, truth)
+  const all = scorecardKcQuestions(config, truth)
+  const pre = questionsForStage(all, 'pre')
+  const post = questionsForStage(all, 'post')
   const answered = (pData.kc_answers ?? {}) as Record<string, { answer?: unknown }>
-  const debrief = scorecardDebriefQuestion(config)
   const freeText = (pData.free_text_answers ?? {}) as Record<string, unknown>
+
+  const noticing = noticingQuestion(config)
+  const linking = linkingQuestion(config)
 
   return {
     ok: true as const,
     kc: {
-      questions: toClientKcQuestions(questions),
-      /** ⚠ DYNAMIC — never a hardcoded /8. The shared grader's rule. */
-      total: kcDenominator(questions),
+      /** Asked BEFORE the contracts begin. */
+      pre: toClientKcQuestions(pre),
+      /** ⚠ Asked only AFTER the §10 reveal. Never rendered before it. */
+      post: toClientKcQuestions(post),
+      /** ⚠ DYNAMIC denominator over BOTH stages — never a hardcoded count. */
+      total: kcDenominator(all),
+      preTotal: pre.length,
+      postTotal: post.length,
       answeredIds: Object.keys(answered),
       score: typeof pData.knowledge_check_score === 'number' ? pData.knowledge_check_score : null,
       complete: pData.knowledge_check_completed_at != null,
     },
-    debrief: {
-      id: debrief.id,
-      prompt: debrief.prompt,
-      followUps: debrief.followUps,
-      answered: freeText[debrief.id] != null,
+    /** §10's two free-text steps, in order. Step 2 (the reveal) sits between them. */
+    freeText: {
+      noticing: {
+        id: noticing.id,
+        prompt: noticing.prompt,
+        followUps: noticing.followUps,
+        answered: freeText[noticing.id] != null,
+      },
+      linking: {
+        id: linking.id,
+        prompt: linking.prompt,
+        followUps: linking.followUps,
+        answered: freeText[linking.id] != null,
+      },
     },
   }
 })

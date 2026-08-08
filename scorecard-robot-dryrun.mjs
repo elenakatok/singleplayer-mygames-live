@@ -18,6 +18,7 @@
 
 import {
   STYLES, STYLE_NAMES, styleFor, EXPECTED_RESPONSE, LEARNER_SWITCH_CONTRACT,
+  ARTIFACT_NAMES,
 } from './bot/scorecard-styles.mjs'
 // ⚠⚠ THE SOLVER, IMPORTED — not reimplemented. This is the one place the robot cohort
 // touches server code on purpose: spec §16 requires ONE solver with four consumers, and
@@ -150,18 +151,27 @@ async function playRobot(gid, pid, styleName, rules, rand) {
   }
 
   // The KC and the debrief, so Tier 2 and the KC column have data.
+  // ⚠ §9's SPLIT: pre AND post are answered, from their own arrays. A robot that merged
+  // them would not exercise the split the design turns on.
   const q = await callFn('scorecardGetQuestions', asStudent(gid, pid))
   if (q.ok) {
-    for (const question of q.result.kc.questions) {
-      // A robot answers with a persona-flavoured guess: optimizers get it right more often.
+    for (const question of [...q.result.kc.pre, ...q.result.kc.post]) {
       const idx = styleName === 'optimizer' ? 0 : Math.floor(rand() * question.options.length)
       await callFn('scorecardSubmitKcAnswer', asStudent(gid, pid, {
         questionId: question.id, answer: question.options[idx].id,
       }))
     }
   }
+  // ⚠ §10's THREE STEPS, IN ORDER. `noticing` returns the reveal; `linking` is refused
+  // until `noticing` is stored.
   await callFn('scorecardSubmitDebrief', asStudent(gid, pid, {
+    step: 'noticing',
     answer: `[${styleName}] I worked when it seemed worth it and stopped when it did not.`,
+  }))
+  await callFn('scorecardSubmitDebrief', asStudent(gid, pid, {
+    step: 'linking',
+    answer: `[${styleName}] Looking at the curves, the difference is smaller than I expected. `
+      + `At Metalcraft the score stops depending on the supplier when rejects are negotiated.`,
   }))
 }
 
@@ -311,6 +321,66 @@ const run = async () => {
   check(early !== null && late !== null, 'both windows have data in both conditions (size-asserted)')
   check(Math.abs(early) < 0.05, `learner's gap over contracts 1–${LEARNER_SWITCH_CONTRACT} is ≈ 0 (${early?.toFixed(3)})`)
   check(late > 0.6, `⚠ and LARGE over contracts ${LEARNER_SWITCH_CONTRACT + 1}–${P.contracts} (${late?.toFixed(3)}) — the drift chart 1 renders`)
+
+  section('§2c ⚠⚠ THE CONTESTED DENOMINATOR — the artifact personas measure EXACTLY 0')
+  // ⚠⚠ THE MOST IMPORTANT CONTROL IN THIS FILE. Each artifact persona is RELIABILITY-BLIND
+  // — its action reads `score` and `periodsRemaining` and never `reliability` — yet over
+  // ALL periods each produces a fake effort gap, because the MIX of states differs between
+  // conditions. Over CONTESTED periods each must measure exactly 0.
+  //
+  // If any of these comes back non-zero, the Tier-1 headline is manufacturing signal again
+  // and the roster is not ranking response.
+  const artifactGid = `sc-artifact-${Date.now()}`
+  await openInstance(artifactGid, { seed: 'artifact-fixed' })
+  for (let i = 0; i < ARTIFACT_NAMES.length; i++) {
+    await playRobot(artifactGid, `robot-art-${i}`, ARTIFACT_NAMES[i], rules, mulberry(4100 + i))
+  }
+  const artRep = await callFn('scorecardGetReport', asInstructor(artifactGid))
+  check(artRep.ok, 'report for the artifact instance')
+  // These are all bots, so Tier 1 is empty — read the figures from the stored docs.
+  console.log()
+  console.log('  reliability-blind persona'.padEnd(38), 'raw gap'.padStart(9), 'contested'.padStart(11))
+  console.log('  ' + '─'.repeat(60))
+  for (let i = 0; i < ARTIFACT_NAMES.length; i++) {
+    const pid = `robot-art-${i}`
+    const doc = await fetch(`${FIRESTORE}/scorecard_game_instances/${artifactGid}/participants/${pid}`,
+      { headers: { Authorization: 'Bearer owner' } }).then(r => r.json())
+    const contracts = (doc.fields?.contracts?.arrayValue?.values ?? []).map(v => {
+      const f = v.mapValue.fields
+      return {
+        reliability: Number(f.reliability?.doubleValue ?? f.reliability?.integerValue ?? 0),
+        periods: (f.periods?.arrayValue?.values ?? []).map(pv => ({
+          action: pv.mapValue.fields.action.stringValue,
+          score: Number(pv.mapValue.fields.score.integerValue ?? pv.mapValue.fields.score.doubleValue ?? 0),
+        })),
+      }
+    })
+    // Recomputed HERE, independently of stats.ts — two routes to the same number.
+    const rate = (hi, contestedOnly) => {
+      let h = 0, n = 0
+      for (const c of contracts) {
+        if ((c.reliability > 0.55) !== hi) continue
+        for (let j = 0; j < c.periods.length; j++) {
+          const before = j === 0 ? 0 : c.periods[j - 1].score
+          const remaining = P.periods - j
+          const contested = before < P.targetScore && before + remaining >= P.targetScore
+          if (contestedOnly && !contested) continue
+          n++
+          if (c.periods[j].action === 'high') h++
+        }
+      }
+      return n === 0 ? null : h / n
+    }
+    const raw = rate(true, false) - rate(false, false)
+    const con = rate(true, true) - rate(false, true)
+    console.log(`  ${ARTIFACT_NAMES[i].padEnd(36)} ${raw.toFixed(3).padStart(9)} ${con.toFixed(3).padStart(11)}`)
+    // ⚠ EXACTLY zero, to three decimals — not "small".
+    check(Math.abs(con) < 0.0005,
+      `⚠ ${ARTIFACT_NAMES[i]}: contested gap is EXACTLY 0 (${con.toFixed(4)})`)
+    // ⚠ And the raw gap is NOT zero — otherwise this proves nothing.
+    check(Math.abs(raw) > 0.02,
+      `   …while its RAW gap is a real artifact (${raw >= 0 ? '+' : ''}${raw.toFixed(3)})`)
+  }
 
   section('§3  ⚠ The cohort would EXPOSE a collapsed treatment')
   // The whole point of persona diversity. If both conditions were the same, every gap

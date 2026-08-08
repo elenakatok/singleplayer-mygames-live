@@ -6,24 +6,30 @@ import {
   SCORECARD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION,
 } from './config'
 import { loadInstance } from './instance'
-import { scorecardDebriefQuestion } from './questions'
+import { noticingQuestion, linkingQuestion } from './questions'
 import { parseStoredContracts } from './state'
-import { buildReveal } from './reveal'
+import { buildReveal, humanPopulation } from './reveal'
+import { isBot } from './botFilter'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// scorecardSubmitDebrief (student) — the free-text paragraph (spec §10), and the ONLY
-// path that returns the reveal.
+// scorecardSubmitDebrief (student) — §10's THREE ORDERED STEPS, and the only path that
+// returns the reveal.
 //
-// ⚠⚠ THE REVEAL IS GATED ON THE GAME BEING OVER, CHECKED INSIDE THE TRANSACTION on the
-// stored `finished_at` stamp (S3 — gates key on the stamp, never on a contract count, so
-// a mid-assignment config change cannot open a gate early). A client that reordered its
-// own screens still cannot reach it.
+//   step 'noticing'  → stores the answer, THEN returns the reveal
+//   step 'linking'   → stores the answer. Refused until 'noticing' is stored.
 //
-// ⚠ WHY THE ORDER MATTERS AT ALL (spec §10): the reveal names the treatment. Students who
-// never acted on the reliability label are the most valuable data in the room, and a
-// reveal shown before the paragraph would let them write an answer describing what they
-// now know they should have done. The paragraph is stored FIRST, then the reveal is
-// returned in the same response.
+// ⚠⚠ THE ORDER IS LOAD-BEARING AND IS ENFORCED SERVER-SIDE, not by screen sequence. Step 1
+// must be captured BEFORE the student sees any result: students who never acted on the
+// reliability label are the most valuable data in the room, and letting them answer after
+// seeing their own two curves would let them retrofit a story. A client that reordered its
+// own screens still cannot reach the reveal without first committing a noticing answer.
+//
+// ⚠ Both steps are gated on the stored `finished_at` stamp (S3 — gates key on the stamp,
+// never on a contract count, so a mid-assignment config change cannot open one early).
+//
+// ⚠ THE LINKING ANSWER IS NOT SCORED IN THE GAME (spec §10). Elena grades it offline,
+// which is why the Tier-2 export carries each student's own per-condition figures beside
+// the text (§11).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const scorecardSubmitDebrief = onCall({ cors: SCORECARD_CORS_ORIGINS }, async (request) => {
@@ -33,6 +39,10 @@ export const scorecardSubmitDebrief = onCall({ cors: SCORECARD_CORS_ORIGINS }, a
 
   const { participantId, gameInstanceId } = await extractStudentOnCallIds(data, isEmulator, authHeader)
 
+  const step = data.step
+  if (step !== 'noticing' && step !== 'linking') {
+    throw new HttpsError('invalid-argument', 'step must be "noticing" or "linking".')
+  }
   const answer = data.answer
   if (typeof answer !== 'string' || answer.trim().length === 0) {
     throw new HttpsError('invalid-argument', 'Please write an answer before submitting.')
@@ -40,7 +50,7 @@ export const scorecardSubmitDebrief = onCall({ cors: SCORECARD_CORS_ORIGINS }, a
 
   const db = admin.firestore()
   const { config, truth } = await loadInstance(db, gameInstanceId)
-  const question = scorecardDebriefQuestion(config)
+  const question = step === 'noticing' ? noticingQuestion(config) : linkingQuestion(config)
 
   const participantRef = db
     .collection(INSTANCES_COLLECTION).doc(gameInstanceId)
@@ -50,13 +60,22 @@ export const scorecardSubmitDebrief = onCall({ cors: SCORECARD_CORS_ORIGINS }, a
     const snap = await tx.get(participantRef)
     const pData = snap.data() ?? {}
 
-    // ⚠ THE GATE (S3). On the STAMP, not on a count.
+    // ⚠ THE FINISH GATE (S3). On the STAMP, not on a count.
     if (pData.finished_at == null) {
       throw new HttpsError('failed-precondition',
         `Please finish every ${config.contractNoun} before answering this question.`)
     }
 
     const existing = (pData.free_text_answers ?? {}) as Record<string, { answer?: unknown }>
+
+    // ⚠⚠ THE ORDER GATE. `linking` asks the student to look at curves they can only have
+    // seen by submitting `noticing` first. Enforced here so screen order is not the
+    // control.
+    if (step === 'linking' && existing.noticing == null) {
+      throw new HttpsError('failed-precondition',
+        'Please answer the first question before this one.')
+    }
+
     const prior = existing[question.id]
     if (prior != null) {
       return {
@@ -77,36 +96,40 @@ export const scorecardSubmitDebrief = onCall({ cors: SCORECARD_CORS_ORIGINS }, a
     return { answer, wasStored: false as const, pData }
   })
 
-  const contracts = parseStoredContracts(stored.pData.contracts, config)
-
-  // ⚠ THE CLASS AVERAGE IS THE COMPARATOR NOW (spec §10, 08-07) — not the DP. That means
-  // reading the whole participant collection, which is the one place a student callable
-  // in this game touches other students' documents. It is safe because nothing
-  // per-student escapes: `buildReveal` reduces the population to two aggregate curves
-  // before it returns, and the response type has no per-participant field to put an id
-  // in. ⚠ Keep it that way — an aggregate that carried its own inputs would be a roster
-  // leak dressed as a chart.
-  const popSnap = await db
-    .collection(INSTANCES_COLLECTION).doc(gameInstanceId)
-    .collection(PARTICIPANTS_SUBCOLLECTION)
-    .get()
-  const population = popSnap.docs.map(d => ({
-    participantId: d.id,
-    contracts: parseStoredContracts(d.data().contracts, config),
-  }))
+  // ── The reveal — returned by the NOTICING step only (spec §10 step 2) ─────
+  let reveal = null
+  if (step === 'noticing') {
+    // ⚠⚠ THE CLASS AVERAGE IS HUMANS-ONLY, ALWAYS, WITH NO DEMO FALLBACK (spec §11,
+    // 08-07). A student must never be compared against robots — and unlike the
+    // instructor charts, there is no banner here that could tell them they were.
+    const popSnap = await db
+      .collection(INSTANCES_COLLECTION).doc(gameInstanceId)
+      .collection(PARTICIPANTS_SUBCOLLECTION)
+      .get()
+    const population = humanPopulation(
+      popSnap.docs.map(d => ({ id: d.id, data: d.data() })),
+      (id, d) => isBot(id, d),
+      config,
+      parseStoredContracts,
+    )
+    const contracts = parseStoredContracts(stored.pData.contracts, config)
+    reveal = buildReveal(contracts, population, config, truth)
+  }
 
   return {
     ok: true as const,
+    step,
     questionId: question.id,
     stored: stored.wasStored,
     answer: stored.answer,
     /**
-     * ⚠⚠ THE REVEAL (spec §10). The only student payload in this build that names the
-     * treatment or carries both conditions. Reachable only past the gate above.
+     * ⚠⚠ THE REVEAL (spec §10 step 2). The only student payload that names the treatment.
+     * Present ONLY on the noticing step — which is what makes the ordering physical rather
+     * than conventional. Null on `linking`, by which point the student has already seen it.
      *
-     * ⚠ IT CARRIES NO DP (decided 08-07). Their two curves against each other and against
-     * the class — never against an optimal policy. See reveal.ts.
+     * ⚠ It carries no DP (decided 08-07): their two curves against each other and against
+     * the class, never against an optimal policy.
      */
-    reveal: buildReveal(contracts, population, config, truth),
+    reveal,
   }
 })

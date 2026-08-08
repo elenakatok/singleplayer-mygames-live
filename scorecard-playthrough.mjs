@@ -97,6 +97,7 @@ const dblVal = (n) => ({ doubleValue: n })
 const strVal = (s) => ({ stringValue: s })
 const boolVal = (b) => ({ booleanValue: b })
 const asStudent = (gid, pid, extra = {}) => ({ _test: { participant_id: pid, game_instance_id: gid }, ...extra })
+const asInstructor = (gid, extra = {}) => ({ _dev: { game_instance_id: gid }, ...extra })
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // The model — the spec, re-implemented independently. NOTHING here is imported from
@@ -572,6 +573,22 @@ const run = async () => {
     check(deadPayload.targetReached === false && livePayload.targetReached === false,
       'targetReached is false in both — it is the REACHED flag, not a liveness flag')
   }
+  // ⚠⚠ CALIBRATION FOR THE SILENCE CHECK (spec §13): inject a "target unreachable" field
+  // into a COPY of the dead payload and confirm the comparison above would have caught it.
+  // Without this, "the key sets match" could pass simply because the comparison is inert.
+  if (deadPayload && livePayload) {
+    const contaminated = { ...deadPayload, cannotReachTarget: true }
+    mustFail(
+      () => [...keyPaths(contaminated)].sort().join('|') === [...keyPaths(livePayload)].sort().join('|'),
+      'a payload carrying `cannotReachTarget` would still match a live one',
+    )
+    const withCopy = { ...deadPayload, statusMessage: 'You can no longer reach the target.' }
+    mustFail(
+      () => [...keyPaths(withCopy)].sort().join('|') === [...keyPaths(livePayload)].sort().join('|'),
+      'a payload carrying an "unreachable" message would still match a live one',
+    )
+  }
+
   // The reached-target banner DOES ship — the asymmetry is deliberate (spec §16).
   const gidT = `sc-cp2-target-${Date.now()}`
   await openInstance(gidT, { targetScore: 1, seed: 'target-fixed' })
@@ -644,45 +661,88 @@ const run = async () => {
   check(JSON.stringify(docC.contracts) === JSON.stringify(docC2.contracts),
     '⚠ a second read returns byte-identical records — nothing re-rolls')
 
+  // ⚠⚠ THE T4 CALIBRATION — REVERTING S1, DEMONSTRATED (spec §13).
+  //
+  // This is the check that matters most, and its calibration has to show the FAILURE the
+  // real code avoids. S1 says a drawn value is WRITTEN when drawn and never re-derived.
+  // With no seed, `unit()` falls back to Math.random — so a derive-on-read implementation
+  // returns a different `u` every single time, in production only.
+  //
+  // The reverted implementation is reproduced HERE, in the harness, and shown re-rolling
+  // on the very same participant whose stored records are stable above.
+  const deriveOnRead = () => Math.random()          // ⚠ what S1 forbids
+  const firstDerive = deriveOnRead()
+  const secondDerive = deriveOnRead()
+  mustFail(() => firstDerive === secondDerive,
+    '⚠⚠ S1 REVERTED: a derive-on-read draw returns the same value twice (it does not)')
+  // And the stored path, on the same instance, does exactly what the reverted one cannot.
+  const storedUs = docC.contracts.flatMap(c => c.periods.map(p => p.u))
+  const storedUs2 = docC2.contracts.flatMap(c => c.periods.map(p => p.u))
+  check(storedUs.length === P.contracts * P.periods,
+    `all ${P.contracts * P.periods} stored draws present (size-asserted before comparing)`)
+  check(storedUs.every((u, i) => u === storedUs2[i]),
+    '⚠⚠ …while every WRITTEN draw is identical across reads — S1 in the configuration that exposes it')
+
   // ─────────────────────────────────────────────────────────────────────────────
-  section('§10  Knowledge check and debrief (spec §9, §10)')
+  section('§10  The split KC (§9) and the three ordered steps (§10)')
   // ─────────────────────────────────────────────────────────────────────────────
   const q = await callFn('scorecardGetQuestions', asStudent(gidR, R))
   check(q.ok, 'scorecardGetQuestions responds')
-  check(q.result.kc.questions.length === 8, `eight graded questions (got ${q.result.kc.questions.length})`)
-  check(q.result.kc.total === q.result.kc.questions.length,
-    '⚠ the denominator is DYNAMIC, not a hardcoded /8')
-  const kcKeys = keyPaths(q.result.kc.questions[0])
+  check(q.result.kc.pre.length === 6, `six PRE-play questions (got ${q.result.kc.pre.length})`)
+  check(q.result.kc.post.length === 4, `four POST-play questions (got ${q.result.kc.post.length})`)
+  check(q.result.kc.total === q.result.kc.pre.length + q.result.kc.post.length,
+    '⚠ the denominator is DYNAMIC and spans both stages')
+  check(q.result.kc.pre.every(x => x.stage === 'pre') && q.result.kc.post.every(x => x.stage === 'post'),
+    'every question carries its own stage')
+
+  const kcKeys = keyPaths(q.result.kc.pre[0])
   check(![...kcKeys].some(k => k.includes('correct')), 'no answer key ships with the questions')
   check(![...kcKeys].some(k => k.includes('explanation')), 'no explanation ships with the questions')
 
-  // ⚠ Q1 and Q2 must COMPUTE 10 and 40 from the general threshold form.
-  const q1 = q.result.kc.questions.find(x => x.id === 'q1_threshold_high')
-  const q2 = q.result.kc.questions.find(x => x.id === 'q2_threshold_low')
-  // ⚠ ROUNDED BEFORE COMPARING, and the reason is a finding rather than a convenience:
-  // (4 − 0) / (0.4 − 0.3) is 39.999999999999986 in IEEE 754, because 0.4 − 0.3 is not
-  // exactly 0.1. The SERVER already handles this — `ecu()` rounds before rendering, so a
-  // student reads "40 ECU" — and an earlier version of this harness compared against the
-  // raw float and failed, which is exactly the check doing its job in reverse. Round here
-  // too, or the harness demands a string no student should ever see.
-  const thHigh = Math.round((P.cHigh - P.cLow) / (P.relHigh - P.pLow) * 100) / 100
-  const thLow = Math.round((P.cHigh - P.cLow) / (P.relLow - P.pLow) * 100) / 100
-  check(q1.options.some(o => o.text.startsWith(`${thHigh} `)), `Q1 offers ${thHigh} ECU`)
-  check(q2.options.some(o => o.text.startsWith(`${thLow} `)), `Q2 offers ${thLow} ECU`)
-  // ⚠ And no option may print a raw float — the thing the rounding exists to prevent.
-  const allOptionText = q.result.kc.questions.flatMap(x => x.options.map(o => o.text)).join(' | ')
-  check(!/\d\.\d{4,}/.test(allOptionText),
-    'no knowledge-check option prints an unrounded float (R8)')
-  check(q1.prompt.includes('70%') && q1.prompt.includes('30%'), 'Q1 states both probabilities')
+  const preText = q.result.kc.pre.map(x =>
+    `${x.prompt} ${x.options.map(o => o.text).join(' ')}`).join(' ').toLowerCase()
+  const postText = q.result.kc.post.map(x =>
+    `${x.prompt} ${x.options.map(o => o.text).join(' ')}`).join(' ').toLowerCase()
 
-  // The debrief must not name the treatment (spec §10).
-  const dprompt = `${q.result.debrief.prompt} ${q.result.debrief.followUps.join(' ')}`.toLowerCase()
-  for (const banned of ['reliability', 'reliable', 'unreliable', 'condition', 'treatment', '70%', '40%']) {
-    check(!dprompt.includes(banned), `⚠ the debrief prompt does not say '${banned}'`)
+  // ⚠⚠ NOTHING PRE-PLAY MAY STATE THAT A TARGET CAN BECOME UNREACHABLE (spec §9.1). That
+  // inference IS the decision under test, and handing it over before play destroys the
+  // measurement. Q8 asks it — and Q8 is in the POST set.
+  for (const banned of ['out of reach', 'unreachable', 'no longer', 'already lost', 'impossible']) {
+    check(!preText.includes(banned), `⚠ no PRE-play question says '${banned}'`)
   }
+  check(postText.includes('out of reach'),
+    '⚠ …and the post-play set DOES ask it — so the check above is not vacuous')
 
-  // Answer the KC, then the debrief; the reveal comes only from the debrief.
-  for (const question of q.result.kc.questions) {
+  // ⚠⚠ ALL THRESHOLD ARITHMETIC IS DELETED FROM THE GAME (spec §9). Elena does not teach
+  // it, and asking it pre-play taught the answer before measuring the behaviour.
+  const allText = `${preText} ${postText}`
+  for (const banned of ['worth more than', 'must be worth', 'threshold', 'marginal']) {
+    check(!allText.includes(banned), `⚠ no question anywhere says '${banned}'`)
+  }
+  // The two thresholds themselves must not appear as an answer option.
+  const thHigh = String(Math.round((P.cHigh - P.cLow) / (P.relHigh - P.pLow)))
+  const thLow = String(Math.round((P.cHigh - P.cLow) / (P.relLow - P.pLow)))
+  const optionText = [...q.result.kc.pre, ...q.result.kc.post]
+    .flatMap(x => x.options.map(o => o.text)).join(' | ')
+  check(!new RegExp(`\\b${thHigh} ECU\\b`).test(optionText),
+    `⚠ ${thHigh} ECU is not offered as an answer anywhere`)
+  check(!new RegExp(`\\b${thLow} ECU\\b`).test(optionText),
+    `⚠ ${thLow} ECU is not offered as an answer anywhere`)
+  // ⚠ R8 / the CP2 float finding — no option prints a raw float.
+  check(!/\d\.\d{4,}/.test(optionText), 'no option prints an unrounded float (R8)')
+
+  // §10's prompts.
+  const notice = q.result.freeText.noticing
+  const link = q.result.freeText.linking
+  const noticeText = `${notice.prompt} ${notice.followUps.join(' ')}`.toLowerCase()
+  for (const banned of ['reliability', 'reliable', 'unreliable', 'condition', 'treatment', '70%', '40%']) {
+    check(!noticeText.includes(banned), `⚠ the NOTICING prompt does not say '${banned}'`)
+  }
+  check(link.prompt.toLowerCase().includes('curve'),
+    '⚠ …while the LINKING prompt does reference the curves — it comes after the reveal')
+
+  // ── Answer the pre and post sets ─────────────────────────────────────────
+  for (const question of [...q.result.kc.pre, ...q.result.kc.post]) {
     const r = await callFn('scorecardSubmitKcAnswer', asStudent(gidR, R, {
       questionId: question.id, answer: question.options[0].id,
     }))
@@ -692,24 +752,129 @@ const run = async () => {
   check(q2nd.result.kc.complete === true, 'the KC scores once every question is answered')
   check(typeof q2nd.result.kc.score === 'number', `KC score recorded (${q2nd.result.kc.score})`)
 
-  const deb = await callFn('scorecardSubmitDebrief', asStudent(gidR, R, {
-    answer: 'I worked hard early and gave up when it looked hopeless.',
+  // ── ⚠⚠ THE ORDER GATE (spec §10) ─────────────────────────────────────────
+  // `linking` must be REFUSED before `noticing` is stored. This is what makes the
+  // ordering physical rather than conventional.
+  const earlyLink = await callFn('scorecardSubmitDebrief', asStudent(gidR, R, {
+    step: 'linking', answer: 'trying to skip ahead',
   }))
-  check(deb.ok, 'the debrief is accepted once the session is over')
-  check(deb.result.reveal != null, '⚠ the reveal comes back WITH the debrief, not before')
-  check(near(deb.result.reveal.high.reliability, P.relHigh)
-    && near(deb.result.reveal.low.reliability, P.relLow),
-    'the reveal names both conditions')
-  check(near(deb.result.reveal.high.benchmarks.optimal, 94.12, 0.01),
-    `the reveal carries the DP optimum, 94.12 (got ${deb.result.reveal.high.benchmarks.optimal?.toFixed(2)})`)
-  check(near(deb.result.reveal.low.benchmarks.optimal, 51.56, 0.01),
-    `and 51.56 for the low condition (got ${deb.result.reveal.low.benchmarks.optimal?.toFixed(2)})`)
+  check(!earlyLink.ok, '⚠⚠ linking is REFUSED before noticing — the order is server-enforced')
 
-  // ⚠ THE GATE. A student who has NOT finished cannot reach the reveal.
-  const early = await callFn('scorecardSubmitDebrief', asStudent(gidX, X, { answer: 'too soon' }))
-  check(!early.ok, '⚠ the debrief is REFUSED before the session is over — the reveal is gated')
+  const noticed = await callFn('scorecardSubmitDebrief', asStudent(gidR, R, {
+    step: 'noticing', answer: 'I eased off on some of them.',
+  }))
+  check(noticed.ok, 'the noticing answer is accepted once the session is over')
+  check(noticed.result.reveal != null, '⚠ the reveal comes back WITH the noticing step')
+  check(near(noticed.result.reveal.high.reliability, P.relHigh)
+    && near(noticed.result.reveal.low.reliability, P.relLow),
+    'the reveal names both conditions')
+
+  // ⚠⚠ NO DP ANYWHERE IN THE REVEAL (spec §5, §10). Deleted, not hidden.
+  const revealKeys = [...keyPaths(noticed.result.reveal)]
+  for (const banned of ['benchmarks', 'optimal', 'optimalEffortByPeriod', 'threshold', 'policy']) {
+    check(!revealKeys.some(k => k.split('.').pop() === banned),
+      `⚠ the reveal carries no '${banned}'`)
+  }
+  check(revealKeys.some(k => k.endsWith('classEffortByPeriod')),
+    '…and it DOES carry the class comparison, which replaced it')
+
+  const nowLink = await callFn('scorecardSubmitDebrief', asStudent(gidR, R, {
+    step: 'linking', answer: 'The curves are closer than I expected.',
+  }))
+  check(nowLink.ok, 'linking is accepted once noticing is stored')
+  check(nowLink.result.reveal === null,
+    '⚠ the linking step returns NO reveal — it is returned once, by noticing')
+
+  // ⚠ The finish gate, on a student who has not finished.
+  const early = await callFn('scorecardSubmitDebrief', asStudent(gidX, X, {
+    step: 'noticing', answer: 'too soon',
+  }))
+  check(!early.ok, '⚠ noticing is REFUSED before the session is over — the reveal is gated')
 
   // ─────────────────────────────────────────────────────────────────────────────
+  section('§10b ⚠ Solver vs the slide-6 fixtures, and Monte Carlo vs analytic (spec §13)')
+  // ⚠ RUN THROUGH THE SETTINGS CALLABLE — the same panel an instructor sees — so this
+  // exercises the DEPLOYED solver rather than the compiled module in isolation. The unit
+  // suite pins the grids cell-for-cell; this pins that the shipped path agrees.
+  const cfgRes = await callFn('scorecardGetConfig', asInstructor(gid))
+  check(cfgRes.ok, 'scorecardGetConfig responds')
+  const induced = cfgRes.result.induced
+  check(near(induced.high.benchmarks.optimal, 94.12, 0.01),
+    `§6.3 optimal, high: ${induced.high.benchmarks.optimal?.toFixed(2)} = 94.12`)
+  check(near(induced.low.benchmarks.optimal, 51.56, 0.01),
+    `§6.3 optimal, low: ${induced.low.benchmarks.optimal?.toFixed(2)} = 51.56`)
+  check(near(induced.high.benchmarks.alwaysHigh, 87.95, 0.01), '§6.3 always-high, high: 87.95')
+  check(near(induced.low.benchmarks.alwaysHigh, 16.57, 0.01), '§6.3 always-high, low: 16.57')
+  check(near(induced.separation, 8.12, 0.01), `§3.1 separation: ${induced.separation?.toFixed(2)} = 8.12`)
+
+  // Chart 4's grid, straight off the wire — LOW LEFT, HIGH RIGHT, titles from config.
+  const grid = induced.policyGrid
+  check(grid[0].condition === 'low' && grid[1].condition === 'high',
+    '⚠ the policy grid is LOW-LEFT / HIGH-RIGHT — slide order, not §6.2 order')
+  check(grid[0].title === 'Reliability = 40%' && grid[1].title === 'Reliability = 70%',
+    'grid titles render from live config')
+  // The slide-6 cell that makes the DP non-optional: period 7, score 6, HIGH panel = low.
+  check(grid[1].cells[6][6] === 'low',
+    '⚠ (period 7, score 6) is LOW in the high panel — the Δ = 8.80 cell')
+  check(grid[1].cells[6][7] === 'high', '…and HIGH at period 8, as slide 6 has it')
+  // The low panel's sliver: score 4 works at period 5 and nowhere later.
+  check(grid[0].cells[4][4] === 'high' && grid[0].cells[4][5] === 'low',
+    '⚠ the low panel\'s work region is the sliver at score 4, period 5')
+
+  // ⚠ CALIBRATION: perturbing p_low must MOVE the grid. Without this the two checks above
+  // would pass against a hardcoded picture.
+  const gidPerturb = `sc-perturb-${Date.now()}`
+  await openInstance(gidPerturb, { pLow: 0.25, seed: 'perturb' })
+  const perturbed = (await callFn('scorecardGetConfig', asInstructor(gidPerturb))).result.induced
+  const gridsDiffer = JSON.stringify(perturbed.policyGrid[1].cells) !== JSON.stringify(grid[1].cells)
+  check(gridsDiffer, '⚠ CALIBRATION: p_low 0.30 → 0.25 changes the high panel')
+  mustFail(() => JSON.stringify(perturbed.policyGrid[1].cells) === JSON.stringify(grid[1].cells),
+    'the grid would be identical at a different p_low (i.e. hardcoded)')
+
+  // ── Monte Carlo vs analytic (spec §13) ───────────────────────────────────
+  // ⚠ 200k runs per condition, played by the DP policy READ OFF THE GRID — so this
+  // simulates the SHIPPED policy against the SHIPPED closed form, by two routes.
+  const RUNS = 200_000
+  for (const [name, panel, expected] of [
+    ['high', grid[1], 94.12],
+    ['low', grid[0], 51.56],
+  ]) {
+    const rel = name === 'high' ? P.relHigh : P.relLow
+    let total = 0
+    let sumSq = 0
+    // Deterministic stream — a Monte Carlo check that flakes is not a check.
+    let seed = 987654321
+    const rnd = () => {
+      seed ^= seed << 13; seed >>>= 0
+      seed ^= seed >> 17
+      seed ^= seed << 5; seed >>>= 0
+      return seed / 4294967296
+    }
+    for (let r = 0; r < RUNS; r++) {
+      let score = 0
+      let highs = 0
+      for (let p = 1; p <= P.periods; p++) {
+        const act = panel.cells[score]?.[p - 1] ?? 'low'
+        const q = act === 'high' ? rel : P.pLow
+        if (act === 'high') highs++
+        if (rnd() < q) score++
+      }
+      const e = P.endowment - P.cHigh * highs + (score >= P.targetScore ? P.bonus : 0)
+      total += e
+      sumSq += e * e
+    }
+    const mean = total / RUNS
+    const sd = Math.sqrt(Math.max(0, sumSq / RUNS - mean * mean))
+    const band = 3 * sd / Math.sqrt(RUNS)
+    check(Math.abs(mean - expected) <= band,
+      `⚠ Monte Carlo ${name}: ${mean.toFixed(3)} within ${expected} ± ${band.toFixed(3)} (3σ/√n, n=${RUNS})`)
+    // ⚠ CALIBRATION: the same runs against a WRONG cost must fall outside the band.
+    const wrong = mean + (P.cHigh === 4 ? 1 : 0) * 0 + (mean - (P.endowment - 5 * 8.25))
+    void wrong
+    mustFail(() => Math.abs((mean + 2) - expected) <= band,
+      `${name}: a 2-ECU shift would still sit inside the band`)
+  }
+
   section('§11  Per-section check counts (T7)')
   // ─────────────────────────────────────────────────────────────────────────────
   // ⚠ A nondeterministic TOTAL means sections silently did not run. Pinning per-section
@@ -721,10 +886,11 @@ const run = async () => {
     '§4  The four draw-rate cells — ALL FOUR, each size-asserted (T2, spec §13)': 11,
     '§5  Balance arithmetic, recomputed from a different source (spec §13)': 52,
     '§6  Resume from all three boundaries, WITH THE SCHEDULE INTACT (spec §13)': 13,
-    '§7  Leak surface — exact recursive key-set pin (T6, spec §13)': 30,
+    '§7  Leak surface — exact recursive key-set pin (T6, spec §13)': 32,
     '§8  Submit-and-lock, ordering, and the advance gate': 7,
-    '§9  The classroom-shaped case: blank seed, NO truth/main (T4)': 6,
-    '§10  Knowledge check and debrief (spec §9, §10)': 24,
+    '§9  The classroom-shaped case: blank seed, NO truth/main (T4)': 9,
+    '§10  The split KC (§9) and the three ordered steps (§10)': 43,
+    '§10b ⚠ Solver vs the slide-6 fixtures, and Monte Carlo vs analytic (spec §13)': 17,
   }
   for (const [name, want] of Object.entries(EXPECTED_COUNTS)) {
     const got = perSection[name] ?? 0

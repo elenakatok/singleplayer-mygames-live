@@ -16,11 +16,14 @@ const card: React.CSSProperties = {
 }
 
 export function KcScreen({
-  question, index, total, onDone,
+  question, index, total, label, onDone,
 }: {
   question: ScorecardKcQuestion
   index: number
   total: number
+  /** ⚠ Names WHICH stage this is — "Before you start" / "Now that you have played".
+   *  The split is the design (spec §9) and the student should see that it is one. */
+  label: string
   onDone: () => void
 }) {
   const [choice, setChoice] = useState<string | null>(null)
@@ -45,7 +48,7 @@ export function KcScreen({
   return (
     <div>
       <p style={{ color: '#666', fontSize: '0.85rem', margin: '0 0 0.5rem' }}>
-        Knowledge check — question {index + 1} of {total}
+        {label} — question {index + 1} of {total}
       </p>
       <div style={card}>
         <p style={{ margin: 0, fontSize: '1.02rem' }}>{question.prompt}</p>

@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react'
-import { SortableTable, colors, type SortableColumn } from '@mygames/game-ui'
+import type { ReactNode } from 'react'
+import {
+  ReportBoard, SortableTable, colors,
+  type ReportTileConfig, type SortableColumn,
+} from '@mygames/game-ui'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { compareByLastName } from '../shared/sortName'
@@ -32,6 +36,21 @@ import { EffortByRoundChart, EffortByPeriodChart, GapDistributionChart } from '.
 // grid, and chart 2's optional dashed overlay, which is DEFAULT OFF.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** ⚠ Local, matching forecast's and procurement's — `Modal` is not a game-ui export. */
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '1rem' }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 10, padding: '1.25rem 1.5rem', maxWidth: 1100, width: '100%', maxHeight: '90vh', overflow: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', marginBottom: '1rem' }}>
+          <h2 style={{ margin: 0, fontSize: '1.2rem', lineHeight: 1.35 }}>{title}</h2>
+          <button onClick={onClose} style={{ border: '1px solid #ccc', background: 'none', borderRadius: 4, padding: '0.3rem 0.7rem', cursor: 'pointer', flexShrink: 0 }}>Close</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 const tnum: React.CSSProperties = { fontVariantNumeric: 'tabular-nums' }
 const pct = (v: number | null) => (v === null ? '—' : `${Math.round(v * 100)}%`)
 const money = (v: number | null, c: string) => (v === null ? '—' : `${Math.round(v)} ${c}`)
@@ -50,7 +69,7 @@ const num = (v: number | null) => (v === null ? 0 : v)
 
 type RosterKey =
   | 'name' | 'status' | 'contracts' | 'earnings'
-  | 'rate_high' | 'rate_low' | 'gap'
+  | 'rate_high' | 'rate_low' | 'gap' | 'raw_gap'
   | 'earn_high' | 'earn_low' | 'bonus_high' | 'bonus_low'
   | 'wasted' | 'kc'
 
@@ -60,6 +79,7 @@ export default function Reports() {
   const [error, setError] = useState<string | null>(null)
   /** ⚠ Spec §11: the DP overlay on chart 2 is DEFAULT OFF. */
   const [showOptimal, setShowOptimal] = useState(false)
+  const [active, setActive] = useState<string | null>(null)
 
   useEffect(() => {
     if (session.kind !== 'ready') return
@@ -160,14 +180,32 @@ export default function Reports() {
       compare: (a, b) => (num(a.high_effort_rate_low) - num(b.high_effort_rate_low)) || tie(a, b),
     },
     {
-      // ⚠⚠ THE HEADLINE COLUMN (spec §11). Sorting on it ranks the class by who acted on
-      // what they were shown. `nullsLast` matters more here than anywhere: a null gap
-      // means only one condition was played, and must not sort as if it were zero.
-      key: 'gap', label: 'Effort gap',
+      // ⚠⚠ THE HEADLINE COLUMN (spec §11) — CONTESTED PERIODS ONLY. Sorting on it ranks
+      // the class by who acted on what they were shown.
+      //
+      // ⚠ It is NOT the raw all-period gap. Over all periods a student who never thought
+      // about reliability but stops on dead contracts shows +0.275 by pure mechanics, and
+      // would out-rank a genuine weak responder. The contested denominator zeroes that
+      // exactly, by construction.
+      //
+      // `nullsLast` matters more here than anywhere: a null means the student faced no
+      // contested periods in one condition, and must not sort as if it were zero.
+      key: 'gap', label: 'Contested gap',
       render: r => (
-        <strong style={{ ...tnum, color: r.effort_gap === null ? colors.textSecondary : undefined }}>
-          {signedPct(r.effort_gap)}
+        <strong style={{ ...tnum, color: r.contested_gap === null ? colors.textSecondary : undefined }}>
+          {signedPct(r.contested_gap)}
         </strong>
+      ),
+      nullsLast: true, isNull: r => r.contested_gap == null,
+      compare: (a, b) => (num(a.contested_gap) - num(b.contested_gap)) || tie(a, b),
+    },
+    {
+      // ⚠ SECONDARY. Shown BESIDE the contested gap precisely so the mechanical component
+      // is legible: a large raw gap next to a near-zero contested one IS the deadness
+      // artifact, and the "paid after dead" column names it.
+      key: 'raw_gap', label: 'Raw gap (all periods)',
+      render: r => (
+        <span style={{ ...tnum, color: colors.textSecondary }}>{signedPct(r.effort_gap)}</span>
       ),
       nullsLast: true, isNull: r => r.effort_gap == null,
       compare: (a, b) => (num(a.effort_gap) - num(b.effort_gap)) || tie(a, b),
@@ -209,11 +247,35 @@ export default function Reports() {
     },
   ]
 
-  const written = participants.filter(p => p.debrief !== null)
+  /**
+   * ⚠ THE TIER-2 EXPORT CARRIES THE NUMBERS (spec §11). Elena grades the written answers
+   * offline; a claim like "I eased off when the scorecard got unreliable" is unassessable
+   * without the student's own figures beside it.
+   */
+  function copyExport(step: 'noticing' | 'linking') {
+    const rows = participants
+      .filter(p => (step === 'noticing' ? p.noticing : p.linking) !== null)
+      .map(p => [
+        `NAME: ${p.name ?? p.participant_id}`,
+        `EFFORT @ ${Math.round(treatment.reliabilityHigh * 100)}%: ${pct(p.high_effort_rate_high)}`,
+        `EFFORT @ ${Math.round(treatment.reliabilityLow * 100)}%: ${pct(p.high_effort_rate_low)}`,
+        `CONTESTED GAP: ${signedPct(p.contested_gap)}`
+          + ` (over ${p.contested_periods_high}/${p.contested_periods_low} contested periods)`,
+        `RAW GAP (all periods): ${signedPct(p.effort_gap)}`,
+        `CONTRACTS COMPLETED: ${p.contracts_completed}`,
+        `BONUSES: ${p.bonuses_high} @ high, ${p.bonuses_low} @ low`,
+        `PERIODS PAID AFTER DEAD: ${p.periods_paid_after_dead}`,
+        '',
+        (step === 'noticing' ? p.noticing : p.linking) ?? '',
+      ].join('\n'))
+      .join('\n\n' + '-'.repeat(60) + '\n\n')
+    void navigator.clipboard?.writeText(rows).catch(() => { /* clipboard unavailable */ })
+  }
 
-  const sections = [
+  const sectionDefs = [
     {
       id: 'tier1',
+      preview: <span>{participants.length} on the roster · {participants.filter(p => p.completed).length} finished</span>,
       title: 'Tier 1 — outcomes roster',
       body: (
         <>
@@ -238,31 +300,61 @@ export default function Reports() {
     },
     {
       id: 'tier2',
-      title: 'Tier 2 — debrief answers',
+      preview: <span>{participants.filter(p => p.linking !== null).length} written reflections · figures included in the export</span>,
+      title: 'Tier 2 — written answers',
       body: (
         <>
-          <p style={{ margin: '0 0 0.6rem', fontSize: '0.82rem', color: colors.textSecondary, fontStyle: 'italic' }}>
-            &ldquo;{report.debriefPrompt}&rdquo;
-          </p>
-          <p style={{ margin: '0 0 0.75rem', fontSize: '0.8rem', color: colors.textSecondary }}>
-            {written.length} of {participants.length} written.
-          </p>
-          {written.map(p => (
-            <div key={p.participant_id} style={{
-              borderLeft: `3px solid ${colors.borderMid}`, padding: '0.35rem 0 0.35rem 0.75rem',
-              margin: '0 0 0.9rem',
-            }}>
-              <div style={{ fontSize: '0.78rem', color: colors.textSecondary }}>
-                {p.name ?? '(no name on the roster)'} · gap {signedPct(p.effort_gap)}
+          {report.freeTextQuestions.map(q => {
+            const written = participants.filter(
+              p => (q.step === 'noticing' ? p.noticing : p.linking) !== null)
+            return (
+              <div key={q.id} style={{ margin: '0 0 2rem' }}>
+                <h4 style={{ margin: '0 0 0.3rem' }}>
+                  {q.step === 'noticing' ? '1. Before seeing any results' : '3. After the reveal'}
+                </h4>
+                <p style={{ margin: '0 0 0.35rem', fontSize: '0.82rem', color: colors.textSecondary, fontStyle: 'italic' }}>
+                  &ldquo;{q.prompt}&rdquo;
+                </p>
+                <p style={{ margin: '0 0 0.75rem', fontSize: '0.78rem', color: colors.textSecondary }}>
+                  {q.gradedNote} · {written.length} of {participants.length} written.
+                  {' '}
+                  <button onClick={() => copyExport(q.step)} style={{ fontSize: '0.78rem' }}>
+                    Copy all with figures
+                  </button>
+                </p>
+                {written.map(p => (
+                  <div key={p.participant_id} style={{
+                    borderLeft: `3px solid ${colors.borderMid}`,
+                    padding: '0.4rem 0 0.4rem 0.75rem', margin: '0 0 0.9rem',
+                  }}>
+                    {/* ⚠⚠ THE FIGURES SIT BESIDE THE TEXT (spec §11, Elena 08-07). Elena
+                        grades this offline, and "I eased off when it got unreliable" cannot
+                        be assessed without the numbers next to it — otherwise the grade
+                        rewards plausible prose over actual insight. */}
+                    <div style={{ fontSize: '0.78rem', color: colors.textSecondary }}>
+                      <strong style={{ color: colors.text ?? '#222' }}>
+                        {p.name ?? '(no name on the roster)'}
+                      </strong>
+                      {' · '}effort {pct(p.high_effort_rate_high)} @ {Math.round(treatment.reliabilityHigh * 100)}%
+                      {' / '}{pct(p.high_effort_rate_low)} @ {Math.round(treatment.reliabilityLow * 100)}%
+                      {' · '}<strong>contested gap {signedPct(p.contested_gap)}</strong>
+                      {' · '}{p.contracts_completed} contracts
+                      {' · '}bonuses {p.bonuses_high}/{p.bonuses_low}
+                    </div>
+                    <div style={{ whiteSpace: 'pre-wrap', marginTop: '0.3rem' }}>
+                      {q.step === 'noticing' ? p.noticing : p.linking}
+                    </div>
+                  </div>
+                ))}
               </div>
-              <div style={{ whiteSpace: 'pre-wrap' }}>{p.debrief}</div>
-            </div>
-          ))}
+            )
+          })}
         </>
       ),
     },
     {
       id: 'tier3',
+      preview: <span>Four charts — effort by round, by period, the contested-gap distribution, and the optimal policy</span>,
       title: 'Tier 3 — class charts',
       body: (
         <>
@@ -310,6 +402,7 @@ export default function Reports() {
     },
     {
       id: 'summary',
+      preview: <span>Class effort and earnings per condition, against best possible</span>,
       title: 'Summary',
       body: (
         <table style={{ borderCollapse: 'collapse', fontSize: '0.9rem' }}>
@@ -361,23 +454,41 @@ export default function Reports() {
     },
   ]
 
-  // ⚠ RENDERED AS SECTIONS, NOT `ReportBoard` TILES. The family's tile board opens each
-  // tier in a modal, which is right when a tier is one table — but Tier 3 here is FOUR
-  // charts that are read against each other (the two class lines, the gap distribution,
-  // and the policy grid that explains both). Putting them behind separate modals would
-  // hide exactly the comparison the page exists to support, and would make the whole
-  // page impossible to screenshot for a deck.
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ⚠ THE STANDARD REPORT GRID — same shell as procurement, forecast and the rest
+  // (spec §11, Elena 08-07). A CONSISTENCY REQUIREMENT, not a preference: an instructor
+  // moving between games should not have to relearn the page.
+  //
+  // An earlier version rendered the tiers as one stacked page, on the reasoning that
+  // Tier 3's four charts are read against each other. That reasoning was about ONE tier
+  // and the fix belongs there — the Tier-3 modal shows all four charts together, so the
+  // comparison survives while the page shape matches every other game.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const tiles: ReportTileConfig[] = sectionDefs.map(sec => ({
+    id: sec.id,
+    title: sec.title,
+    preview: sec.preview,
+    onOpen: () => setActive(sec.id),
+  }))
+  const open = sectionDefs.find(sec => sec.id === active)
+
   return (
     <InstructorChrome title="Supplier Scorecard — Reports">
-      {sections.map(sec => (
-        <section key={sec.id} data-testid={`sc-${sec.id}`} style={{ margin: '0 0 2.5rem' }}>
-          <h2 style={{
-            fontSize: '1.05rem', margin: '0 0 0.75rem', paddingBottom: '0.3rem',
-            borderBottom: `1px solid ${colors.borderMid}`,
-          }}>{sec.title}</h2>
-          {sec.body}
-        </section>
-      ))}
+      {report.isDemoCohort && (
+        <p data-testid="sc-demo-banner" style={{
+          background: '#fff3cd', border: '1px solid #e0c877', borderRadius: 6,
+          padding: '0.6rem 0.9rem', margin: '0 0 1rem', fontWeight: 600,
+        }}>
+          ⚠ Demo cohort — robot data. There are no human students in this instance, so the
+          charts below are drawn from {botCount} simulated players. Nothing here is a class.
+        </p>
+      )}
+      <ReportBoard tiles={tiles} />
+      {open && (
+        <Modal title={open.title} onClose={() => setActive(null)}>
+          <div data-testid={`sc-${open.id}`}>{open.body}</div>
+        </Modal>
+      )}
     </InstructorChrome>
   )
 }
