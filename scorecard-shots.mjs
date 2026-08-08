@@ -246,40 +246,73 @@ const main = async () => {
 
     // ── Reports, default instance ──────────────────────────────────────────
     await page.goto(`${APP}/reports?game=scorecard&_gid=${gid}`)
-    await page.waitForSelector('[data-testid="sc-tier1"]', { timeout: 30_000 })
-    await page.waitForTimeout(600)
+    // ⚠ WAIT FOR THE GRID, NOT FOR A TILE'S CONTENTS. Since the reports moved to the
+    // standard tile board (CP4), `sc-tier1` exists only once its MODAL is open — so
+    // waiting on it here hung for 30s. Wait for a tile TITLE, which is always rendered.
+    await page.getByText('Tier 1', { exact: false }).first()
+      .waitFor({ state: 'visible', timeout: 30_000 })
+    await page.waitForTimeout(800)
     await unstick()
 
     // ⚠ Sort by the EFFORT GAP — it is the initial sort, but click it to prove the
     // header is live and to capture the sorted state explicitly.
-    await shot('01-tier1-roster-by-effort-gap', page.locator('[data-testid="sc-tier1"]').locator('xpath=ancestor::section'))
-    await shot('02-tier3-charts', page.locator('[data-testid="sc-tier3"]'))
-    await shot('03-tier2-debrief', page.locator('[data-testid="sc-tier2"]'))
-    await shot('04-summary', page.locator('[data-testid="sc-summary"]'))
+    // ⚠ THE GRID ITSELF — seven tiles, one chart each (Elena, 08-08).
+    await shot('01-reports-grid')
 
+    // Each tile opens in its own modal now, so shoot them one at a time.
+    const openTile = async (title) => {
+      await page.getByText(title, { exact: false }).first().click()
+      await page.waitForTimeout(500)
+    }
+    const closeTile = async () => {
+      await page.getByRole('button', { name: 'Close' }).click()
+      await page.waitForTimeout(300)
+    }
+
+    await openTile('Tier 1')
+    await shot('02-tier1-roster-by-contested-gap', page.locator('[data-testid="sc-tier1"]'))
+    await closeTile()
+
+    await openTile('Effort by contract round')
+    await shot('03-chart1-effort-by-round', page.locator('[data-testid="sc-chart1"]'))
+    await closeTile()
+
+    await openTile('Effort by period within a contract')
+    await shot('04-chart2-effort-by-period', page.locator('[data-testid="sc-chart2"]'))
     // The DP overlay ON — the optional instructor toggle (default off).
     await page.getByRole('checkbox').first().check()
     await page.waitForTimeout(400)
-    await shot('05-tier3-charts-with-optimal-overlay', page.locator('[data-testid="sc-tier3"]'))
+    await shot('05-chart2-with-optimal-overlay', page.locator('[data-testid="sc-chart2"]'))
+    await closeTile()
 
-    await shot('06-reports-full-page')
+    await openTile('Per-student contested-period effort gap')
+    await shot('06-chart3-gap-distribution', page.locator('[data-testid="sc-chart3"]'))
+    await closeTile()
+
+    await openTile('Optimal policy')
+    await shot('07-chart4-policy-grid', page.locator('[data-testid="sc-chart4"]'))
+    await closeTile()
+
+    await openTile('Tier 2')
+    await shot('08-tier2-written-answers', page.locator('[data-testid="sc-tier2"]'))
+    await closeTile()
 
     // ── Settings at NON-DEFAULT parameters — the policy grid tracking config ─
     await page.goto(`${APP}/settings?game=scorecard&_gid=${gid2}`)
     await page.waitForSelector('text=What these numbers induce', { timeout: 30_000 })
     await page.waitForTimeout(600)
     await unstick()
-    await shot('07-settings-nondefault-full')
+    await shot('09-settings-nondefault-full')
 
     // Just the grid, so the titles and cells are legible.
-    await shot('08-policy-grid-nondefault', page.locator('svg[aria-label*="Optimal policy grid"]').first().locator('xpath=ancestor::div[1]'))
+    await shot('10-policy-grid-nondefault', page.locator('svg[aria-label*="Optimal policy grid"]').first().locator('xpath=ancestor::div[1]'))
 
     // And the default-parameter grid, for comparison.
     await page.goto(`${APP}/settings?game=scorecard&_gid=${gid}`)
     await page.waitForSelector('text=What these numbers induce', { timeout: 30_000 })
     await page.waitForTimeout(600)
     await unstick()
-    await shot('09-policy-grid-default', page.locator('svg[aria-label*="Optimal policy grid"]').first().locator('xpath=ancestor::div[1]'))
+    await shot('11-policy-grid-default', page.locator('svg[aria-label*="Optimal policy grid"]').first().locator('xpath=ancestor::div[1]'))
 
     await ctx.close()
   } finally {

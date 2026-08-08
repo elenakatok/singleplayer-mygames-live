@@ -650,3 +650,37 @@ No Refresh, no Settings/Reports nav — every other game in the family has all t
 sticky action bar. Added, with the query string carried forward on both nav links: `?token=`
 / `?_gid=` is how the instructor session identifies the instance across pages, and a link
 that dropped it lands on a page with no session and no way to recover one.
+
+---
+
+## 22. One chart per tile (Elena, 08-08)
+
+All four Tier-3 charts shared a single "Tier 3" tile, so opening it produced one modal with
+four charts stacked in it — which defeats the point of the grid. You could not open one
+without the others and none of them had room.
+
+Now seven tiles: Tier 1, Tier 2, chart 1, chart 2, chart 3, chart 4, Summary.
+
+⚠ **CHART 4 IS THE EXCEPTION AND STAYS ONE TILE.** Its two panels are ONE chart, not two:
+low and high are read *against each other*, and the whole finding is that the work region
+collapses to a sliver on the left. Split them across two tiles and the comparison the chart
+exists to make becomes impossible. They stay side by side, in slide order.
+
+The DP-overlay checkbox moved to chart 2's tile, because that is the chart it overlays.
+
+### 22a. ⚠ Two more duplicate-testid collisions, same class as §20c
+
+Splitting the tiles surfaced both:
+
+- **`sc-tier1` resolved to two elements** — the modal wrapper (`sc-${open.id}`) and the
+  roster table (`tableTestId="sc-tier1"`). Any selector hit both and Playwright refused in
+  strict mode. The table is now `sc-tier1-table`.
+- **The shot script waited for `sc-tier1` on page load**, which had been broken since the
+  CP4 grid conversion: once the reports moved to tiles that id exists only when its modal
+  is OPEN, so the wait hung for 30s. It now waits for a tile TITLE, which is always
+  rendered. ⚠ It had been broken for a whole checkpoint because the shots were not re-run
+  after the layout changed — the artifact script is not exercised by any suite.
+
+**Three of these now** (§20c, and both above): a `data-testid` is an identity, and two
+things that are not the same thing must not share one. When a component is reused, or a
+wrapper wraps something that already has an id, the ids must diverge.

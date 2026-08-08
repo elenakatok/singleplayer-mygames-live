@@ -292,7 +292,10 @@ export default function Reports() {
             getRowKey={r => r.participant_id}
             initialSortKey="gap"
             initialSortDir="desc"
-            tableTestId="sc-tier1"
+            // ⚠ NOT "sc-tier1" — the MODAL WRAPPER already carries that id (`sc-${open.id}`),
+            // so both resolved to it and any selector hit two elements. Second instance of
+            // the SessionSummary bug: two different things, one identity.
+            tableTestId="sc-tier1-table"
             emptyMessage="Nobody on the roster yet."
           />
         </>
@@ -353,47 +356,79 @@ export default function Reports() {
       ),
     },
     {
-      id: 'tier3',
-      preview: <span>Four charts — effort by round, by period, the contested-gap distribution, and the optimal policy</span>,
-      title: 'Tier 3 — class charts',
+      // ════════════════════════════════════════════════════════════════════════
+      // ⚠ ONE CHART PER TILE (Elena, 08-08). All four used to share a single "Tier 3"
+      // tile, which put four charts in one modal and defeated the point of the grid: you
+      // could not open one without the others, and none of them had room.
+      //
+      // ⚠ THE EXCEPTION IS CHART 4 — its two panels are ONE chart, not two. Low and high
+      // are read AGAINST each other; the whole finding is that the work region collapses to
+      // a sliver on the left, which is invisible unless they sit side by side. They stay
+      // together in one tile, in slide order.
+      // ════════════════════════════════════════════════════════════════════════
+      id: 'chart1',
+      preview: <span>Reproduces slide 7 — does effort drift across the session?</span>,
+      title: 'Effort by contract round',
+      body: (
+        <EffortByRoundChart
+          high={tier3.byRound.high} low={tier3.byRound.low}
+          labelHigh={treatment.labelHigh} labelLow={treatment.labelLow}
+          caption={`${scheduleCaption} ${botCaption}`}
+        />
+      ),
+    },
+    {
+      id: 'chart2',
+      preview: <span>Where in a contract the class works — and where it stops</span>,
+      title: 'Effort by period within a contract',
       body: (
         <>
-          <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
-            <EffortByRoundChart
-              high={tier3.byRound.high} low={tier3.byRound.low}
-              labelHigh={treatment.labelHigh} labelLow={treatment.labelLow}
-              caption={`${scheduleCaption} ${botCaption}`}
-            />
-            <EffortByPeriodChart
-              high={tier3.byPeriod.high} low={tier3.byPeriod.low}
-              optimalHigh={tier3.byPeriod.optimalHigh} optimalLow={tier3.byPeriod.optimalLow}
-              showOptimal={showOptimal}
-              labelHigh={treatment.labelHigh} labelLow={treatment.labelLow}
-              caption={botCaption}
-            />
-          </div>
-
-          {/* ⚠ DEFAULT OFF (spec §11). A rhetorical device for the room, not a standard
-              students are held to — and never on a student screen. */}
-          <label style={{ display: 'block', fontSize: '0.82rem', margin: '0 0 1.5rem' }}>
+          <EffortByPeriodChart
+            high={tier3.byPeriod.high} low={tier3.byPeriod.low}
+            optimalHigh={tier3.byPeriod.optimalHigh} optimalLow={tier3.byPeriod.optimalLow}
+            showOptimal={showOptimal}
+            labelHigh={treatment.labelHigh} labelLow={treatment.labelLow}
+            caption={botCaption}
+          />
+          {/* ⚠ DEFAULT OFF (spec §11), and it lives HERE because it overlays THIS chart.
+              A rhetorical device for the room, not a standard students are held to — and
+              never on a student screen. */}
+          <label style={{ display: 'block', fontSize: '0.82rem', margin: '1.25rem 0 0' }}>
             <input type="checkbox" checked={showOptimal}
               onChange={e => setShowOptimal(e.target.checked)} />{' '}
-            Overlay best-possible play on the period chart{' '}
+            Overlay best-possible play{' '}
             <span style={{ color: colors.textSecondary }}>
-              — for lecture. It shows how near zero the best response to an unreliable
+              &mdash; for lecture. It shows how near zero the best response to an unreliable
               scorecard is. Students never see it.
             </span>
           </label>
-
-          <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
-            <GapDistributionChart dist={tier3.gapDistribution} caption={labelCaption} />
-          </div>
-
-          <h4 style={{ margin: '1.5rem 0 0.5rem' }}>Optimal policy — what the parameters induce</h4>
-          <p style={{ fontSize: '0.82rem', color: colors.textSecondary, margin: '0 0 0.75rem' }}>
+        </>
+      ),
+    },
+    {
+      id: 'chart3',
+      preview: (
+        <span>
+          How many students responded at all
+          {tier3.gapDistribution.atZero > 0 && <> &middot; {tier3.gapDistribution.atZero} at exactly zero</>}
+        </span>
+      ),
+      title: 'Per-student contested-period effort gap',
+      body: <GapDistributionChart dist={tier3.gapDistribution} caption={labelCaption} />,
+    },
+    {
+      id: 'chart4',
+      preview: <span>Slide 6, from this instance&rsquo;s own settings &middot; no student data</span>,
+      // ⚠ SHORT. The tile header puts "Open ↗" on the same line, and the longer form
+      // ran straight into it. The full sentence lives in the tile body instead.
+      title: 'Optimal policy grid',
+      body: (
+        <>
+          <p style={{ fontSize: '0.85rem', color: colors.textSecondary, margin: '0 0 1rem' }}>
             Computed from this instance&rsquo;s own settings; no student data is in it. This is
-            the slide-6 picture, and it is instructor-only — students are never shown the
-            optimal policy.
+            the slide-6 picture, and it is instructor-only &mdash; students are never shown the
+            optimal policy. ⚠ The two panels are ONE chart: read them against each other,
+            and note how the work region collapses to a sliver on the left.
           </p>
           <PolicyGridSVG panels={tier3.policyGrid} currency={cur} />
           <PolicyGridLegend />
