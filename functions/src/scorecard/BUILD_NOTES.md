@@ -544,3 +544,67 @@ Monte Carlo vs analytic at 200k runs per condition inside 3σ/√n, the slide-6 
 wire with a p_low perturbation proving it is not hardcoded, the write-off silence with two
 injected-contamination calibrations, and **T4's classroom-shaped case with S1 shown
 reverted**. Unit suite 882. Robot cohort 49.
+
+---
+
+## 20. ⚠ The robot launcher — three bugs the driver found in the UI's own guards
+
+`bot/scorecard-robot-driver.mjs` + the `scorecard` entry in the launcher's `ROBOT_GAMES`.
+Seven students by default, because there are exactly seven styles assigned round-robin —
+fewer loses either the mass at zero or the tail of the Tier-3 gap distribution.
+
+Writing it surfaced three real defects, all in the seam between the UI's safety guards and
+an automated clicker. **A human never triggers any of them**, because a human cannot click
+inside a paint. That does not make them cosmetic: it makes them the class of bug that only
+robot mode can find.
+
+### 20a. The optimizer refused to run — and that was CORRECT
+
+```
+✗ robot 4 failed: optimizer requires the CP1 solver policy — refusing to guess
+```
+
+`scorecard-styles.mjs` throws rather than falling back to a heuristic when no policy is
+supplied, because a silent fallback would put a SECOND POLICY in the build — the one thing
+spec §16 forbids. The browser driver had not been passing one.
+
+The fix is to import the **shipped** solver from `functions/lib/scorecard/dp.js` (the
+optimizer robot is consumer 3 of the one solver), solving for the reliability the robot
+**read off its own screen**. ⚠ It is still never told the treatment: solving is arithmetic
+on public information, which is what a diligent student could have done. If `functions/lib`
+is unbuilt the driver fails with a message naming the fix — never a quiet heuristic.
+
+### 20b. Presence is not readiness — the guard-2 latch
+
+The effort buttons carry a LOCAL LATCH (spec §4 guard 2) that disables both on click until
+the next period remounts. The driver polled on the button being **present**, and after a
+click it is present but **disabled** — so Playwright waited the full 30s for actionability
+and the robot died mid-session. It was a race, so only some robots hit it.
+
+⚠ **The fix belongs in the DRIVER, not the UI.** Guard 2 exists precisely to stop a second
+click landing on the next period; dropping the latch to make automation easier would delete
+the protection for the sake of the test.
+
+The same mistake then repeated one level up, worse: `waitForNextScreen` checked the CONTINUE
+button by presence too. After clicking Continue it is still present (rendering "Loading…"
+while `advance` is in flight), so the wait returned instantly, the loop clicked it again,
+and **every** robot stalled. Both conditions now check `disabled`.
+
+### 20c. ⚠⚠ One component, two roles, one identity — the real bug
+
+`SessionSummary` is rendered twice: as the **terminal session-summary screen**, and as the
+**prior-contracts panel** under the effort screen (spec §3 `showPriorContractsPanel`). Both
+carried `data-testid="sc-session-summary"`.
+
+So from contract 2 onward the panel put "the session is over" into the DOM **while the
+student was mid-contract**. `waitForNextScreen` matched it, the contract loop broke, and
+every robot stopped after the first period of contract 2 — reporting a tidy "played 5
+periods across 2 contracts" rather than failing loudly.
+
+Fixed with a `testId` prop: the panel is `sc-prior-contracts`, the terminal screen keeps
+`sc-session-summary`. ⚠ **Same markup, different meaning — different id.** Any future test
+or driver would have been misled the same way.
+
+**Result: 7/7 robots walk the complete flow** — pre-play KC, every contract, session
+summary, noticing, the reveal, post-play KC, linking — verified from the stored documents
+rather than from the driver's own logs (`scorecard-robot-browser.mjs`).

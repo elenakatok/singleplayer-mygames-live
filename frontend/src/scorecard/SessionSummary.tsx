@@ -24,12 +24,23 @@ const th: React.CSSProperties = {
 const td: React.CSSProperties = { padding: '0.35rem 0.7rem', borderBottom: '1px solid #eee' }
 
 export function SessionSummary({
-  completed, params, totalEarnings, onContinue,
+  completed, params, totalEarnings, onContinue, testId = 'sc-session-summary',
 }: {
   completed: ScorecardContractResult[]
   params: ScorecardParams
   totalEarnings: number
   onContinue?: () => void
+  /**
+   * ⚠⚠ THIS COMPONENT IS RENDERED IN TWO ROLES and they must not share an identity:
+   * the TERMINAL session-summary screen, and the PRIOR-CONTRACTS PANEL that sits under
+   * the effort screen mid-session (spec §3 `showPriorContractsPanel`).
+   *
+   * They looked identical to automation, and that cost a real bug: the robot driver
+   * waited for "the next screen" and matched `sc-session-summary` from the panel while
+   * the student was still mid-contract, so every robot broke out of the contract loop
+   * after the first period of contract 2. Same markup, different meaning — different id.
+   */
+  testId?: string
 }) {
   const noun = params.contractNoun
   const Noun = noun.charAt(0).toUpperCase() + noun.slice(1)
@@ -38,7 +49,7 @@ export function SessionSummary({
 
   return (
     <div>
-      <h3 style={{ marginTop: 0 }}>Your session</h3>
+      <h3 style={{ marginTop: 0 }} data-testid={testId}>Your session</h3>
       <p style={{ color: '#444' }}>
         You worked {completed.length} {noun}s of {params.periodsPerContract} {params.periodNoun}s
         for {params.buyerName}.
@@ -88,6 +99,7 @@ export function SessionSummary({
             fontFamily: typography.fontFamily, cursor: 'pointer',
           }}
           onClick={onContinue}
+          data-testid="sc-summary-continue"
         >
           Continue
         </button>

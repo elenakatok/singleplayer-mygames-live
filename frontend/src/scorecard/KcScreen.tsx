@@ -51,12 +51,13 @@ export function KcScreen({
         {label} — question {index + 1} of {total}
       </p>
       <div style={card}>
-        <p style={{ margin: 0, fontSize: '1.02rem' }}>{question.prompt}</p>
+        <p style={{ margin: 0, fontSize: '1.02rem' }} data-testid="sc-kc-prompt">{question.prompt}</p>
       </div>
 
       <div style={card}>
         {question.options.map(o => (
-          <label key={o.id} style={{ display: 'block', margin: '0.45rem 0', cursor: verdict ? 'default' : 'pointer' }}>
+          <label key={o.id} data-testid={`sc-kc-option-${o.id}`}
+            style={{ display: 'block', margin: '0.45rem 0', cursor: verdict ? 'default' : 'pointer' }}>
             <input
               type="radio" name={`kc-${question.id}`} value={o.id}
               checked={choice === o.id}
@@ -78,6 +79,7 @@ export function KcScreen({
           }}
           disabled={choice === null || busy}
           onClick={submit}
+          data-testid="sc-kc-submit"
         >
           {busy ? 'Submitting…' : 'Submit'}
         </button>
@@ -97,6 +99,7 @@ export function KcScreen({
               cursor: 'pointer',
             }}
             onClick={onDone}
+            data-testid="sc-kc-continue"
           >
             Continue
           </button>

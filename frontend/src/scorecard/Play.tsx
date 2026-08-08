@@ -248,6 +248,7 @@ export default function Play() {
               ? { name: 'kc-post', index: 0, reveal: phase.reveal }
               : { name: 'linking', reveal: phase.reveal },
           )}
+          data-testid="sc-reveal-continue"
         >
           Continue
         </button>
@@ -300,7 +301,7 @@ export default function Play() {
     return (
       <PageShell>
         <RevealPanel reveal={phase.reveal} params={state.params} />
-        <p style={{ marginTop: '1.5rem', fontWeight: 600 }}>
+        <p style={{ marginTop: '1.5rem', fontWeight: 600 }} data-testid="sc-done">
           You are finished — thank you. You can close this window.
         </p>
       </PageShell>
@@ -350,10 +351,12 @@ export default function Play() {
         && state.screen.kind === 'effort-choice'
         && state.completed.length > 0 && (
         <div style={{ marginTop: '1.5rem', opacity: 0.85 }}>
+          {/* ⚠ A DIFFERENT id from the terminal screen — see SessionSummary's `testId`. */}
           <SessionSummary
             completed={state.completed}
             params={state.params}
             totalEarnings={state.totalEarnings}
+            testId="sc-prior-contracts"
           />
         </div>
       )}

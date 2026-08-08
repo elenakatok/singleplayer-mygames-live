@@ -130,7 +130,9 @@ export function EffortScreen({
         </div>
       )}
 
-      <h3 style={{ marginTop: 0 }}>
+      {/* ⚠ The robot driver reads its position from HERE — the same line a student
+          reads. It is never handed the contract or period index by the launcher. */}
+      <h3 style={{ marginTop: 0 }} data-testid="sc-progress">
         {noun.charAt(0).toUpperCase() + noun.slice(1)} {contract.contract} of {params.contracts}
         {' · '}
         {per.charAt(0).toUpperCase() + per.slice(1)} {contract.period} of {params.periodsPerContract}
@@ -143,7 +145,9 @@ export function EffortScreen({
         <div style={{
           ...card, background: '#fff8e6', borderColor: '#e6d3a3', marginBottom: '1rem',
         }}>
-          <strong style={{ fontSize: '1.05rem' }}>{contract.label}</strong>
+          {/* ⚠ THIS is the only place a robot can learn the condition — exactly as a
+              student does. The driver must never be told it another way. */}
+          <strong style={{ fontSize: '1.05rem' }} data-testid="sc-reliability-label">{contract.label}</strong>
           <div style={{ fontSize: '0.9rem', color: '#555', marginTop: '0.25rem' }}>
             On this {noun}, a high-effort {per} produces an {params.deliveryNoun} with
             probability <strong>{pct(contract.reliability)}</strong>.
@@ -202,11 +206,11 @@ export function EffortScreen({
                 the design; withholding the INPUTS would be a different, worse game. */}
             <tr>
               <td style={td}>{per.charAt(0).toUpperCase() + per.slice(1)}s remaining</td>
-              <td style={td}><strong>{contract.periodsRemaining}</strong></td>
+              <td style={td}><strong data-testid="sc-periods-remaining">{contract.periodsRemaining}</strong></td>
             </tr>
             <tr>
               <td style={td}>Your {params.scorecardNoun}</td>
-              <td style={td}><strong>{contract.score}</strong></td>
+              <td style={td}><strong data-testid="sc-score">{contract.score}</strong></td>
             </tr>
             {params.showRunningBalance && (
               <tr>
@@ -318,7 +322,7 @@ export function ContractResultScreen({
   const noun = params.contractNoun
   return (
     <div>
-      <h3 style={{ marginTop: 0 }}>
+      <h3 style={{ marginTop: 0 }} data-testid="sc-contract-result">
         {noun.charAt(0).toUpperCase() + noun.slice(1)} {result.contract} of {params.contracts} — complete
       </h3>
 
@@ -370,6 +374,7 @@ export function ContractResultScreen({
         }}
         disabled={busy}
         onClick={onContinue}
+        data-testid="sc-contract-continue"
       >
         {busy ? 'Loading…' : isLast ? 'See your session summary' : `Start the next ${noun}`}
       </button>

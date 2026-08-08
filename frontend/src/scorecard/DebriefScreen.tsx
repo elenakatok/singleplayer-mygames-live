@@ -65,6 +65,7 @@ export function DebriefScreen({
           padding: '0.6rem', borderRadius: 6, border: '1px solid #ccc', boxSizing: 'border-box',
         }}
         placeholder={`Write a few sentences about how you worked these ${params.contractNoun}s.`}
+        data-testid="sc-freetext"
       />
       {error && <p style={{ color: '#c00' }}>{error}</p>}
       <button
@@ -75,6 +76,7 @@ export function DebriefScreen({
         }}
         disabled={text.trim().length === 0 || busy}
         onClick={submit}
+        data-testid="sc-freetext-submit"
       >
         {busy ? 'Submitting…' : 'Submit'}
       </button>
@@ -163,7 +165,7 @@ export function RevealPanel({
 
   return (
     <div>
-      <h3 style={{ marginTop: 0 }}>What was actually going on</h3>
+      <h3 style={{ marginTop: 0 }} data-testid="sc-reveal">What was actually going on</h3>
       {!compact && <p style={{ color: '#444' }}>
         Your {params.contractNoun}s alternated between two kinds of {params.scorecardNoun}.
         On one, working hard really moved your rating. On the other it barely did — the

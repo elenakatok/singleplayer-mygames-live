@@ -22,7 +22,8 @@
     "robots:forecast:dryrun": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node forecast-robot-dryrun.mjs\"",
     "harness:scorecard": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node scorecard-playthrough.mjs\"",
     "robots:scorecard:dryrun": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node scorecard-robot-dryrun.mjs\"",
-    "shots:scorecard": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node scorecard-shots.mjs\""
+    "shots:scorecard": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node scorecard-shots.mjs\"",
+    "robots:scorecard:browser": "npm --prefix functions run build && firebase emulators:exec --only functions,firestore,auth --project demo-singleplayer --config firebase.json \"node scorecard-robot-browser.mjs\""
   },
   "devDependencies": {
     "playwright": "^1.49.0"
