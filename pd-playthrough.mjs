@@ -944,11 +944,25 @@ async function main() {
       'framing: states a round RANGE (now templated from config, not hardcoded)')
     check(js.includes('you will not be told when'), 'framing: still refuses to say when the last round is')
 
-    // ⚠ INVERTED IN SLICE 5. This used to assert the matrix said "Years in prison";
+    // ⚠ INVERTED IN SLICE 5. These used to assert the matrix said "Years in prison";
     // the directional framing was DELETED because the unit is now configurable and
-    // the software cannot know whether a bigger number is better. The check now
-    // guards the removal, so the copy cannot creep back.
-    check(!/lower is better|higher is better/i.test(js), 'no directional framing ships in the bundle')
+    // the software cannot know whether a bigger number is better. The checks now
+    // guard the removal, so the copy cannot creep back.
+    //
+    // ⚠⚠ THE "lower is better" CHECK USED TO LIVE HERE AND WAS REMOVED — DO NOT RESTORE IT.
+    // `js` is the WHOLE single-player bundle: one artifact serves all eight games. Forecast
+    // legitimately tells students "This is your objective — lower is better" about forecast
+    // error, where lower genuinely IS better (afa00a8, 08-02). A bundle-wide grep cannot
+    // tell PD's copy from Forecast's, so from that commit onward this check failed for a
+    // reason that had nothing to do with PD, and a permanently-red suite is worse than no
+    // suite — the next REAL pd failure hides in the noise.
+    //
+    // THE PROPERTY IS STILL COVERED, and better: three frontend tests assert it against
+    // RENDERED PD COMPONENTS rather than a string search over shared bytes —
+    // src/pd/render.test.tsx (PayoffMatrix, HistoryTable) and src/pd/charts.test.tsx.
+    // Those cannot be fooled by another game's copy, and they fail on the component that
+    // actually regressed. The two greps below survive because those phrases are PD-specific:
+    // no other game in the bundle has any reason to say them.
     check(!/years in prison/i.test(js), 'no "years in prison" copy ships in the bundle')
     check(!/these are losses/i.test(js), 'no "these are losses" copy ships in the bundle')
 
