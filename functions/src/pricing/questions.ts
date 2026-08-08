@@ -73,6 +73,19 @@ type Built = {
   options: Option[]
   correct_value: string
   explanation: string
+  /**
+   * ⚠ OPT OUT OF THE PER-STUDENT SHUFFLE — set ONLY on a numeric ladder.
+   *
+   * The five money/share questions `.sort()` their options ascending, so an option's
+   * POSITION is a function of its VALUE and carries no information about which one is
+   * right; scrambling a price ladder would only make four numbers harder to compare.
+   * The CATEGORICAL questions have no such ordering, and there the author's order is
+   * "correct answer first" — which is exactly the tell the shuffle exists to remove.
+   *
+   * ⚠ THE DEFAULT IS TO SHUFFLE, and that direction is deliberate: a categorical
+   * question added later is protected by forgetting this flag, not by remembering it.
+   */
+  ordered?: true
 }
 
 type KcSpec = {
@@ -111,6 +124,7 @@ const kcBaseShare: KcSpec = {
       shareOption(m.competitorBaseShare),
       shareOption(1),
     ).sort((a, b) => Number(a.value) - Number(b.value)),
+    ordered: true,   // numeric ladder — position tracks value, not correctness
     correct_value: m.studentBaseShare.toFixed(4),
     explanation:
       `Your base share is ${pct(m.studentBaseShare)}. Price differences move share away from ` +
@@ -138,6 +152,7 @@ const kcShareGap: KcSpec = {
         shareOption(out.competitorShare),
         shareOption(m.competitorBaseShare),
       ).sort((a, b) => Number(a.value) - Number(b.value)),
+      ordered: true,   // numeric ladder — position tracks value, not correctness
       correct_value: out.studentShare.toFixed(4),
       explanation:
         `You undercut by ${money(theirs - yours)}, which moves ` +
@@ -165,6 +180,7 @@ const kcContribution: KcSpec = {
         priceOption(yours),
         priceOption(yours - m.competitorUnitCost),
       ).sort((a, b) => Number(a.value) - Number(b.value)),
+      ordered: true,   // numeric ladder — position tracks value, not correctness
       correct_value: String(Math.round(yours - m.studentUnitCost)),
       explanation:
         `Contribution is price minus YOUR unit cost: ${money(yours)} − ` +
@@ -224,6 +240,7 @@ const kcPmgEffective: KcSpec = {
         priceOption((lower + higher) / 2),
         priceOption(m.studentUnitCost),
       ).sort((a, b) => Number(a.value) - Number(b.value)),
+      ordered: true,   // numeric ladder — position tracks value, not correctness
       correct_value: String(Math.round(lower)),
       explanation:
         `Under the price-matching guarantee everyone pays the LOWER posted price, ` +
@@ -266,6 +283,7 @@ const kcPmgShare: KcSpec = {
         shareOption(1),
         shareOption(flipped),
       ).sort((a, b) => Number(a.value) - Number(b.value)),
+      ordered: true,   // numeric ladder — position tracks value, not correctness
       correct_value: m.studentBaseShare.toFixed(4),
       explanation:
         `Under the price-matching guarantee shares do not respond to price at all — ` +
@@ -310,6 +328,8 @@ export type PricingKcQuestion = PrepTextQuestion & {
   options: Option[]
   correct_value: string
   explanation: string
+  /** See `Built.ordered`. Absent ⇒ the options are shuffled per student. */
+  ordered?: true
 }
 
 const kcBase = {
@@ -346,14 +366,73 @@ export function resolvePricingKcQuestions(
   return out
 }
 
+/**
+ * A Fisher–Yates shuffle driven by a hash of (participant, field, position), so it is
+ * stable for one student and different across students.
+ *
+ * Stability matters more than it looks: a student who answers, reloads and returns to a
+ * re-ordered list would be reading a different screen from the one they answered on.
+ * Grading is by option VALUE (`submitKcAnswer` compares against `correct_value`), so
+ * order never touches a score.
+ *
+ * A fresh hash per position — reusing one 32-bit draw across all positions would make
+ * the permutation a function of a single number, so only 2^32 of the possible orders
+ * could appear and students would visibly share layouts.
+ */
+function hash32(s: string): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  h ^= h >>> 16
+  h = Math.imul(h, 0x85ebca6b)
+  h ^= h >>> 13
+  h = Math.imul(h, 0xc2b2ae35)
+  h ^= h >>> 16
+  return h >>> 0
+}
+
+function shuffleFor(participantId: string, field: string, opts: readonly Option[]): Option[] {
+  const out = [...opts]
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = hash32(`${participantId}:${field}:${i}`) % (i + 1)
+    const tmp = out[i]
+    out[i] = out[j]
+    out[j] = tmp
+  }
+  return out
+}
+
+/**
+ * The same shuffle for an INSTRUCTOR-ADDED question's options, whitelisted to the two
+ * client fields. Separate entry point because added questions are stored config, not a
+ * `PricingKcQuestion` — but they must not be the one door the tell walks back in through.
+ * A single option (or none) is returned untouched.
+ */
+export function shuffleClientOptions(
+  opts: readonly Option[],
+  participantId: string,
+  field: string,
+): Option[] {
+  const src = opts.length > 1 ? shuffleFor(participantId, field, opts) : [...opts]
+  return src.map(o => ({ value: o.value, label: o.label }))
+}
+
 /** The KC as sent to the STUDENT — the answer key removed. `correct_value` and
  *  `explanation` are stripped: the explanation is earned by answering (the submit
- *  callable returns it), and the key is never client-side. */
-export function toClientKcQuestions(resolved: PricingKcQuestion[]) {
+ *  callable returns it), and the key is never client-side.
+ *
+ *  ⚠ AND THE POSITION OF THE ANSWER IS REMOVED TOO. The categorical questions are
+ *  authored correct-answer-first; without this, `kc_below_cost` and `kc_pmg_undercut`
+ *  were answerable by picking the top radio button. `ordered` questions are numeric
+ *  ladders and keep their sort — see the flag's note on `Built`. */
+export function toClientKcQuestions(resolved: PricingKcQuestion[], participantId: string) {
   return resolved.map(q => ({
     field: q.field,
     prompt: q.prompt,
-    options: q.options.map(o => ({ value: o.value, label: o.label })),
+    options: (q.ordered ? q.options : shuffleFor(participantId, q.field, q.options))
+      .map(o => ({ value: o.value, label: o.label })),
   }))
 }
 

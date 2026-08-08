@@ -178,12 +178,58 @@ describe('options are de-duplicated — an edited market cannot offer the same v
 describe('toClientKcQuestions — the answer key never ships', () => {
   it('strips correct_value and explanation from every question, in both modes', () => {
     for (const set of [std(), pmg()]) {
-      const client = toClientKcQuestions(set)
+      const client = toClientKcQuestions(set, 'stu-1')
       const json = JSON.stringify(client)
       expect(json).not.toContain('correct_value')
       expect(json).not.toContain('explanation')
       for (const q of client) {
         expect(Object.keys(q).sort()).toEqual(['field', 'options', 'prompt'])
+      }
+    }
+  })
+
+  it('⚠ nor does the POSITION of the answer — `ordered` marks the flag, not the field', () => {
+    // Every question that is NOT a numeric ladder must be shuffled. Asserted against
+    // `ordered` itself so a question added later is covered without editing this test.
+    for (const set of [std(), pmg()]) {
+      const categorical = set.filter(q => !q.ordered)
+      expect(categorical.length, 'each mode has at least one categorical question')
+        .toBeGreaterThan(0)
+      for (const q of categorical) {
+        // Across many students the answer must not land first every time.
+        const firsts = new Set(
+          Array.from({ length: 40 }, (_, i) =>
+            toClientKcQuestions([q], `stu-${i}`)[0].options[0].value),
+        )
+        expect(firsts.size, `${q.field}: the first option must vary across students`)
+          .toBeGreaterThan(1)
+      }
+    }
+  })
+
+  it('⚠ …and the same student always sees the same order — a reload is not a new screen', () => {
+    const a = toClientKcQuestions(std(), 'stu-7')
+    const b = toClientKcQuestions(std(), 'stu-7')
+    expect(a).toEqual(b)
+  })
+
+  it('numeric ladders keep their sort — position tracks value, not correctness', () => {
+    for (const set of [std(), pmg()]) {
+      for (const q of set.filter(x => x.ordered)) {
+        const served = toClientKcQuestions([q], 'stu-3')[0].options.map(o => Number(o.value))
+        expect(served, `${q.field} stays ascending`)
+          .toEqual([...served].sort((x, y) => x - y))
+      }
+    }
+  })
+
+  it('⚠ shuffling never drops, duplicates or rewrites an option', () => {
+    for (const set of [std(), pmg()]) {
+      for (const q of set) {
+        const served = toClientKcQuestions([q], 'stu-9')[0].options
+        expect([...served].sort((a, b) => a.value.localeCompare(b.value)))
+          .toEqual([...q.options].map(o => ({ value: o.value, label: o.label }))
+            .sort((a, b) => a.value.localeCompare(b.value)))
       }
     }
   })

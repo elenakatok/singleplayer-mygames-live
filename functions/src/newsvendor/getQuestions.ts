@@ -6,7 +6,8 @@ import {
   loadNewsvendorConfig,
 } from './config'
 import {
-  resolveNewsvendorKcQuestions, toClientKcQuestions, prepQuestion, debriefQuestion,
+  resolveNewsvendorKcQuestions, toClientKcQuestions, shuffleClientOptions,
+  prepQuestion, debriefQuestion,
 } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -55,12 +56,15 @@ export const newsvendorGetQuestions = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, 
 
   // Added questions, whitelisted field by field — never spread, so a stored
   // `correct_value` cannot ride along.
+  //
+  // ⚠ SHUFFLED PER STUDENT, like the authored set. Without this, added questions were
+  // the one door the always-answer-first tell could walk back in through.
   const added = config.kcEnabled
     ? config.addedKcQuestions.map(q => ({
         field: q.id,
         type: q.type,
         prompt: q.prompt,
-        options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+        options: shuffleClientOptions(q.options ?? [], participantId, q.id),
       }))
     : []
 

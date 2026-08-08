@@ -1,4 +1,5 @@
 import type { ScorecardConfig, ScorecardTruth } from './config'
+import { hash32 } from './rng'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // KNOWLEDGE CHECK (spec §9) — SPLIT PRE/POST PLAY — and the two free-text steps (§10).
@@ -333,14 +334,46 @@ export interface ClientKcQuestion {
   options: KcOption[]
 }
 
-export function toClientKcQuestions(questions: readonly KcQuestion[]): ClientKcQuestion[] {
+/**
+ * ⚠⚠ PER-STUDENT OPTION ORDER. Every question above declares its answer FIRST, as `'a'` —
+ * which is readable to write and review, and was a live tell to a student: ten questions
+ * whose answer is always the top radio button is answerable without reading one of them.
+ * The authoring order is kept and the SERVED order is permuted here, so the two concerns
+ * stay separate.
+ *
+ * DETERMINISTIC IN (participant, question). A student who answers, reloads and comes back
+ * must see the list they answered on — a re-ordered list on return is a different screen
+ * from the one they read, and on a graded item that is indistinguishable from tampering.
+ *
+ * ⚠ GRADING IS BY OPTION ID (`answer === q.correctOptionId` in scorecardSubmitKcAnswer),
+ * never by index, so order cannot touch a score. That is the property that makes this a
+ * presentation change and nothing more — do not "simplify" grading to a position.
+ */
+function shuffleFor(participantId: string, questionId: string, options: readonly KcOption[]): KcOption[] {
+  const out = [...options]
+  for (let i = out.length - 1; i > 0; i--) {
+    // A fresh hash per position. One 32-bit draw reused across all positions would make
+    // the permutation a function of a single number, so students would visibly share
+    // layouts — the same reasoning newsvendor's shuffle records.
+    const j = hash32(`${participantId}:${questionId}:${i}`) % (i + 1)
+    const tmp = out[i]
+    out[i] = out[j]
+    out[j] = tmp
+  }
+  return out
+}
+
+export function toClientKcQuestions(
+  questions: readonly KcQuestion[],
+  participantId: string,
+): ClientKcQuestion[] {
   // Built field by field, never spread — a field added to KcQuestion later cannot ride out
   // to a student by accident.
   return questions.map(q => ({
     id: q.id,
     stage: q.stage,
     prompt: q.prompt,
-    options: q.options.map(o => ({ id: o.id, text: o.text })),
+    options: shuffleFor(participantId, q.id, q.options).map(o => ({ id: o.id, text: o.text })),
   }))
 }
 

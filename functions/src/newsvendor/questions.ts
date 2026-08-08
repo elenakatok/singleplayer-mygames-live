@@ -525,6 +525,23 @@ export function resolveNewsvendorKcQuestions(
   }))
 }
 
+/**
+ * The same shuffle for an INSTRUCTOR-ADDED question's options.
+ *
+ * ⚠ The authored set gets its order from `resolveNewsvendorKcQuestions`; added questions
+ * never went through it, so without this they were served in the order the instructor
+ * typed them — and most people type the right answer first. Whitelisted to the two
+ * client fields; one option or none is returned untouched.
+ */
+export function shuffleClientOptions(
+  opts: readonly Option[],
+  participantId: string,
+  field: string,
+): Option[] {
+  const src = opts.length > 1 ? shuffleFor(participantId, field, opts) : [...opts]
+  return src.map(o => ({ value: o.value, label: o.label }))
+}
+
 /** The KC as sent to the STUDENT — the answer key removed. `correct_value` and
  *  `explanation` are stripped: the explanation is earned by answering (the submit
  *  callable returns it), and the key is never client-side. */

@@ -771,3 +771,91 @@ robot still never waits on another robot's progress, only on a free slot. Batchi
 have been a barrier and is what the single-player family forbids.
 
 **Result: 14/14 through the complete flow, with every style in both arms exactly once.**
+
+---
+
+## 25. ⚠⚠ Every KC answer was option A (Elena, 08-08) — LIVE, after the KC had been run
+
+Elena, from the running game: *"on all multiple choice question, the correct option is
+always A."* She was exactly right, and it is worse than a cosmetic slip — **ten graded
+questions were answerable without reading one of them.**
+
+### The cause is authoring convention meeting a missing step
+
+Every question in `questions.ts` declares its answer first:
+
+```ts
+options: opts([
+  ['a', 'Weakens it — the score now depends partly on negotiation…'],   // ← correct
+  ['b', …], ['c', …], ['d', …],
+]),
+correctOptionId: 'a',
+```
+
+That convention is *good* — a reviewer scanning the file reads question, answer, then the
+distractors, and `correctOptionId: 'a'` ten times in a row is trivially auditable. The bug
+is that nothing ever permuted it on the way out. `toClientKcQuestions` was a pure whitelist:
+it dropped `correctOptionId` and `explanation` and shipped the array in source order.
+
+⚠ **Dropping the key is not the same as hiding the answer.** The key never shipped, and the
+answer was still in plain sight — carried by POSITION rather than by a field. The whitelist
+was doing its job and the leak went straight past it.
+
+### The fix
+
+`toClientKcQuestions(questions, participantId)` now permutes with a Fisher–Yates seeded on
+`hash32(participant:question:position)` (`rng.ts`'s hash, the game-local one).
+
+- **Authoring order is untouched** — the source still reads answer-first, and a test asserts
+  it *stays* answer-first, so nobody "fixes" this by hand-scrambling the file instead.
+- **Deterministic per student.** A student who answers, reloads, and comes back sees the list
+  they answered on. A re-ordered list on return is a different screen from the one they read,
+  which on a graded item is indistinguishable from tampering.
+- **Grading is by option ID**, never by index (`answer === q.correctOptionId`), so order
+  cannot touch a score. That property is what makes this presentation-only.
+- **A fresh hash per position.** One 32-bit draw reused across all positions would make the
+  permutation a function of a single number, and students would visibly share layouts.
+
+### What the tests assert, and why "not always first" is not enough
+
+`scorecardQuestions.test.ts` (new — the module had no unit test at all before this):
+
+- the answer's first-position rate varies across students — the obvious check;
+- ⚠ **and the answer reaches EVERY position over a cohort.** A permutation that only ever
+  swapped two slots would pass the first check while still leaking three-quarters of the
+  information. This is the check that actually pins it down;
+- **both stages** — a shuffle applied to `pre` and forgotten on `post` leaves four questions bare;
+- nothing dropped, duplicated or rewritten.
+
+`scorecard-playthrough.mjs` §10 proves the same through the real callable: two students get
+different orders, one student gets the same order twice.
+
+### ⚠ The sweep across the other games — what was and was NOT wrong
+
+Elena also asked to check the rest. The result is not uniform, and the differences matter:
+
+| family | status |
+|---|---|
+| negotiation (13 games via `makeGetStudentPrepQuestions`) | already shuffled |
+| grays-com (own copy of the callable) | already shuffled |
+| forecast · newsvendor · procurement | authored set already shuffled |
+| **scorecard** | **not shuffled, every answer 'a'** — fixed here |
+| **pricing** | numeric ladders fine; **2 categorical questions answer-first** — fixed |
+| pd | derived four are fine — see below |
+| pennies · poll | numeric entry / ungraded survey — nothing to shuffle |
+
+⚠ **A sorted numeric ladder is NOT the same bug, and shuffling it would be a regression.**
+pd's four derived questions all offer the *same* list — the distinct payoff values, sorted
+ascending — and their answers are 1, 15, 0 and 10. Position tracks VALUE, not correctness.
+The same is true of five of pricing's seven. Scrambling four numbers a student is comparing
+by magnitude makes the question harder to read and no more secure. pricing marks those with
+an explicit `ordered: true`, and **the default is to shuffle** — a categorical question added
+later is protected by *forgetting* the flag, not by remembering it.
+
+### ⚠ The one door all four games left open: instructor-added questions
+
+`forecast`, `newsvendor`, `pricing` and `pd` all serve `config.addedKcQuestions` in stored
+order. The authored sets were shuffled; these never went through that path. An instructor
+typing a question into Settings has no reason to think about where they put the right
+answer — and most people type it first, which is how the derived sets got this way in the
+first place. All four now shuffle added options too.

@@ -23,6 +23,11 @@ import {
 // ⚠ THE ANSWER KEY NEVER SHIPS. `toClientKcQuestions` drops `correctOptionId` and
 // `explanation`; the explanation is EARNED by answering.
 //
+// ⚠ NOR DOES THE POSITION OF THE ANSWER. Every question is AUTHORED with its correct
+// option first; `toClientKcQuestions` permutes the options per (participant, question), so
+// the served order carries no signal. Both stages get it — a shuffle applied to `pre` and
+// forgotten on `post` would leave four questions answerable without reading them.
+//
 // ⚠ NOTHING PRE-PLAY STATES THAT A TARGET CAN BECOME UNREACHABLE (spec §9.1). Q8 asks it,
 // and Q8 is in the POST set.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -56,9 +61,9 @@ export const scorecardGetQuestions = onCall({ cors: SCORECARD_CORS_ORIGINS }, as
     ok: true as const,
     kc: {
       /** Asked BEFORE the contracts begin. */
-      pre: toClientKcQuestions(pre),
+      pre: toClientKcQuestions(pre, participantId),
       /** ⚠ Asked only AFTER the §10 reveal. Never rendered before it. */
-      post: toClientKcQuestions(post),
+      post: toClientKcQuestions(post, participantId),
       /** ⚠ DYNAMIC denominator over BOTH stages — never a hardcoded count. */
       total: kcDenominator(all),
       preTotal: pre.length,

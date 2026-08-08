@@ -6,7 +6,9 @@ import {
   loadPricingConfig, loadPricingStrategies, activeStrategy,
 } from './config'
 import { STRATEGY_DESCRIPTIONS } from './strategy'
-import { resolvePricingKcQuestions, toClientKcQuestions, debriefQuestion } from './questions'
+import {
+  resolvePricingKcQuestions, toClientKcQuestions, shuffleClientOptions, debriefQuestion,
+} from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // pricingGetQuestions (student) — the whole non-round question set in ONE call: the
@@ -60,17 +62,21 @@ export const pricingGetQuestions = onCall({ cors: PRICING_CORS_ORIGINS }, async 
   const finished = pData.finished_at != null
 
   const derived = config.kcEnabled
-    ? toClientKcQuestions(resolvePricingKcQuestions(config.market, config.pmg, config.labels))
+    ? toClientKcQuestions(resolvePricingKcQuestions(config.market, config.pmg, config.labels), participantId)
     : []
 
   // Added questions, whitelisted field by field — never spread, so a stored
   // `correct_value` cannot ride along.
+  //
+  // ⚠ SHUFFLED TOO. An instructor typing a question into Settings has no reason to think
+  // about where they put the right answer, and most people type it first — so the same
+  // tell the derived set just lost would come straight back in through this door.
   const added = config.kcEnabled
     ? config.addedKcQuestions.map(q => ({
         field: q.id,
         type: q.type,
         prompt: q.prompt,
-        options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+        options: shuffleClientOptions(q.options ?? [], participantId, q.id),
       }))
     : []
 

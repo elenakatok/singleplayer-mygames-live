@@ -4,7 +4,9 @@ import { extractStudentOnCallIds } from '@mygames/game-server'
 import {
   PD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC, loadPdConfig,
 } from './config'
-import { resolveKcQuestions, toClientKcQuestions, debriefQuestion } from './questions'
+import {
+  resolveKcQuestions, toClientKcQuestions, shuffleClientOptions, debriefQuestion,
+} from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // pdGetQuestions (student) — the whole non-round question set in ONE call: the
@@ -55,12 +57,17 @@ export const pdGetQuestions = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
 
   // Added questions, whitelisted field by field — never spread, so a stored
   // `correct_value` cannot ride along.
+  //
+  // ⚠ AND SHUFFLED PER STUDENT. The four DERIVED questions need no shuffle — they all
+  // offer the SAME sorted ladder of payoff values and their answers are 1/15/0/10, so
+  // position says nothing. An instructor typing a question into Settings has no such
+  // protection, and most people type the right answer first.
   const added = config.kcEnabled
     ? config.addedKcQuestions.map(q => ({
         field: q.id,
         type: q.type,
         prompt: q.prompt,
-        options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+        options: shuffleClientOptions(q.options ?? [], participantId, q.id),
       }))
     : []
 

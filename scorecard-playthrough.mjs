@@ -699,6 +699,29 @@ const run = async () => {
   check(![...kcKeys].some(k => k.includes('correct')), 'no answer key ships with the questions')
   check(![...kcKeys].some(k => k.includes('explanation')), 'no explanation ships with the questions')
 
+  // ── ⚠⚠ NOR DOES THE POSITION OF THE ANSWER ──────────────────────────────────
+  // Every question is authored correct-option-first, so an unshuffled serve made ten
+  // graded questions answerable by clicking the top radio button — which is how this
+  // shipped and how Elena found it. The unit tests prove the permutation; THIS proves
+  // the real callable applies it, to both stages, differently per student, and
+  // identically on a reload.
+  const kcOrderFor = async (who) => {
+    const r = await callFn('scorecardGetQuestions', asStudent(gidR, who))
+    return [...r.result.kc.pre, ...r.result.kc.post]
+      .map(x => `${x.id}:${x.options.map(o => o.id).join('')}`)
+  }
+  const orderA = await kcOrderFor('stu-shuffle-A')
+  const orderB = await kcOrderFor('stu-shuffle-B')
+  const orderA2 = await kcOrderFor('stu-shuffle-A')
+  check(orderA.length === q.result.kc.total,
+    'the order probe covers every question in BOTH stages')
+  check(orderA.join('|') !== orderB.join('|'),
+    '⚠⚠ two students are served DIFFERENT option orders')
+  check(orderA.join('|') === orderA2.join('|'),
+    '⚠ …and one student is served the SAME order twice — a reload is not a new screen')
+  check(orderA.some(s => !s.split(':')[1].startsWith('a')),
+    '⚠ at least one question no longer leads with the authored first option')
+
   const preText = q.result.kc.pre.map(x =>
     `${x.prompt} ${x.options.map(o => o.text).join(' ')}`).join(' ').toLowerCase()
   const postText = q.result.kc.post.map(x =>
@@ -889,7 +912,7 @@ const run = async () => {
     '§7  Leak surface — exact recursive key-set pin (T6, spec §13)': 32,
     '§8  Submit-and-lock, ordering, and the advance gate': 7,
     '§9  The classroom-shaped case: blank seed, NO truth/main (T4)': 9,
-    '§10  The split KC (§9) and the three ordered steps (§10)': 43,
+    '§10  The split KC (§9) and the three ordered steps (§10)': 47,
     '§10b ⚠ Solver vs the slide-6 fixtures, and Monte Carlo vs analytic (spec §13)': 17,
   }
   for (const [name, want] of Object.entries(EXPECTED_COUNTS)) {

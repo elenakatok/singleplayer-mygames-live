@@ -187,6 +187,52 @@ export function resolveKcQuestions(
   }))
 }
 
+// ── Per-student option order (for INSTRUCTOR-ADDED questions only) ─────────────
+//
+// ⚠ THE FOUR DERIVED QUESTIONS ARE DELIBERATELY NOT SHUFFLED. All four offer the SAME
+// list — the distinct payoff values, sorted ascending — and their answers are 1, 15, 0
+// and 10, so an option's position tracks its VALUE and says nothing about correctness.
+// Scrambling a sorted numeric ladder would only make four numbers harder to compare.
+//
+// An instructor-added question has neither property: arbitrary labels in whatever order
+// they were typed, and most people type the right answer first.
+
+function hash32(s: string): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  h ^= h >>> 16
+  h = Math.imul(h, 0x85ebca6b)
+  h ^= h >>> 13
+  h = Math.imul(h, 0xc2b2ae35)
+  h ^= h >>> 16
+  return h >>> 0
+}
+
+/**
+ * Fisher–Yates over (participant, field, position), whitelisted to the two client
+ * fields. DETERMINISTIC: a student who answers, reloads and comes back sees the list
+ * they answered on. Grading is by option VALUE, so order never touches a score.
+ * A fresh hash per position — one draw reused across all positions would make the
+ * permutation a function of a single number, and students would visibly share layouts.
+ */
+export function shuffleClientOptions(
+  opts: readonly { value: string; label: string }[],
+  participantId: string,
+  field: string,
+): { value: string; label: string }[] {
+  const out = opts.map(o => ({ value: o.value, label: o.label }))
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = hash32(`${participantId}:${field}:${i}`) % (i + 1)
+    const tmp = out[i]
+    out[i] = out[j]
+    out[j] = tmp
+  }
+  return out
+}
+
 /** The KC as sent to the STUDENT — the answer key removed.
  *  `correct_value` and `explanation` are stripped: the explanation is earned by
  *  answering (the submit callable returns it), and the key is never client-side. */

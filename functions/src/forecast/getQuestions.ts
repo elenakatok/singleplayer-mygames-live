@@ -5,7 +5,9 @@ import {
   FORECAST_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC,
   loadForecastConfig,
 } from './config'
-import { resolveForecastKcQuestions, toClientKcQuestions, debriefQuestion } from './questions'
+import {
+  resolveForecastKcQuestions, toClientKcQuestions, shuffleClientOptions, debriefQuestion,
+} from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // forecastGetQuestions (student) — the whole non-month question set in ONE call: the
@@ -53,12 +55,15 @@ export const forecastGetQuestions = onCall({ cors: FORECAST_CORS_ORIGINS }, asyn
 
   // Added questions, whitelisted field by field — never spread, so a stored
   // `correct_value` cannot ride along.
+  //
+  // ⚠ SHUFFLED PER STUDENT, like the authored set. Without this, added questions were
+  // the one door the always-answer-first tell could walk back in through.
   const added = config.kcEnabled
     ? config.addedKcQuestions.map(q => ({
         field: q.id,
         type: q.type,
         prompt: q.prompt,
-        options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+        options: shuffleClientOptions(q.options ?? [], participantId, q.id),
       }))
     : []
 
