@@ -242,3 +242,179 @@ describe('the denominator counts graded additions and ignores ungraded ones', ()
     expect(kcDenominator(all, [])).toBe(all.length)
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠⚠ THE THREE REWRITTEN QUESTIONS (Elena, 08-08) — Q1 narrowed, Q5 made
+// self-contained, Q6 replaced. Same ten questions, same stages, same order.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const at = (c: Partial<typeof DEFAULT_CONFIG>, t: Partial<typeof DEFAULT_TRUTH> = {}) =>
+  scorecardKcQuestions({ ...DEFAULT_CONFIG, ...c }, { ...DEFAULT_TRUTH, ...t })
+const q = (id: string, c = {}, t = {}) => at(c, t).find(x => x.id === id)!
+const textOf = (id: string, c = {}, t = {}) => {
+  const x = q(id, c, t)
+  return `${x.prompt} ${x.options.map(o => o.text).join(' ')}`
+}
+
+describe('⚠ Q1 no longer bundles two opposite effects', () => {
+  it('the stem does not mention excluding spikes or removing noise', () => {
+    // The ambiguity was structural: excluding a one-time spike RAISES reliability while
+    // negotiating the figures LOWERS it, so both directions were defensible and the item
+    // measured which effect a student happened to weight.
+    const stem = q('q1_negotiated_ppm').prompt.toLowerCase()
+    for (const gone of ['spike', 'exclude', 'excludes', 'one-time']) {
+      expect(stem, `the stem must not say '${gone}'`).not.toContain(gone)
+    }
+    expect(stem).toContain('negotiate')
+  })
+
+  it('⚠ and no OPTION reintroduces it — the fairness distractor is gone', () => {
+    const opts = q('q1_negotiated_ppm').options.map(o => o.text.toLowerCase()).join(' | ')
+    for (const gone of ['fairer', 'spike', 'noise']) {
+      expect(opts, `no option may say '${gone}'`).not.toContain(gone)
+    }
+  })
+
+  it('still offers four options with exactly one key', () => {
+    const x = q('q1_negotiated_ppm')
+    expect(x.options).toHaveLength(4)
+    expect(x.options.filter(o => o.id === x.correctOptionId)).toHaveLength(1)
+  })
+})
+
+describe('⚠ Q5 is self-contained — every parameter it uses is in the stem', () => {
+  it('states endowment, high-effort cost, target and bonus, all interpolated', () => {
+    const stem = q('q5_earnings_arithmetic').prompt
+    for (const n of [50, 4, 7, 120]) {
+      expect(stem, `the shipped default ${n} appears`).toContain(String(n))
+    }
+    // ⚠ INTERPOLATED, not literal: an edit must move the stem with the answer.
+    const edited = q('q5_earnings_arithmetic', {
+      endowmentPerContract: 80, highEffortCost: 3, targetScore: 9, bonus: 200,
+    }).prompt
+    for (const n of [80, 3, 9, 200]) expect(edited).toContain(String(n))
+    for (const n of ['50 ECU', '120 ECU']) expect(edited).not.toContain(n)
+  })
+
+  it('⚠ does NOT claim low effort is free when it has been given a price', () => {
+    expect(q('q5_earnings_arithmetic').prompt).toContain('low effort is free')
+    const paid = q('q5_earnings_arithmetic', { lowEffortCost: 1 }).prompt
+    expect(paid, 'a false sentence must not reach a student').not.toContain('free')
+    expect(paid).toContain('low effort costs')
+  })
+
+  it('the answer is the spec §1 formula, and the three distractors are the named slips', () => {
+    const x = q('q5_earnings_arithmetic')
+    const texts = x.options.map(o => o.text)
+    expect(texts[0]).toBe('26 ECU')                       // 50 − 4×6, no bonus
+    expect(texts).toContain('146 ECU')                    // bonus added anyway
+    expect(texts).toContain('50 ECU')                     // costs forgotten
+    expect(texts).toContain('30 ECU')                     // paid only for the 5 that worked
+    expect(x.options[0].id).toBe(x.correctOptionId)
+  })
+})
+
+describe('⚠⚠ Q5/Q6 distractors cannot collapse onto the answer at edited parameters', () => {
+  // ⚠ CALIBRATION: each config below is chosen because it makes ONE specific distractor
+  // equal the answer under naive arithmetic. `bonus: 0` makes "bonus added anyway" == the
+  // answer; `highEffortCost: 0` makes "costs forgotten" == it; `targetScore: 8` makes the
+  // score equal the high-effort count, so "paid for successes" == it. A duplicate option
+  // marks a student wrong for picking something that is right.
+  const CONFIGS: Partial<typeof DEFAULT_CONFIG>[] = [
+    {}, { bonus: 0 }, { highEffortCost: 0 }, { targetScore: 8 }, { lowEffortCost: 1 },
+    { endowmentPerContract: 26, highEffortCost: 0, bonus: 0 },
+    { periodsPerContract: 3, targetScore: 2 },
+    { pAcceptableLow: 0 }, { pAcceptableLow: 0.01 }, { pAcceptableLow: 0.03 },
+    { pAcceptableLow: 0.9 },
+  ]
+
+  for (const cfg of CONFIGS) {
+    const name = Object.keys(cfg).length ? JSON.stringify(cfg) : 'defaults'
+    it(`no duplicate option at ${name}`, () => {
+      for (const id of ['q5_earnings_arithmetic', 'q6_low_effort_is_shared']) {
+        const texts = q(id, cfg).options.map(o => o.text)
+        expect(new Set(texts).size, `${id} has a duplicate option`).toBe(texts.length)
+        expect(texts.length, `${id} must stay answerable`).toBeGreaterThanOrEqual(2)
+      }
+    })
+  }
+
+  it('⚠ every Q6 distractor is strictly BELOW the true low-effort rate', () => {
+    // A number ABOVE the rate answers a confusion nobody has, and the scaling story rules
+    // it out on sight — which makes the item easier. Found by driving pAcceptableLow 0.03,
+    // where the top-up ladder stepped UP and printed 4% against a true rate of 3%.
+    for (const cfg of CONFIGS) {
+      const rate = Math.round((cfg.pAcceptableLow ?? DEFAULT_CONFIG.pAcceptableLow) * 100)
+      for (const o of q('q6_low_effort_is_shared', cfg).options.slice(1)) {
+        const m = /^(\d+)%$/.exec(o.text)
+        if (m) expect(Number(m[1]), `${o.text} vs a true rate of ${rate}%`).toBeLessThan(rate)
+      }
+    }
+  })
+
+  it('⚠ R8 — no option anywhere prints an unrounded float, at any of these configs', () => {
+    for (const cfg of CONFIGS) {
+      for (const x of at(cfg)) {
+        for (const o of x.options) {
+          expect(/\d\.\d{4,}/.test(o.text), `${x.id}: '${o.text}'`).toBe(false)
+        }
+      }
+    }
+  })
+})
+
+describe('⚠ Q6 catches the misreading that would hide the whole treatment', () => {
+  it('the stem contrasts BOTH condition rates and the answer is the unchanged low rate', () => {
+    const x = q('q6_low_effort_is_shared')
+    expect(x.prompt).toContain('70%')      // reliabilityHigh
+    expect(x.prompt).toContain('40%')      // reliabilityLow
+    expect(x.prompt).toContain('30%')      // pAcceptableLow, given for the good contract
+    expect(x.options[0].text).toMatch(/^30%/)
+    expect(x.options[0].id).toBe(x.correctOptionId)
+  })
+
+  it('⚠ all three rates interpolate — an edit moves the stem and the key together', () => {
+    const x = q('q6_low_effort_is_shared', { pAcceptableLow: 0.25 },
+      { reliabilityHigh: 0.9, reliabilityLow: 0.5 })
+    expect(x.prompt).toContain('90%')
+    expect(x.prompt).toContain('50%')
+    expect(x.options[0].text).toMatch(/^25%/)
+  })
+
+  it('⚠ it no longer asks for a subtraction — "percentage points" is gone', () => {
+    expect(textOf('q6_low_effort_is_shared')).not.toContain('percentage points')
+  })
+
+  it('offers "it depends", the answer a student gives when they think the rate is contextual', () => {
+    expect(textOf('q6_low_effort_is_shared').toLowerCase()).toContain('it depends')
+  })
+})
+
+describe('⚠⚠ §9.1 binds pre-play EXPLANATIONS, not only stems', () => {
+  it('no PRE-stage explanation states that a target can become unreachable', () => {
+    // ⚠ This test exists because a draft of Q5's rewrite ended "…spending it on a contract
+    // you cannot win", which says outright what §9.1 withholds until Q8 asks it post-play.
+    // The harness only scans prompts and options — explanations never ship in
+    // getQuestions — so nothing would have caught it. An explanation is shown the instant
+    // a question is answered, which for a pre-play question is pre-play.
+    const banned = [
+      'out of reach', 'unreachable', 'no longer reach', 'already lost', 'impossible',
+      'cannot win', "can't win", 'cannot reach', 'no way to reach',
+    ]
+    for (const x of questionsForStage(all(), 'pre')) {
+      const text = x.explanation.toLowerCase()
+      for (const b of banned) {
+        expect(text, `${x.id}'s explanation must not say '${b}'`).not.toContain(b)
+      }
+    }
+  })
+
+  it('…and the POST set is where that inference is allowed to appear', () => {
+    // Not vacuous: the constraint is a pre/post SPLIT, so the post set must actually
+    // discuss it. Q8 is the question that asks it.
+    const post = questionsForStage(all(), 'post')
+      .map(x => `${x.prompt} ${x.options.map(o => o.text).join(' ')} ${x.explanation}`)
+      .join(' ').toLowerCase()
+    expect(post).toContain('out of reach')
+  })
+})

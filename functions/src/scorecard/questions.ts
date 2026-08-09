@@ -59,20 +59,77 @@ const ecu = (x: number, currency: string) => `${round2(x)} ${currency}`
 const opts = (entries: [string, string][]): KcOption[] =>
   entries.map(([id, text]) => ({ id, text }))
 
+// ⚠ `roundDistractor` WAS DELETED WITH Q5's REWRITE (08-08). It existed to mint one
+// "plausible round number" slot — the single accepted departure from "every number derives
+// from config", recorded at CP2 — and Q5 was its only caller. Q5's fourth option is now
+// `endowment − cost × score`, a derived misreading rather than a round guess, so the
+// departure no longer exists and nothing needs the helper. `distinctValues` below is not a
+// replacement for it: it de-duplicates values that are ALL derived.
+
 /**
- * A "round wrong number" slot with a collision guard.
+ * ⚠⚠ A DISTRACTOR THAT EQUALS THE ANSWER MARKS EVERY STUDENT WHO PICKS IT WRONG, AND IS
+ * RIGHT. Q5's three distractors are all COMPUTED — `answer + bonus`, `endowment`, and
+ * `endowment − cost×score` — so an instructor edit can collapse any of them onto the
+ * answer or onto each other:
  *
- * ⚠ The one accepted departure from "every number derives from config" (recorded at CP2):
- * where a distractor would have to encode a confusion that does not exist, it is a
- * plausible round value. The guard keeps it config-safe — if an instructor edit brings it
- * within `spread` of the correct answer or another option, the next candidate is used.
+ *   bonus = 0                    ⇒ "bonus added anyway" == the answer
+ *   highEffortCost = 0           ⇒ "costs forgotten" == the answer, and so does the third
+ *   targetScore − 2 == 6         ⇒ "paid for successes" == the answer (same period count)
+ *
+ * None of those is exotic; `lowEffortCost: 0` is already the shipped default, and a
+ * zero-bonus demonstration instance is a thing an instructor would plausibly build.
+ *
+ * This keeps the answer, admits each preferred distractor ONLY if it is distinct from
+ * everything already accepted, then tops the list up from a ladder that steps away from
+ * the answer. A short list is fine and is what pricing does too — four options that
+ * include a duplicate of the answer is not.
+ *
+ * `minGap` is 1, not the effort cost: the meaningful distractors can legitimately sit
+ * close together (26 and 30 at the defaults are 4 apart, and a larger gap would reject
+ * the most instructive wrong answer in the set). One unit is enough to stop two options
+ * rendering as the same number.
  */
-function roundDistractor(preferred: number, taken: number[], spread: number): number {
-  const ladder = [preferred, preferred * 2, preferred / 2, preferred + spread * 3, preferred * 3]
-  for (const c of ladder) {
-    if (taken.every(t => Math.abs(t - c) >= spread)) return round2(c)
+function distinctValues(
+  answer: number,
+  preferred: number[],
+  step: number,
+  want = 4,
+  /**
+   * ⚠⚠ EVERY VALUE MUST BE STRICTLY BELOW THIS. Q6 passes the true low-effort rate,
+   * because its distractors mean "a SCALED-DOWN low rate" — one printed ABOVE the answer
+   * answers a confusion nobody has and quietly makes the item easier, since the scaling
+   * story rules it out on sight. Caught by driving `pAcceptableLow: 0.03`, where the
+   * top-up ladder stepped UP and printed 4% against a true rate of 3%.
+   *
+   * Q5 passes nothing: overpaying and underpaying are both real arithmetic slips, so its
+   * distractors legitimately sit on either side of the answer.
+   */
+  cap?: number,
+): number[] {
+  const out = [round2(answer)]
+  const minGap = 1
+  const free = (v: number) =>
+    Number.isFinite(v) && v >= 0
+    && (cap === undefined || v < cap)
+    && out.every(t => Math.abs(t - v) >= minGap)
+
+  for (const p of preferred) {
+    const r = round2(p)
+    if (out.length < want && free(r)) out.push(r)
   }
-  return round2(preferred)
+  // Top up. ⚠ Bounded — a config that makes every candidate collide must yield a SHORTER
+  // LIST, never spin and never pad with something invalid. A two-option question is
+  // answerable; a wrong one is not. At `pAcceptableLow: 0` Q6 correctly drops to the
+  // answer plus "it depends", because below 0% there is no plausible number to offer.
+  const rung = Math.max(1, Math.abs(step))
+  for (let k = 1; out.length < want && k <= 12; k++) {
+    const down = round2(answer - k * rung)
+    if (free(down)) { out.push(down); continue }
+    // Upward only when no cap forbids it — see the note on `cap`.
+    const up = round2(answer + k * rung)
+    if (free(up)) out.push(up)
+  }
+  return out
 }
 
 /**
@@ -90,21 +147,45 @@ export function scorecardKcQuestions(
   const cLow = config.lowEffortCost
   const pLow = config.pAcceptableLow
   const relLow = truth.reliabilityLow
+  /** ⚠ Q6 needs BOTH condition rates — it contrasts a good contract with a bad one. */
+  const relHigh = truth.reliabilityHigh
 
   // ── Q5: a worked earnings figure, straight from spec §1's formula ─────────
-  // 6 high-effort periods, final score 5, target 7 ⇒ no bonus.
+  //
+  // ⚠⚠ THE STEM STATES EVERY PARAMETER IT USES (Elena, 08-08). It used to assume the
+  // student remembered the endowment, the high-effort cost and the bonus. Recall is not
+  // the skill under test — applying the formula is — so the three now appear in the stem.
+  // They still INTERPOLATE, so a parameter edit moves the stem, the answer and the
+  // distractors together and they cannot drift apart.
   const q5High = Math.min(6, T)
   const q5Score = Math.max(0, S - 2)
   const q5Earnings = config.endowmentPerContract - cHigh * q5High - cLow * (T - q5High)
+  /** Adding the bonus that was NOT earned — the score is short of the target. */
   const q5WithBonus = q5Earnings + config.bonus
+  /** Forgetting that effort is paid for at all. */
   const q5NoCost = config.endowmentPerContract
+  /**
+   * ⚠ Paying only for the periods that WORKED. The score is the count of acceptable
+   * deliveries, so charging `q5Score` periods instead of `q5High` is the reading that
+   * effort is only paid for when it succeeds — the exact misreading Q5 exists to catch.
+   * 50 − 4×5 = 30 at the shipped defaults.
+   */
+  const q5PaidForSuccesses = config.endowmentPerContract - cHigh * q5Score
 
-  // ── Q6: the lift from low to the LOW condition's high rate ────────────────
-  // ⚠ Comprehension, not strategy: it checks the student noticed low effort is the same
-  // in both conditions. It says nothing about what to do with that.
-  const q6Lift = Math.round((relLow - pLow) * 100)
-  const q6HighRate = Math.round(relLow * 100)
-  const q6LowRate = Math.round(pLow * 100)
+  // ── Q6: low effort is the SAME on every contract ──────────────────────────
+  //
+  // ⚠⚠ REPLACED ENTIRELY (Elena, 08-08). The old Q6 asked for 40% − 30%, which is
+  // subtraction rather than a thought. This asks the same fact in the form that matters:
+  // given the low-effort rate on a GOOD contract, what is it on a BAD one?
+  //
+  // ⚠⚠ THE DISTRACTORS ARE SCALED-DOWN VERSIONS OF THE LOW RATE, and that is the whole
+  // design. A student who picks one has assumed the two rates move together — which is
+  // precisely the misreading that would make the entire reliability treatment INVISIBLE
+  // to them, because if low effort fell alongside high effort there would be nothing to
+  // notice and nothing to respond to. The old question could not catch it.
+  const q6HighRate = Math.round(relHigh * 100)
+  const q6LowConditionRate = Math.round(relLow * 100)
+  const q6LowEffortRate = Math.round(pLow * 100)
 
   return [
     // ═══ PRE-PLAY — case thinking (spec §9.1) ══════════════════════════════
@@ -114,23 +195,36 @@ export function scorecardKcQuestions(
     {
       id: 'q1_negotiated_ppm',
       stage: 'pre',
+      // ⚠⚠ THE EXCLUSION CLAUSE WAS DROPPED (Elena, 08-08) BECAUSE THE ITEM WAS AMBIGUOUS.
+      // The old stem bundled two OPPOSITE effects: excluding a one-time spike RAISES
+      // reliability (it removes variation the supplier did not cause), while negotiating
+      // the figures LOWERS it (it adds an input that is not effort). Both "weakens" and
+      // "strengthens" were defensible, so the item measured which effect a student
+      // happened to weight rather than whether they understood either. The stem now names
+      // only the negotiation, and the answer follows from it alone.
       prompt:
-        `Ellie Smith negotiates parts-per-million figures with suppliers, excludes one-time `
-        + `spikes, and can code a reject so that it does not count against the supplier. What `
-        + `does this do to the ${scorecardNoun}'s power to motivate suppliers?`,
+        `Ellie Smith negotiates parts-per-million figures with suppliers, and can code a `
+        + `reject so that it does not count against them. He says some suppliers "try to `
+        + `negotiate their numbers" rather than troubleshoot. What does this do to the `
+        + `${scorecardNoun}'s power to motivate?`,
       options: opts([
-        ['a', `Weakens it — the score now depends partly on negotiation rather than on what the supplier did`],
-        ['b', `Strengthens it — removing one-time spikes makes the score fairer and so more motivating`],
+        ['a', `Weakens it — part of the score now reflects how well a supplier argued rather than how it performed`],
+        // ⚠ THE FAIRNESS DISTRACTOR IS GONE WITH THE CLAUSE IT REFERRED TO. "Removing
+        // one-time spikes makes the score fairer" answers a stem that no longer mentions
+        // removing noise, and keeping it would reintroduce the ambiguity by the back door.
+        // Its replacement stays on the negotiation itself.
+        ['b', `Strengthens it — a supplier arguing about its numbers is paying closer attention to its quality`],
         ['c', `No effect — the adjustments are small relative to total volume`],
         ['d', `Strengthens it — suppliers work harder when they can appeal a reject`],
       ]),
       correctOptionId: 'a',
       explanation:
-        `Fairness and motivating power are different things. Every adjustment that is `
-        + `negotiated rather than measured moves part of the score away from the supplier's own `
-        + `actions — and a score that partly reflects how well you argued is a score that partly `
-        + `stops rewarding how well you performed.`,
-      tests: 'That negotiated adjustments decouple score from behaviour',
+        `A ${scorecardNoun} motivates by making the score depend on what the supplier did. `
+        + `Every point that can be argued for instead of earned moves part of the score away `
+        + `from the supplier's own actions — so a plant that gets better at negotiating gains `
+        + `exactly what a plant that gets better at troubleshooting gains, and effort stops `
+        + `being the thing that pays.`,
+      tests: 'That negotiable adjustments decouple score from behaviour',
     },
     {
       id: 'q2_charged_for_clean_parts',
@@ -198,46 +292,85 @@ export function scorecardKcQuestions(
       id: 'q5_earnings_arithmetic',
       stage: 'pre',
       prompt:
-        `You use high effort in ${q5High} of the ${T} ${config.periodNoun}s of a `
-        + `${config.contractNoun} and finish with a ${scorecardNoun} score of ${q5Score}. The `
-        + `target is ${S}. What are your earnings for that ${config.contractNoun}?`,
+        `Each ${config.contractNoun} starts with an endowment of ${ecu(config.endowmentPerContract, currency)}. `
+        // ⚠ "low effort is free" IS ONLY TRUE AT `lowEffortCost: 0`, which is the shipped
+        // default but IS a setting (spec §3). Stating it unconditionally would put a false
+        // sentence in front of students the moment an instructor gave low effort a price —
+        // and the answer below already charges for it, so the stem would contradict the key.
+        + (cLow === 0
+          ? `High effort costs ${ecu(cHigh, currency)} per ${config.periodNoun}; low effort is free. `
+          : `High effort costs ${ecu(cHigh, currency)} per ${config.periodNoun}; low effort costs ${ecu(cLow, currency)}. `)
+        + `Reaching a score of ${S} earns a bonus of ${ecu(config.bonus, currency)}.\n\n`
+        + `You use high effort in ${q5High} of the ${T} ${config.periodNoun}s and finish with a `
+        + `score of ${q5Score}. What are your earnings for that ${config.contractNoun}?`,
       options: (() => {
-        const filler = roundDistractor(
-          q5Earnings + cHigh * 2, [q5Earnings, q5WithBonus, q5NoCost], Math.max(1, cHigh),
+        // ⚠ See `distinctValues` — all three distractors are computed and an instructor
+        // edit can collapse any of them onto the answer.
+        const vals = distinctValues(
+          q5Earnings,
+          [q5WithBonus, q5NoCost, q5PaidForSuccesses],
+          Math.max(1, cHigh) * 2,
         )
-        return opts([
-          ['a', ecu(q5Earnings, currency)],
-          ['b', ecu(q5WithBonus, currency)],
-          ['c', ecu(q5NoCost, currency)],
-          ['d', ecu(filler, currency)],
-        ])
+        return opts(vals.map((v, i) => [String.fromCharCode(97 + i), ecu(v, currency)]))
       })(),
       correctOptionId: 'a',
       explanation:
-        `${config.endowmentPerContract} − ${cHigh} × ${q5High} = ${round2(q5Earnings)}. A score `
-        + `of ${q5Score} is short of ${S}, so there is no bonus — the effort was spent either `
-        + `way. ⚠ Effort is paid for whether or not it works.`,
+        `${round2(config.endowmentPerContract)} − ${round2(cHigh)} × ${q5High}`
+        + (cLow === 0 ? `` : ` − ${round2(cLow)} × ${T - q5High}`)
+        // ⚠⚠ A PRE-PLAY EXPLANATION IS PRE-PLAY TEXT. A first draft of this ended "…which
+        // is what makes spending it on a contract you cannot win a real loss" — which
+        // states outright that a contract can become unwinnable, the one inference §9.1
+        // exists to withhold until Q8 asks it post-play. Explanations are shown the moment
+        // a question is answered, so they are bound by §9.1 exactly as stems are.
+        + ` = ${round2(q5Earnings)}. A score of ${q5Score} is short of ${S}, so there is no `
+        + `bonus — but the effort was spent either way. ⚠ Effort is paid for whether or not `
+        + `it works.`,
       tests: 'That effort is paid for regardless of outcome',
     },
     {
       id: 'q6_low_effort_is_shared',
       stage: 'pre',
       prompt:
-        `Low effort gives an acceptable delivery ${q6LowRate}% of the time. On a `
-        + `${config.contractNoun} where high effort gives ${q6HighRate}%, how much does `
-        + `switching to high effort raise your chance in one ${config.periodNoun}?`,
-      options: opts([
-        ['a', `${q6Lift} percentage points`],
-        ['b', `${q6HighRate} percentage points`],
-        ['c', `${q6LowRate} percentage points`],
-        ['d', `It depends on how many ${config.periodNoun}s are left`],
-      ]),
+        // ⚠ `an ${deliveryNoun}`, NOT `an acceptable ${deliveryNoun}` — the noun already
+        // reads "acceptable delivery" at the defaults, and prefixing it produced "an
+        // acceptable acceptable delivery". Same construction EffortScreen uses.
+        `On a ${config.contractNoun} where high effort gives an ${config.deliveryNoun} `
+        + `${q6HighRate}% of the time, low effort gives ${q6LowEffortRate}%. On a `
+        + `${config.contractNoun} where high effort gives only ${q6LowConditionRate}%, low `
+        + `effort gives —`,
+      options: (() => {
+        // ⚠⚠ THE TWO WRONG NUMBERS ARE SCALED-DOWN LOW RATES, and both must sit strictly
+        // BELOW the true rate — a distractor above it would be answering a different
+        // confusion. Two different scale factors are used rather than one, so the item does
+        // not depend on a student guessing which specific scaling was intended; what it
+        // detects is the belief that ANY scaling happens.
+        //
+        // ⚠ Deduplicated for the same reason Q5's are: at a small `pAcceptableLow` the two
+        // scalings round together (3% → 2% and 2%), and at zero everything collapses.
+        const scaled = distinctValues(
+          q6LowEffortRate,
+          [Math.round(q6LowEffortRate * 2 / 3), Math.round(q6LowEffortRate / 2)],
+          Math.max(1, Math.round(q6LowEffortRate / 3)),
+          3,
+          // ⚠ Capped at the true rate — see `distinctValues`. Every wrong number here
+          // means "lower, because this contract is worse"; one printed higher would be
+          // dismissible on sight.
+          q6LowEffortRate,
+        ).slice(1)
+        return opts([
+          ['a', `${q6LowEffortRate}% — low effort is the same on every ${config.contractNoun}; only high effort changes`],
+          ...scaled.map((v, i) => [String.fromCharCode(98 + i), `${v}%`] as [string, string]),
+          ['d', `It depends on the ${config.contractNoun}`],
+        ])
+      })(),
       correctOptionId: 'a',
       explanation:
-        `${q6HighRate}% − ${q6LowRate}% = ${q6Lift} percentage points. ⚠ Low effort gives `
-        + `${q6LowRate}% on EVERY ${config.contractNoun} — that number never changes. What `
-        + `changes between ${config.contractNoun}s is only what high effort gives you.`,
-      tests: 'That low effort is the same in both conditions',
+        `${q6LowEffortRate}%. ⚠ Low effort gives ${q6LowEffortRate}% on EVERY `
+        + `${config.contractNoun} — that number never changes. What changes between `
+        + `${config.contractNoun}s is only what HIGH effort gives you, which is why the two `
+        + `kinds of ${config.contractNoun} are worth different amounts of effort. If the low `
+        + `rate fell too, there would be nothing to notice and nothing to respond to.`,
+      tests: 'That low effort is the same in both conditions — and that the rates do not move together',
     },
 
     // ═══ POST-PLAY — strategy, after the §10 reveal (spec §9.2) ═════════════

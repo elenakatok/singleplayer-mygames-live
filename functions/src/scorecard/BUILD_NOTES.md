@@ -1008,3 +1008,87 @@ affecting 17 games to serve one.
 "that's a bigger change than this warrants"). The cost is that every KC fix has to be applied
 here separately — which is exactly what happened with `cef36fe`, and why §27's shuffle tests
 exist as scorecard-local copies rather than inherited coverage.
+
+---
+
+## 30. Three KC rewrites (Elena, 08-08) — and a §9.1 hole they exposed
+
+Same ten questions, same stages, same order. Nothing structural.
+
+### Q1 — the item was ambiguous, and structurally so
+
+The old stem bundled **two opposite effects**: excluding a one-time spike RAISES reliability
+(it removes variation the supplier did not cause), while negotiating the figures LOWERS it
+(it adds an input that is not effort). Both "weakens" and "strengthens" were defensible, so
+the item measured which effect a student happened to weight rather than whether they
+understood either. The stem now names only the negotiation.
+
+⚠ The fairness distractor went with the clause it referred to. "Removing one-time spikes
+makes the score fairer and so more motivating" answers a stem that no longer mentions
+removing noise, and keeping it would have reintroduced the ambiguity through the options.
+Its replacement stays on the negotiation itself: *"a supplier arguing about its numbers is
+paying closer attention to its quality"*.
+
+### Q5 — recall was never the skill under test
+
+It assumed the student remembered the endowment, the high-effort cost and the bonus. All
+three are now stated in the stem, and all three still interpolate, so a parameter edit moves
+the stem, the answer and the distractors together.
+
+⚠ **"low effort is free" is only true at `lowEffortCost: 0`** — the shipped default, but a
+SETTING (spec §3). Stated unconditionally it would put a false sentence in front of students
+the moment low effort was given a price, and the key already charges for it, so the stem
+would have contradicted the answer. The clause is conditional.
+
+The fourth option is now derived rather than a round guess: `endowment − cost × score`
+(50 − 4×5 = 30) is "paid only for the periods that WORKED". ⚠ That retired `roundDistractor`
+— the single accepted departure from "every number derives from config", recorded at CP2.
+The departure no longer exists; the helper is deleted.
+
+### Q6 — replaced, because subtracting 30 from 40 is not a thought
+
+Same fact, asked in the form that matters: given the low-effort rate on a good contract, what
+is it on a bad one? ⚠⚠ **The distractors are scaled-down low rates, and that is the whole
+design.** A student who picks one has assumed the two rates move together — precisely the
+misreading that would make the entire reliability treatment INVISIBLE to them, because if the
+low rate fell alongside the high rate there would be nothing to notice and nothing to respond
+to. The old question could not catch it.
+
+### ⚠⚠ Every distractor in both questions is COMPUTED, so an edit can collapse one onto the answer
+
+`distinctValues` keeps the answer, admits each preferred distractor only if distinct, then
+tops up from a bounded ladder. A short list is fine; a duplicate of the answer is not — it
+marks a student wrong for picking something that is right. The configs that break it are not
+exotic:
+
+| config | what collapses |
+|---|---|
+| `bonus: 0` | "bonus added anyway" == the answer |
+| `highEffortCost: 0` | "costs forgotten" == the answer, and so does the third |
+| `targetScore: 8` | score == high-effort count, so "paid for successes" == the answer |
+| `pAcceptableLow: 0.03` | Q6's two scalings round together (2% and 2%) |
+| `pAcceptableLow: 0` | every scaling collapses to 0 |
+
+⚠ **The cap on Q6 was added because the first version got it wrong.** Driving
+`pAcceptableLow: 0.03` showed the top-up ladder stepping UP and printing **4% against a true
+rate of 3%** — a distractor above the rate answers a confusion nobody has, and the scaling
+story rules it out on sight, which makes the item easier. Q6 now passes its true rate as an
+exclusive upper bound and the ladder steps down. At `pAcceptableLow: 0` it correctly degrades
+to two options, because below 0% there is no plausible number to offer.
+
+### ⚠⚠ THE HOLE: §9.1 binds pre-play EXPLANATIONS, and nothing was checking them
+
+A draft of Q5's new explanation ended *"…which is what makes spending it on a contract you
+cannot win a real loss rather than a wasted chance."* That states outright that a contract can
+become unwinnable — **the one inference §9.1 exists to withhold until Q8 asks it post-play.**
+
+It would have shipped. The harness's banned-phrase scan runs over prompts and options only,
+because explanations never appear in `getQuestions` — they are returned by the SUBMIT call,
+one at a time. But an explanation is shown the instant a question is answered, so for a
+pre-play question it is pre-play text, and it was completely unguarded.
+
+A unit test now scans every PRE-stage explanation for the same banned phrases plus "cannot
+win" / "cannot reach", with a paired non-vacuity check that the POST set does discuss it.
+⚠ The general lesson is the one CP2's float finding already taught in a different form:
+**a constraint on what students may read has to cover every surface they read it on**, and
+"the harness checks the questions" was not the same as "the harness checks the text".
