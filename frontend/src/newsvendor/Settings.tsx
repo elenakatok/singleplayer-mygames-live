@@ -10,6 +10,10 @@ import {
 } from './api'
 import { formatMoney, formatUnits } from './format'
 import { ParameterBox, DemandBox } from './ParamsPanel'
+import {
+  KnowledgeCheckSettings,
+  type KcSettingsDraft, type KcSettingsQuestion, type KcSettingsStage,
+} from '../shared/KnowledgeCheckSettings'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Newsvendor instructor settings (spec §2). Same shape as pricing's: sections of
@@ -19,11 +23,20 @@ import { ParameterBox, DemandBox } from './ParamsPanel'
 // ⚠ THE 4-NUMBER CONFIGURATOR DOES NOT APPLY HERE (spec §2). This is not a 2×2 matrix
 // game; it has its own scalar config, and the fields below are it.
 //
-// ⚠ THE KNOWLEDGE CHECK IS NOT EDITABLE, AND THAT IS THE FEATURE. Pricing derives its
-// KC from the market so the two can never disagree; this game's ten questions use
-// FIXED teaching numbers that deliberately differ from the instance, so students must
-// recompute rather than read an answer off the play screen. They are previewed
-// read-only below. An instructor who wants instance-specific questions adds their own.
+// ⚠⚠ THE KNOWLEDGE CHECK IS NOW EDITABLE — and the reason it used to say otherwise is
+// still true, so the caution is kept rather than deleted (convergence spec §3).
+//
+// The old sentence was "the knowledge check is not editable, and that is the feature". That
+// was an argument against DERIVING the questions from the instance, not against an
+// instructor rewording one. Pricing derives its KC from the market so the two can never
+// disagree; this game's twenty use FIXED teaching numbers that deliberately DIFFER from the
+// instance, so a student must recompute rather than read an answer off the play screen.
+//
+// ⚠ THE CAUTION THAT SURVIVES: don't rewrite a question to use THIS instance's market. The
+// numbers in these stems are chosen to be different on purpose; replacing them with the
+// live P, c, mean and sd would let a student read the answer straight off the order screen
+// instead of computing it. Everything else — wording, clarity, an extra distractor label —
+// is fair game (D1; Elena, 08-10: "I don't see any harm").
 //
 // ⚠ THE SEED IS INSTRUCTOR-ONLY AND LIVES IN TRUTH. It derives every demand draw, so
 // it is stored in the rules-denied truth doc rather than the student-readable config
@@ -87,6 +100,29 @@ function Check({ label, checked, onChange, testId, children }: {
   )
 }
 
+/**
+ * Newsvendor's two stages, for the shared block.
+ *
+ * ⚠⚠ `post` READS "AFTER THE RESULTS" — not pd's "After play" and not scorecard's "After
+ * the reveal". Newsvendor's final-results screen is the last content screen before this
+ * stage (resume.ts), so a student answering anything here has already seen their own
+ * profits and their gap from the optimal order. An instructor writing a question needs to
+ * know that.
+ */
+const KC_STAGES: KcSettingsStage[] = [
+  { id: 'pre', label: 'Before play', note: 'Asked before the first period.' },
+  {
+    id: 'post',
+    label: 'After the results',
+    note: 'Asked once the game is over. ⚠ Students have already seen their final results — '
+      + 'their profits, and how far their orders were from the optimal quantity.',
+  },
+]
+
+/** ⚠ The two free-text rows' ids ARE their stored answer keys. Nothing moves. */
+const PREP_ROW_ID = 'prep_strategy'
+const DEBRIEF_ROW_ID = 'debrief_regular'
+
 const TITLE = 'Newsvendor — Settings'
 
 export default function Settings() {
@@ -98,11 +134,76 @@ export default function Settings() {
   const [err, setErr] = useState<string | null>(null)
   const [saveMsg, setSaveMsg] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // THE KNOWLEDGE CHECK — the SHARED block (convergence spec §2, §8.3).
+  //
+  // ⚠ The read-only preview <ol>, the prep textarea and the debrief textarea are all gone;
+  // all three are rows in the list now. Newsvendor supplies only the stage labels, the
+  // toggle copy, and the two-row translation below.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const [kcDraft, setKcDraft] = useState<KcSettingsDraft | null>(null)
 
   const apply = (res: NewsvendorConfigResult) => {
     setLoaded(res)
     setDraft(res.config)
     setSeed(res.seed ?? '')
+    setKcDraft(seedKc(res))
+  }
+
+  /** The server's inventory in the shared block's shape — both paragraph rows included. */
+  function kcQuestions(r: NewsvendorConfigResult): KcSettingsQuestion[] {
+    return [...r.kc.builtIn, ...r.kc.added, r.kc.prep, r.kc.debrief]
+  }
+
+  /**
+   * ⚠⚠ THE TWO PARAGRAPH ROWS ARE BACKED BY THEIR OWN CONFIG KEYS, NOT BY THE THREE
+   * CONVERGENCE MAPS — that is what makes folding them into the list a UI change with NO
+   * STORAGE MIGRATION (spec D9). Inside the block they behave like any row, so their edits
+   * land in `overrides[id]` and `hidden[id]`; this pair translates those to and from
+   * `prepPrompt`/`prepEnabled` and `debriefPrompt`/`debriefEnabled` at the boundary. The
+   * server never sees either, and REFUSES them if a hand-made call sends one.
+   *
+   * ⚠ `addedKcQuestions` is carried through untouched. It has always round-tripped through
+   * this page (it is a member of NewsvendorEditableConfig and the save sends the whole
+   * draft) while never being rendered, so an instance may ALREADY hold added questions
+   * injected by callable. Adoption must show them, not drop them.
+   */
+  function seedKc(r: NewsvendorConfigResult): KcSettingsDraft {
+    return {
+      enabled: r.config.kcEnabled,
+      hidden: {
+        ...r.config.kcHidden,
+        ...(r.config.prepEnabled ? {} : { [PREP_ROW_ID]: true }),
+        ...(r.config.debriefEnabled ? {} : { [DEBRIEF_ROW_ID]: true }),
+      },
+      order: { ...r.config.kcOrder },
+      overrides: { ...r.config.kcOverrides },
+      added: r.config.addedKcQuestions.map(q => ({ ...q })),
+    }
+  }
+
+  /** The draft, split back into the callable's real field names. */
+  function kcPatch(d: KcSettingsDraft) {
+    const { [PREP_ROW_ID]: prepHidden, [DEBRIEF_ROW_ID]: debriefHidden, ...hidden } = d.hidden
+    const { [PREP_ROW_ID]: prepOverride, [DEBRIEF_ROW_ID]: debriefOverride, ...overrides } = d.overrides
+    return {
+      kcEnabled: d.enabled,
+      kcHidden: hidden,
+      kcOrder: d.order,
+      kcOverrides: overrides,
+      addedKcQuestions: d.added.map(q => ({
+        ...q,
+        // The shared draft types `stage` as a plain string (generic across six games);
+        // newsvendor's callable takes its own two-value union.
+        stage: q.stage === 'post' ? ('post' as const) : ('pre' as const),
+      })),
+      prepEnabled: prepHidden !== true,
+      debriefEnabled: debriefHidden !== true,
+      // ⚠ Falls back to what is stored, so a save that never touched a paragraph sends its
+      // prompt unchanged rather than blanking it — the callable rejects an empty prompt.
+      prepPrompt: prepOverride?.prompt ?? loaded?.config.prepPrompt ?? '',
+      debriefPrompt: debriefOverride?.prompt ?? loaded?.config.debriefPrompt ?? '',
+    }
   }
 
   useEffect(() => {
@@ -134,7 +235,11 @@ export default function Settings() {
     setSaveMsg(null)
     setErr(null)
     try {
-      const res = await newsvendorUpdateConfig({ ...draft, seed: seed.trim() === '' ? null : seed.trim() })
+      const res = await newsvendorUpdateConfig({
+        ...draft,
+        ...(kcDraft ? kcPatch(kcDraft) : {}),
+        seed: seed.trim() === '' ? null : seed.trim(),
+      })
       apply(res)
       setSaveMsg('Saved.')
     } catch (e) {
@@ -323,77 +428,43 @@ export default function Settings() {
         </div>
       </section>
 
-      {/* ── Prep, knowledge check, debrief (spec §8) ───────────────────────── */}
-      <section style={section}>
-        <h2 style={sectionTitle}>Prep question</h2>
-        <Check
-          label="Ask the prep question before play"
-          checked={draft.prepEnabled}
-          onChange={v => set('prepEnabled', v)}
-          testId="nv-set-prep-enabled"
+      {/* ═══ THE KNOWLEDGE CHECK — the SHARED block (convergence spec §2) ════ */}
+      {kcDraft && (
+        <KnowledgeCheckSettings
+          testIdPrefix="nv-kc"
+          questions={kcQuestions(loaded)}
+          stages={KC_STAGES}
+          draft={kcDraft}
+          onChange={setKcDraft}
+          // ⚠ D12 — THE TOGGLE GATES GRADED QUESTIONS ONLY, and the copy says exactly that.
+          // Both paragraphs have their own visibility checkbox in the list below.
+          enableNote={(
+            <>
+              Off removes the{' '}
+              <strong>{loaded.config.dual ? 'dual-sourcing' : 'single-source'}</strong>{' '}
+              questions and any graded question you have added. ⚠ It does <em>not</em> remove
+              the two written answers — the one before play or the one after the results — or
+              any free-text question you have added. Those are ungraded, and each has its own
+              visibility checkbox below.
+            </>
+          )}
+          // ⚠ NO STARTED-BANNER IS PASSED, DELIBERATELY. Newsvendor has an `anyRoundsPlayed`
+          // signal and a warning that uses it, but that warning lives inside the prices-and-
+          // costs section and its copy is entirely about editing those numbers — it is not a
+          // page-level banner like scorecard's. Spec §10 records this as a decision pending
+          // for pd, pricing and now newsvendor, to be swept once rather than invented here.
         />
-        <textarea
-          data-testid="nv-set-prep-prompt"
-          value={draft.prepPrompt}
-          onChange={e => set('prepPrompt', e.target.value)}
-          rows={4}
-          style={{
-            width: '100%', fontSize: '0.9rem', padding: '0.5rem', borderRadius: 4, marginTop: '0.4rem',
-            border: `1px solid ${colors.inputBorder}`, boxSizing: 'border-box', fontFamily: 'inherit', lineHeight: 1.55,
-          }}
-        />
-        <p style={note}>Free text, ungraded. It gets its own report.</p>
-      </section>
+      )}
 
-      <section style={section}>
-        <h2 style={sectionTitle}>Knowledge check</h2>
-        <Check
-          label="Include the knowledge check"
-          checked={draft.kcEnabled}
-          onChange={v => set('kcEnabled', v)}
-          testId="nv-set-kc-enabled"
-        />
-        <p style={note}>
-          These <strong>{loaded.authoredKcPreview.length}</strong>{' '}
-          <strong>{loaded.config.dual ? 'DUAL-SOURCING' : 'single-source'}</strong> questions
-          are graded and are this game&rsquo;s assessed component. The two sets are mutually
-          exclusive — flipping the sourcing toggle swaps the whole set, and they share no
-          questions. They use <strong>fixed teaching numbers that differ
-          from this instance on purpose</strong>, so students have to redo the calculation
-          rather than read an answer off the play screen — which is why they are not
-          editable here. Option order is shuffled per student. They are asked{' '}
-          <strong>after</strong> the game, not before.
-        </p>
-        <ol data-testid="nv-settings-kc-preview" style={{ ...note, paddingLeft: '1.2rem' }}>
-          {loaded.authoredKcPreview.map(q => (
-            <li key={q.field} style={{ marginBottom: '0.35rem' }}>
-              {q.prompt}{' '}
-              <em>(answer: {q.options.find(o => o.value === q.correct_value)?.label ?? q.correct_value})</em>
-            </li>
-          ))}
-        </ol>
-      </section>
-
-      <section style={section}>
-        <h2 style={sectionTitle}>Debrief</h2>
-        <Check
-          label="Ask for a debrief paragraph"
-          checked={draft.debriefEnabled}
-          onChange={v => set('debriefEnabled', v)}
-          testId="nv-set-debrief-enabled"
-        />
-        <textarea
-          data-testid="nv-set-debrief-prompt"
-          value={draft.debriefPrompt}
-          onChange={e => set('debriefPrompt', e.target.value)}
-          rows={4}
-          style={{
-            width: '100%', fontSize: '0.9rem', padding: '0.5rem', borderRadius: 4, marginTop: '0.4rem',
-            border: `1px solid ${colors.inputBorder}`, boxSizing: 'border-box', fontFamily: 'inherit', lineHeight: 1.55,
-          }}
-        />
-        <p style={note}>Free text, ungraded. It gets its own report, separate from the prep.</p>
-      </section>
+      {/* ⚠ THE CAUTION THAT REPLACED "NOT EDITABLE" — see the header. It is about
+          DERIVING, which is still forbidden, not about wording, which is now allowed. */}
+      <p style={{ ...note, marginTop: '-0.5rem', marginBottom: '1.25rem' }} data-testid="nv-kc-derive-caution">
+        ⚠ These questions carry their own numbers on purpose — a{' '}
+        <strong>different</strong> market from the one your students play, so they have to
+        redo the calculation instead of reading an answer off the order screen. Reword them
+        freely, but <strong>don&rsquo;t rewrite one to use this instance&rsquo;s market</strong>:
+        that would hand the answer over.
+      </p>
 
       {/* ── The seed ───────────────────────────────────────────────────────── */}
       <section style={section}>

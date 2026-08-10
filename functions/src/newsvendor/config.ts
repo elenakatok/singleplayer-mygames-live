@@ -18,6 +18,17 @@
 // alongside nothing else.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import {
+  parseAddedKcQuestion as parseSharedAddedKcQuestion,
+  parseKcHidden, parseKcOrder, parseKcOverrides,
+  type KcHiddenMap, type KcOrderMap, type KcOverrideMap, type KcIdGuard,
+} from '../shared/kcSurface'
+
+export type { KcHiddenMap, KcOrderMap, KcOverrideMap, KcOverride } from '../shared/kcSurface'
+/** Re-exported so the callables import every KC-config concern from one place. */
+export { parseKcHidden, parseKcOrder, parseKcOverrides } from '../shared/kcSurface'
+
+
 /** game_id — lowercase, never displayed. Drives the collection prefix + fn names. */
 export const NEWSVENDOR_GAME_ID = 'newsvendor'
 
@@ -124,6 +135,9 @@ export interface NewsvendorAddedKcQuestion {
   /** mc only: the correct option value. Absent ⇒ recorded but UNGRADED. */
   correct_value?: string
   explanation?: string
+  /** ⚠ Absent ⇒ `pre`, which is where every question newsvendor has already stored is
+   *  served. See DEFAULT_ADDED_KC_STAGE — the default is per game and must never be shared. */
+  stage?: NewsvendorKcStage
 }
 
 /** The effective instance config (spec §2). Every scalar here is student-facing. */
@@ -168,14 +182,60 @@ export interface NewsvendorConfig {
   /** Is the prep question part of this instance's flow? */
   prepEnabled: boolean
   prepPrompt: string
-  /** Is the knowledge check part of this instance's flow? */
+  /**
+   * Is the GRADED knowledge check part of this instance's flow?
+   *
+   * ⚠ GRADED ONLY (convergence spec D12). Off removes the mode's authored ten and any
+   * graded addition. The prep and debrief paragraphs, and any ungraded free-text
+   * addition, are governed by their own visibility.
+   */
   kcEnabled: boolean
   /** Instructor-added KC questions, rendered AFTER the authored ten. */
   addedKcQuestions: NewsvendorAddedKcQuestion[]
   /** Is the debrief paragraph part of this instance's flow? */
   debriefEnabled: boolean
   debriefPrompt: string
+  /**
+   * ⚠ THE THREE CONVERGENCE FIELDS (spec §5). All optional, all defaulting to exactly
+   * today's behaviour, all honoured in BOTH the serve path and the grader.
+   *
+   * ⚠⚠ ONE FLAT MAP PER FIELD SERVES BOTH MODES, and that is safe ONLY because the two
+   * authored sets share no ids: the regular ten are `kc_cr_concept`…`kc_variability` and
+   * every dual one is `kc_dual_*`. An edit made in one mode is stored under an id the
+   * other never serves, so it cannot reach the set that is not being shown and is still
+   * there when the instructor flips back. Asserted in `newsvendorKcSurface.test`, not
+   * assumed — spec §6 says verify, don't assume.
+   */
+  kcHidden: KcHiddenMap
+  kcOrder: KcOrderMap
+  kcOverrides: KcOverrideMap
 }
+
+/**
+ * newsvendor's stages.
+ *
+ * ⚠ `post` means AFTER THE RESULTS. The final-results screen is the last content screen
+ * before the debrief (resume.ts), so a student answering anything in this stage has
+ * already seen their own outcome — their profits, their optimality gap, the lot.
+ */
+export const NEWSVENDOR_KC_STAGES = ['pre', 'post'] as const
+export type NewsvendorKcStage = (typeof NEWSVENDOR_KC_STAGES)[number]
+
+/**
+ * ⚠⚠ THE STAGE A STAGE-LESS STORED ADDITION LANDS IN — `pre`.
+ *
+ * DETERMINED, NOT COPIED (spec D16). `newsvendorGetQuestions` returns added questions in
+ * `kc.added`, and Play.tsx builds its pre-play list as
+ * `[...questions.kc.authored, ...questions.kc.added]` — so every added question newsvendor
+ * has ever stored is served BEFORE play. Scorecard defaults to `post`, pd and pricing to
+ * `pre`; each preserves its OWN history and none is transferable. Defaulting this to
+ * `post` would silently relocate live questions to after the results.
+ */
+export const DEFAULT_ADDED_KC_STAGE: NewsvendorKcStage = 'pre'
+
+/** ⚠ The two free-text rows' ids ARE their stored answer keys. Nothing moves. */
+export const PREP_ROW_ID = 'prep_strategy'
+export const DEBRIEF_ROW_ID = 'debrief_regular'
 
 export const DEFAULT_NEWSVENDOR_CONFIG: NewsvendorConfig = {
   P: DEFAULT_P,
@@ -199,49 +259,48 @@ export const DEFAULT_NEWSVENDOR_CONFIG: NewsvendorConfig = {
   addedKcQuestions: [],
   debriefEnabled: true,
   debriefPrompt: DEFAULT_DEBRIEF_PROMPT_REGULAR,
+  kcHidden: {},
+  kcOrder: {},
+  kcOverrides: {},
 }
 
-/** Defensive parse of ONE instructor-added KC question. Returns null if unusable —
- *  loadNewsvendorConfig drops those rather than throwing, so a half-written config can
- *  never make the game unplayable. Copied from pricing's, including its two traps. */
-export function parseAddedKcQuestion(raw: unknown): NewsvendorAddedKcQuestion | null {
-  if (typeof raw !== 'object' || raw === null) return null
-  const q = raw as Record<string, unknown>
-  const id = typeof q.id === 'string' ? q.id.trim() : ''
-  const prompt = typeof q.prompt === 'string' ? q.prompt.trim() : ''
-  if (!id || !prompt) return null
-  // The authored set owns the kc_ namespace; an added question that took one would be
-  // shadowed by the grader's authored-first lookup.
-  if (id.startsWith('kc_')) return null
+/**
+ * The `kc_` PREFIX is newsvendor's collision-guard strategy — the authored sets own that
+ * namespace in BOTH modes, and the grader looks them up FIRST, so an added question taking
+ * one would be silently shadowed and the student graded against the teaching market instead
+ * of the instructor's key.
+ *
+ * ⚠ Scorecard passes an explicit id SET instead, because its built-in ids are unprefixed.
+ * The shared parser carries both strategies (spec §5); picking one unprotects the other.
+ *
+ * ⚠⚠ THIS DOES **NOT** COVER THE TWO FREE-TEXT IDS, `prep_strategy` and `debrief_regular`.
+ * An added question could legally take one of them. It is harmless TODAY only because
+ * free-text answers live in `free_text_answers` and KC answers in `kc_static_answers`, so
+ * the two never meet — spec §6's "do not unify the answer maps" is what keeps it harmless.
+ * Widening the guard is reported rather than done: see the handoff.
+ */
+export const NEWSVENDOR_KC_ID_GUARD: KcIdGuard = { kind: 'prefix', prefix: 'kc_' }
 
-  // ⚠ OPTIONAL FIELDS ARE OMITTED, NEVER undefined — Firestore rejects undefined.
-  const explanation = typeof q.explanation === 'string' && q.explanation.trim()
-    ? q.explanation.trim() : null
+/**
+ * Defensive parse of ONE instructor-added KC question. Returns null if unusable —
+ * loadNewsvendorConfig drops those rather than throwing, so a half-written config can never
+ * make the game unplayable.
+ *
+ * ⚠ THE BODY LIVES IN `shared/kcSurface` (convergence spec §5 — five near-copies, no two
+ * byte-identical). newsvendor passes its prefix guard and its two stages; an unrecognised
+ * stage is dropped, falling back to DEFAULT_ADDED_KC_STAGE.
+ */
+export function parseAddedKcQuestion(
+  raw: unknown,
+  guard: KcIdGuard | undefined = NEWSVENDOR_KC_ID_GUARD,
+): NewsvendorAddedKcQuestion | null {
+  const q = parseSharedAddedKcQuestion(raw, { guard, stages: NEWSVENDOR_KC_STAGES })
+  return q === null ? null : (q as NewsvendorAddedKcQuestion)
+}
 
-  const type: 'mc' | 'text' = q.type === 'mc' ? 'mc' : 'text'
-  if (type === 'text') {
-    return { id, type, prompt, ...(explanation ? { explanation } : {}) }
-  }
-
-  const optionsRaw = Array.isArray(q.options) ? q.options : []
-  const options: { value: string; label: string }[] = []
-  for (const o of optionsRaw) {
-    if (typeof o !== 'object' || o === null) continue
-    const oo = o as Record<string, unknown>
-    const value = typeof oo.value === 'string' ? oo.value : ''
-    const label = typeof oo.label === 'string' ? oo.label : ''
-    if (value && label) options.push({ value, label })
-  }
-  if (options.length < 2) return null
-
-  const key = typeof q.correct_value === 'string' ? q.correct_value : ''
-  const hasKey = options.some(o => o.value === key)
-
-  return {
-    id, type, prompt, options,
-    ...(hasKey ? { correct_value: key } : {}),
-    ...(explanation ? { explanation } : {}),
-  }
+/** The stage a stored added question is asked in. ⚠ Absent ⇒ `pre` — see the constant. */
+export function addedKcStage(q: NewsvendorAddedKcQuestion): NewsvendorKcStage {
+  return q.stage ?? DEFAULT_ADDED_KC_STAGE
 }
 
 /** A finite number from a stored field, or the shipped default. */
@@ -302,8 +361,13 @@ export function loadNewsvendorConfig(configData: Record<string, unknown> | undef
     prepPrompt: typeof prepRaw === 'string' && prepRaw.trim() ? prepRaw.trim() : DEFAULT_PREP_PROMPT,
     kcEnabled: d.kc_enabled !== false,
     addedKcQuestions: (Array.isArray(d.added_kc_questions) ? d.added_kc_questions : [])
-      .map(parseAddedKcQuestion)
+      .map(q => parseAddedKcQuestion(q))
       .filter((q): q is NewsvendorAddedKcQuestion => q !== null),
+    // ⚠ Total on absent — an instance written before these existed reads as "no hides,
+    // authored order, no rewrites", which is exactly the behaviour it already had.
+    kcHidden: parseKcHidden(d.kc_hidden),
+    kcOrder: parseKcOrder(d.kc_order),
+    kcOverrides: parseKcOverrides(d.kc_overrides),
     debriefEnabled: d.debrief_enabled !== false,
     debriefPrompt: typeof debriefRaw === 'string' && debriefRaw.trim()
       ? debriefRaw.trim()

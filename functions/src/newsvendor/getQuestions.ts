@@ -6,7 +6,8 @@ import {
   loadNewsvendorConfig,
 } from './config'
 import {
-  resolveNewsvendorKcQuestions, toClientKcQuestions, shuffleClientOptions,
+  newsvendorPreStage, newsvendorPostStage, stageToClient,
+  authoredToClient, addedToClientKcQuestions,
   prepQuestion, debriefQuestion,
 } from './questions'
 
@@ -50,23 +51,21 @@ export const newsvendorGetQuestions = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, 
   const config = loadNewsvendorConfig(configSnap.data())
   const pData = participantSnap.data() ?? {}
 
-  const authored = config.kcEnabled
-    ? toClientKcQuestions(resolveNewsvendorKcQuestions(participantId, config.dual))
-    : []
+  // ⚠⚠ HIDDEN, ORDER AND OVERRIDES ARE APPLIED BY `resolveNewsvendorKc`, WHICH THE GRADER
+  // ALSO CALLS (through `newsvendorKcScoringSet`). Do not filter again here — a second
+  // filter is a second answer to "which questions exist", and the two would eventually
+  // disagree (spec §5).
+  const authored = authoredToClient(config, participantId)
 
   // Added questions, whitelisted field by field — never spread, so a stored
   // `correct_value` cannot ride along.
   //
   // ⚠ SHUFFLED PER STUDENT, like the authored set. Without this, added questions were
   // the one door the always-answer-first tell could walk back in through.
-  const added = config.kcEnabled
-    ? config.addedKcQuestions.map(q => ({
-        field: q.id,
-        type: q.type,
-        prompt: q.prompt,
-        options: shuffleClientOptions(q.options ?? [], participantId, q.id),
-      }))
-    : []
+  // ⚠ PRE-STAGE ONLY. Added questions used to be stage-less and every one of them was
+  // appended here, before play. They are stage-aware now, so this is explicitly the `pre`
+  // ones and the `post` ones ride in `postStage` below — a question cannot appear twice.
+  const added = addedToClientKcQuestions(config, participantId, 'pre')
 
   const answers = (pData.kc_static_answers ?? {}) as Record<string, unknown>
   const answered = [...authored, ...added].filter(q => answers[q.field] != null).map(q => q.field)
@@ -94,5 +93,31 @@ export const newsvendorGetQuestions = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, 
       ? { field: debriefQuestion.field, prompt: config.debriefPrompt, placeholder: debriefQuestion.placeholder }
       : null,
     debriefSubmitted: freeText[debriefQuestion.field] != null,
+    /**
+     * ⚠⚠ THE TWO STAGES, IN ORDER, AS THE FLOW RENDERS THEM. `pre` is the authored set, the
+     * PREP paragraph and any pre-stage addition; `post` is the DEBRIEF paragraph and any
+     * post-stage addition. Both paragraphs are ROWS here (spec D9) rather than separate
+     * fields — the legacy `prep`/`debrief` above are kept only so nothing still reading them
+     * breaks, and the flow reads these.
+     *
+     * ⚠ ANSWERED IS READ FROM TWO MAPS, because the kinds submit to two callables: a
+     * free-text row lands in `free_text_answers` (newsvendorSubmitFreeText) and an
+     * authored/added one in `kc_static_answers` (newsvendorSubmitKcAnswer). Presence of the
+     * key IS "answered", and the client resumes at the first row whose flag is false.
+     */
+    stages: {
+      pre: stageToClient(newsvendorPreStage(config), participantId).map(r => ({
+        ...r,
+        answered: r.kind === 'free-text'
+          ? freeText[r.field] != null
+          : (pData.kc_static_answers ?? {})[r.field] != null,
+      })),
+      post: stageToClient(newsvendorPostStage(config), participantId).map(r => ({
+        ...r,
+        answered: r.kind === 'free-text'
+          ? freeText[r.field] != null
+          : (pData.kc_static_answers ?? {})[r.field] != null,
+      })),
+    },
   }
 })

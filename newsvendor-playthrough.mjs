@@ -1054,6 +1054,135 @@ async function main() {
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(70)}`)
+  // ── ⚠⚠ The shared KC surface, AT THE CALLABLES ──────────────────────────────
+  //
+  // ⚠⚠ TESTS WHAT THE CALLABLE SERVES, NOT THE HELPER. The unit suite passes stage and mode
+  // explicitly, so a mutation that drops an argument at the call site is invisible to it —
+  // the class of mutant that survived first calibration in all three previous passes.
+  console.log('\n[KC] The shared KC surface, at the callables')
+  {
+    const GIDK = `nv-kc-${Date.now()}`
+    const KPID = 'nv-kc-stu'
+
+    const inv0 = await callFn('newsvendorGetConfig', asInstructor(GIDK))
+    check(inv0.ok && inv0.result.kc != null, 'newsvendorGetConfig returns the kc inventory')
+    const kc0 = inv0.result.kc
+    check(kc0.builtIn.length === 10, `⚠ the REGULAR set is listed — ten questions (${kc0.builtIn.length})`)
+    check(kc0.builtIn.every(q => !q.locked),
+      '⚠⚠ NOTHING IS LOCKED — all twenty are literal strings, so every one is editable')
+    check(kc0.prep != null && kc0.prep.id === 'prep_strategy' && kc0.prep.stage === 'pre'
+      && kc0.prep.graded === false,
+    '⚠⚠ THE PREP PARAGRAPH IS A ROW in the pre stage, ungraded')
+    check(kc0.debrief != null && kc0.debrief.id === 'debrief_regular' && kc0.debrief.stage === 'post'
+      && kc0.debrief.graded === false,
+    '⚠⚠ …and the DEBRIEF PARAGRAPH is a row in the post stage, ungraded')
+    check(kc0.poolTotal === 12 && kc0.gradedCount === 10,
+      `the count line reads 12 in the pool, 10 graded (${kc0.poolTotal}/${kc0.gradedCount})`)
+
+    // ── ⚠ AN OVERRIDE IS ACCEPTED — this is the first game where Edit does real work ──
+    const ovOk = await callFn('newsvendorUpdateConfig', asInstructor(GIDK, {
+      kcOverrides: { kc_underage: { prompt: 'MY OWN STEM ABOUT UNDERAGE COST' } },
+    }))
+    check(ovOk.ok, '⚠⚠ an override on a built-in is ACCEPTED — nothing here is locked')
+    const after = ovOk.result.kc.builtIn.find(q => q.id === 'kc_underage')
+    check(after.prompt === 'MY OWN STEM ABOUT UNDERAGE COST', '…the stored prompt is the instructor\'s')
+    check(after.overridden === true, '…and the row is flagged as edited')
+    check(after.correctValue === kc0.builtIn.find(q => q.id === 'kc_underage').correctValue,
+      '⚠⚠ …and the ANSWER KEY is unchanged — an override cannot move a score')
+
+    const ovBad = await callFn('newsvendorUpdateConfig',
+      asInstructor(GIDK, { kcOverrides: { prep_strategy: { prompt: 'x' } } }))
+    check(!ovBad.ok, '⚠ an override aimed at the PREP row is refused — it is backed by prep_prompt')
+
+    // ── Hidden: not served, and out of the denominator ─────────────────────
+    const hid = await callFn('newsvendorUpdateConfig', asInstructor(GIDK, { kcHidden: { kc_overage: true } }))
+    check(hid.ok && hid.result.kc.gradedCount === 9,
+      `⚠ hiding one moves the count line to 9 graded (${hid.result?.kc?.gradedCount})`)
+
+    await callFn('newsvendorBootstrap', asStudent(GIDK, KPID))
+    const qs = await callFn('newsvendorGetQuestions', asStudent(GIDK, KPID))
+    check(!qs.result.stages.pre.some(r => r.field === 'kc_overage'),
+      '⚠⚠ a hidden question is NOT SERVED to the student')
+    check(qs.result.stages.pre.some(r => r.field === 'kc_underage'
+      && r.prompt === 'MY OWN STEM ABOUT UNDERAGE COST'),
+    '⚠ …and the override reaches the STUDENT')
+    check(qs.result.stages.pre.some(r => r.field === 'prep_strategy' && r.kind === 'free-text'),
+      '⚠ the PREP row is in the served pre stage')
+    check(qs.result.stages.post.some(r => r.field === 'debrief_regular' && r.kind === 'free-text'),
+      '⚠ …and the DEBRIEF row is in the served post stage')
+    check(!JSON.stringify(qs.result.stages).includes('correct_value'),
+      '⚠ neither stage ships an answer key')
+
+    const hidSubmit = await callFn('newsvendorSubmitKcAnswer',
+      asStudent(GIDK, KPID, { field: 'kc_overage', answer: 'co_10' }))
+    check(!hidSubmit.ok, '⚠⚠ …and SUBMITTING a hidden question is refused')
+
+    // ── ⚠ THE MODE SWAP, through the callable ──────────────────────────────
+    const toDual = await callFn('newsvendorUpdateConfig', asInstructor(GIDK, { dual: true }))
+    check(toDual.ok, 'flipping to dual sourcing saves')
+    check(toDual.result.kc.builtIn.length === 10
+      && toDual.result.kc.builtIn.every(q => q.id.startsWith('kc_dual_')),
+    '⚠ the DUAL set replaces the regular one entirely')
+    check(toDual.result.kc.gradedCount === 10,
+      `⚠⚠ …and the REGULAR hide does not apply here — 10 graded, not 9 (${toDual.result.kc.gradedCount})`)
+    check(!JSON.stringify(toDual.result.kc.builtIn).includes('MY OWN STEM'),
+      '⚠⚠ …nor does the regular OVERRIDE reach the dual set')
+
+    const back = await callFn('newsvendorUpdateConfig', asInstructor(GIDK, { dual: false }))
+    check(back.ok && back.result.kc.gradedCount === 9,
+      '⚠⚠ flipping BACK restores the regular hide — the edit was never lost')
+    check(back.result.kc.builtIn.find(q => q.id === 'kc_underage').prompt === 'MY OWN STEM ABOUT UNDERAGE COST',
+      '⚠⚠ …and the regular override is still there')
+
+    // ── The two paragraph rows write to their EXISTING keys ────────────────
+    const txt = await callFn('newsvendorUpdateConfig', asInstructor(GIDK, {
+      prepPrompt: 'Rewritten prep.', debriefPrompt: 'Rewritten debrief.',
+    }))
+    check(txt.ok, 'the two paragraph rows save')
+    const doc = await getDoc(`newsvendor_game_instances/${GIDK}/config/main`)
+    check(doc?.prep_prompt?.stringValue === 'Rewritten prep.'
+      && doc?.debrief_prompt?.stringValue === 'Rewritten debrief.',
+    '⚠⚠ …to the EXISTING `prep_prompt` / `debrief_prompt` keys — NO storage migration')
+    check(doc?.kc_overrides == null
+      || (!JSON.stringify(doc.kc_overrides).includes('prep_strategy')
+        && !JSON.stringify(doc.kc_overrides).includes('debrief_regular')),
+    '⚠ …and NOT into kc_overrides')
+
+    // ── ⚠ A POST-STAGE ADDITION: served after the results, and GRADED ──────
+    const staged = await callFn('newsvendorUpdateConfig', asInstructor(GIDK, {
+      addedKcQuestions: [
+        { id: 'akc_pre', type: 'mc', prompt: 'Before play?', stage: 'pre',
+          options: [{ value: 'p0', label: 'P0' }, { value: 'p1', label: 'P1' }], correct_value: 'p0' },
+        { id: 'akc_post', type: 'mc', prompt: 'After the results?', stage: 'post',
+          options: [{ value: 'a0', label: 'A0' }, { value: 'a1', label: 'A1' },
+            { value: 'a2', label: 'A2' }, { value: 'a3', label: 'A3' }], correct_value: 'a0' },
+        { id: 'akc_legacy', type: 'mc', prompt: 'No stage — must stay BEFORE play.',
+          options: [{ value: 'l0', label: 'L0' }, { value: 'l1', label: 'L1' }], correct_value: 'l0' },
+      ],
+    }))
+    check(staged.ok, 'added questions with an explicit stage save')
+    check(staged.result.kc.added.find(q => q.id === 'akc_legacy').stage === 'pre',
+      '⚠⚠ a stage-less addition stays BEFORE play — nothing already stored moves')
+
+    const sq = await callFn('newsvendorGetQuestions', asStudent(GIDK, 'nv-stage-stu'))
+    const preIds = sq.result.stages.pre.map(r => r.field)
+    const postIds = sq.result.stages.post.map(r => r.field)
+    check(preIds.includes('akc_pre') && preIds.includes('akc_legacy') && !preIds.includes('akc_post'),
+      '⚠⚠ the pre stage holds the pre + legacy questions and NOT the post one')
+    check(postIds.includes('akc_post') && postIds.includes('debrief_regular'),
+      '⚠ the post stage carries the after-results question alongside the debrief row')
+
+    // ── ⚠ The shuffle, through the callable ────────────────────────────────
+    const slots = new Set()
+    for (let i = 0; i < 60; i++) {
+      const r = await callFn('newsvendorGetQuestions', asStudent(GIDK, `nv-shuf-${i}`))
+      const row = r.result.stages.post.find(q => q.field === 'akc_post')
+      slots.add(row.options.findIndex(o => o.value === 'a0'))
+    }
+    check(slots.size === 4,
+      `⚠⚠ the after-results question's answer reaches EVERY slot over a cohort (${slots.size}/4)`)
+  }
+
   console.log(`Newsvendor harness: ${passed} passed, ${failed} failed`)
   console.log('═'.repeat(70))
   if (failed > 0) process.exit(1)

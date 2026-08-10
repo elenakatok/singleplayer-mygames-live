@@ -2,152 +2,195 @@ import { describe, it, expect } from 'vitest'
 import { newsvendorResumeIndex, newsvendorScreenCount, newsvendorStartIteration } from './resume'
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Where a returning student re-enters the flow, after the KC moved to the FRONT.
+// Where a returning student re-enters the flow.
 //
-// This file exists because that move is exactly the kind of change that produces a
-// silent off-by-one: every index downstream of the KC shifted, and the two failure
-// modes are invisible in a happy-path click-through — a student sent back through a
-// question the server has already locked (they see it answered and disabled), or a
-// finished student shown the final screen twice with a Continue button that leads
-// nowhere.
+// This file exists because index arithmetic here produces silent off-by-ones: the two
+// failure modes are invisible in a happy-path click-through — a student sent back through
+// a question the server has already locked (they see it answered and disabled), or a
+// finished student shown the final screen twice with a Continue button that leads nowhere.
 //
 // The screen layout under test:
 //
-//   [KC 0…n−1]  [prep?]  [the loop]  [final results]  [debrief?]
+//   [PRE stage 0…n−1]  [the loop]  [final results]  [POST stage 0…m−1]
 //
-// Every assertion is written against newsvendorScreenCount rather than a literal, so
+// ⚠⚠ BOTH SEGMENTS ARE LISTS NOW. They were four booleans — prep on/off + submitted,
+// debrief on/off + submitted — because each was one optional screen. Each stage can now
+// hold its paragraph PLUS any question the instructor put there, so the input is one
+// answered-flag per row. The old cases survive verbatim in MEANING: a pre stage of
+// "10 KC + prep" is an 11-element array, and a post stage of "the debrief" is a 1-element
+// one. Every assertion is written against newsvendorScreenCount rather than a literal, so
 // the two functions cannot drift apart.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** The shipped shape: ten graded questions, prep on, debrief on. */
-const FULL = { prepEnabled: true, kcCount: 10, debriefEnabled: true }
-const idx = (over: Partial<Parameters<typeof newsvendorResumeIndex>[0]>) =>
+/** n flags, all the same. */
+const flags = (n: number, v: boolean) => Array.from({ length: n }, () => v)
+
+/** The shipped shape: ten graded questions + the prep row = 11 pre rows; 1 post row. */
+const PRE = 11
+const POST = 1
+const COUNT = newsvendorScreenCount(PRE, POST)
+
+const idx = (over: Partial<Parameters<typeof newsvendorResumeIndex>[0]> = {}) =>
   newsvendorResumeIndex({
-    prepEnabled: true, prepSubmitted: false, gameOver: false,
-    kcCount: 10, kcAnswered: 0, debriefEnabled: true, debriefSubmitted: false,
+    gameOver: false,
+    preAnswered: flags(PRE, false),
+    postAnswered: flags(POST, false),
     ...over,
   })
 
-const COUNT = newsvendorScreenCount(FULL.prepEnabled, FULL.kcCount, FULL.debriefEnabled)
+/** "k pre rows already done", the old `kcAnswered` in list form. */
+const preDone = (k: number, total = PRE) =>
+  Array.from({ length: total }, (_, i) => i < k)
 
 describe('newsvendorScreenCount', () => {
-  it('counts KC + prep + loop + final + debrief', () => {
-    expect(COUNT).toBe(10 + 1 + 1 + 1 + 1)
+  it('counts the pre stage + loop + final + the post stage', () => {
+    expect(COUNT).toBe(11 + 1 + 1 + 1)
   })
-  it('drops the prep screen when the prep is off', () => {
-    expect(newsvendorScreenCount(false, 10, true)).toBe(COUNT - 1)
+  it('drops a screen when the prep row is hidden', () => {
+    expect(newsvendorScreenCount(PRE - 1, POST)).toBe(COUNT - 1)
   })
-  it('drops the debrief screen when the debrief is off', () => {
-    expect(newsvendorScreenCount(true, 10, false)).toBe(COUNT - 1)
+  it('drops a screen when the debrief row is hidden', () => {
+    expect(newsvendorScreenCount(PRE, 0)).toBe(COUNT - 1)
   })
   it('collapses the whole KC segment when the KC is off', () => {
-    expect(newsvendorScreenCount(true, 0, true)).toBe(COUNT - 10)
+    expect(newsvendorScreenCount(PRE - 10, POST)).toBe(COUNT - 10)
+  })
+  it('⚠ grows when the instructor ADDS a question to a stage', () => {
+    expect(newsvendorScreenCount(PRE + 1, POST)).toBe(COUNT + 1)
+    expect(newsvendorScreenCount(PRE, POST + 2)).toBe(COUNT + 2)
   })
 })
 
-describe('newsvendorResumeIndex — the knowledge check comes FIRST', () => {
-  it('sends a brand-new student to KC question 1, not to the prep', () => {
-    expect(idx({})).toBe(0)
+describe('newsvendorResumeIndex — the pre stage comes FIRST', () => {
+  it('sends a brand-new student to pre row 1', () => {
+    expect(idx()).toBe(0)
   })
 
-  it('sends a part-way student to the next UNANSWERED question', () => {
-    expect(idx({ kcAnswered: 1 })).toBe(1)
-    expect(idx({ kcAnswered: 7 })).toBe(7)
-    expect(idx({ kcAnswered: 9 })).toBe(9)
+  it('sends a part-way student to the next UNANSWERED row', () => {
+    expect(idx({ preAnswered: preDone(1) })).toBe(1)
+    expect(idx({ preAnswered: preDone(7) })).toBe(7)
+    expect(idx({ preAnswered: preDone(10) })).toBe(10)
   })
 
-  it('never re-serves an answered question — the server has locked it', () => {
-    for (let answered = 0; answered < 10; answered++) {
-      expect(idx({ kcAnswered: answered })).toBe(answered)
+  it('never re-serves an answered row — the server has locked it', () => {
+    for (let answered = 0; answered < PRE; answered++) {
+      expect(idx({ preAnswered: preDone(answered) })).toBe(answered)
     }
   })
-})
 
-describe('newsvendorResumeIndex — the prep sits between the KC and the loop', () => {
-  it('lands on the prep once every question is answered', () => {
-    expect(idx({ kcAnswered: 10 })).toBe(10)
+  it('⚠⚠ a GAP in the pre stage resumes AT the gap, not past it', () => {
+    // MUTANT CAUGHT: treating the flags as a count. Only equivalent while the answered
+    // rows are a solid prefix; on a gap it skips the unanswered row and leaves a question
+    // permanently unanswerable with the denominator silently short.
+    const gapped = preDone(PRE)          // all true…
+    gapped[3] = false                    // …except row 3
+    expect(idx({ preAnswered: gapped })).toBe(3)
   })
 
-  it('skips straight to the loop when the prep is already written', () => {
-    expect(idx({ kcAnswered: 10, prepSubmitted: true })).toBe(11)
+  it('goes to the loop once every pre row is done', () => {
+    expect(idx({ preAnswered: flags(PRE, true) })).toBe(PRE)
   })
 
-  it('skips the prep screen entirely when the instructor turned it off', () => {
-    // No prep screen ⇒ the loop takes index 10, right after the KC.
-    expect(idx({ kcAnswered: 10, prepEnabled: false })).toBe(10)
-  })
-
-  it('puts the loop first when the KC is off too', () => {
-    expect(idx({ kcCount: 0, kcAnswered: 0, prepEnabled: false })).toBe(0)
+  it('puts the loop first when the whole pre stage is empty', () => {
+    expect(idx({ preAnswered: [] })).toBe(0)
   })
 })
 
 describe('newsvendorResumeIndex — after the game', () => {
-  const finished = { kcAnswered: 10, prepSubmitted: true, gameOver: true }
+  const finished = { preAnswered: flags(PRE, true), gameOver: true }
 
-  it('shows the final-results screen, then the debrief', () => {
-    // 10 KC + 1 prep = 11 → the loop is 11, the final screen is 12, the debrief 13.
+  it('shows the final-results screen, then the post stage', () => {
+    // 11 pre rows → the loop is 11, the final screen 12, the first post row 13.
     expect(idx(finished)).toBe(12)
     expect(idx(finished)).toBeLessThan(COUNT)
   })
 
-  it('is PAST THE END once the debrief is submitted', () => {
-    // ⚠ The regression this guards: returning the debrief's own index here would
-    // re-serve a paragraph the server has already stored.
-    expect(idx({ ...finished, debriefSubmitted: true })).toBeGreaterThanOrEqual(COUNT)
+  it('is PAST THE END once every post row is answered', () => {
+    // ⚠ The regression this guards: returning a post row's own index here would re-serve a
+    // paragraph the server has already stored.
+    expect(idx({ ...finished, postAnswered: flags(POST, true) })).toBeGreaterThanOrEqual(COUNT)
   })
 
-  it('is PAST THE END immediately when there is no debrief', () => {
-    // ⚠ And this one: a finished student with no debrief must NOT land on the final
+  it('is PAST THE END immediately when the post stage is empty', () => {
+    // ⚠ And this one: a finished student with nothing left must NOT land on the final
     // screen as a sequence step, because Play.tsx renders the same component as the
-    // terminal state — they would see it twice, the second time with a Continue
-    // button that leads nowhere.
-    const noDebrief = newsvendorScreenCount(true, 10, false)
-    expect(idx({ ...finished, debriefEnabled: false })).toBeGreaterThanOrEqual(noDebrief)
+    // terminal state — they would see it twice, the second time with a Continue button
+    // that leads nowhere.
+    const noPost = newsvendorScreenCount(PRE, 0)
+    expect(idx({ ...finished, postAnswered: [] })).toBeGreaterThanOrEqual(noPost)
+  })
+
+  it('⚠⚠ lands on the FIRST UNANSWERED post row, not back on the results screen', () => {
+    // MUTANT CAUGHT: always returning the results index while anything is unanswered — a
+    // student part-way through the post stage would be walked back through their own
+    // stored paragraph, which newsvendorSubmitFreeText returns rather than re-accepting.
+    const three = { ...finished, postAnswered: [false, false, false] }
+    expect(idx(three)).toBe(12)                                      // results first
+    expect(idx({ ...three, postAnswered: [true, false, false] })).toBe(14)
+    expect(idx({ ...three, postAnswered: [true, true, false] })).toBe(15)
+    expect(idx({ ...three, postAnswered: [true, true, true] }))
+      .toBe(newsvendorScreenCount(PRE, 3))
+  })
+
+  it('⚠ a GAP in the post stage resumes AT the gap', () => {
+    expect(idx({ ...finished, postAnswered: [true, false, true] })).toBe(14)
   })
 
   it('stays inside the sequence while the game is still running', () => {
-    expect(idx({ kcAnswered: 10, prepSubmitted: true })).toBeLessThan(COUNT)
+    expect(idx({ preAnswered: flags(PRE, true) })).toBeLessThan(COUNT)
+  })
+
+  it('⚠ the post stage is never entered before the game is over', () => {
+    expect(idx({ preAnswered: flags(PRE, true), gameOver: false, postAnswered: [false, false] }))
+      .toBe(PRE)
   })
 })
 
 describe('newsvendorResumeIndex — the index is always renderable', () => {
   // A resume index is only ever legal if it is a screen that exists, or exactly the
-  // "past the end" sentinel. Sweeping the whole state space is cheap here and would
-  // have caught the off-by-one this file was written for.
+  // "past the end" sentinel. Sweeping the state space is cheap and would have caught the
+  // off-by-one this file was written for.
+  //
+  // ⚠ The sweep now enumerates every ANSWER PATTERN, not just prefixes — 2^n over small
+  // stages — because the gap cases are exactly what the boolean[] shape exists to handle.
+  const patterns = (n: number): boolean[][] =>
+    n === 0 ? [[]] : Array.from({ length: 1 << n }, (_, m) =>
+      Array.from({ length: n }, (_, i) => (m & (1 << i)) !== 0))
+
   it('never returns an index outside [0, screenCount] for any reachable state', () => {
     let checked = 0
-    for (const prepEnabled of [true, false]) {
-      for (const debriefEnabled of [true, false]) {
-        for (const kcCount of [0, 1, 10]) {
-          const total = newsvendorScreenCount(prepEnabled, kcCount, debriefEnabled)
-          for (let kcAnswered = 0; kcAnswered <= kcCount; kcAnswered++) {
-            for (const prepSubmitted of [true, false]) {
-              for (const gameOver of [true, false]) {
-                for (const debriefSubmitted of [true, false]) {
-                  const v = newsvendorResumeIndex({
-                    prepEnabled, prepSubmitted, gameOver, kcCount, kcAnswered,
-                    debriefEnabled, debriefSubmitted,
-                  })
-                  expect(v).toBeGreaterThanOrEqual(0)
-                  expect(v).toBeLessThanOrEqual(total)
-                  checked++
-                }
-              }
+    for (const preCount of [0, 1, 3]) {
+      for (const postCount of [0, 1, 3]) {
+        const total = newsvendorScreenCount(preCount, postCount)
+        for (const preAnswered of patterns(preCount)) {
+          for (const postAnswered of patterns(postCount)) {
+            for (const gameOver of [true, false]) {
+              const v = newsvendorResumeIndex({ gameOver, preAnswered, postAnswered })
+              expect(v).toBeGreaterThanOrEqual(0)
+              expect(v).toBeLessThanOrEqual(total)
+              checked++
             }
           }
         }
       }
     }
-    // Assert the sweep actually ran rather than trusting an empty loop.
-    // 2 prep × 2 debrief × (1 + 2 + 11 kcAnswered values) × 2 prepSubmitted
-    //   × 2 gameOver × 2 debriefSubmitted = 448.
-    expect(checked).toBe(448)
+    expect(checked).toBeGreaterThan(200)
+  })
+
+  it('⚠ and never points INTO the post stage before the game is over', () => {
+    for (const preCount of [0, 1, 3]) {
+      for (const postAnswered of patterns(3)) {
+        const v = newsvendorResumeIndex({
+          gameOver: false, preAnswered: Array.from({ length: preCount }, () => true), postAnswered,
+        })
+        expect(v).toBeLessThanOrEqual(preCount)
+      }
+    }
   })
 })
 
 describe('newsvendorStartIteration', () => {
-  it('is the count of periods already played', () => {
+  it('is the first period not yet played', () => {
     expect(newsvendorStartIteration(0)).toBe(0)
     expect(newsvendorStartIteration(7)).toBe(7)
   })

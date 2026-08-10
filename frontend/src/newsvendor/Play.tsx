@@ -3,7 +3,7 @@ import { auth } from '../firebase'
 import {
   newsvendorBootstrap, newsvendorGetState, newsvendorGetQuestions, STUDENT_CLASSROOM_URL,
   type NewsvendorHistoryRow, type NewsvendorParams, type NewsvendorRoundResult,
-  type NewsvendorKcQuestionClient, type NewsvendorFreeTextQuestionClient,
+  type NewsvendorStageRowClient,
 } from './api'
 import { PageShell } from '../shared/PageShell'
 import { SequenceRunner, loopScreen, type SequenceScreen } from '../shared/sequence'
@@ -50,9 +50,8 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 
 type Loaded = {
   params: NewsvendorParams
-  kc: NewsvendorKcQuestionClient[]
-  prep: NewsvendorFreeTextQuestionClient | null
-  debrief: NewsvendorFreeTextQuestionClient | null
+  preStage: NewsvendorStageRowClient[]
+  postStage: NewsvendorStageRowClient[]
   prepEnabled: boolean
   debriefEnabled: boolean
 }
@@ -99,15 +98,15 @@ export default function Play() {
     Promise.all([newsvendorGetState(), newsvendorGetQuestions()])
       .then(([state, questions]) => {
         if (cancelled) return
-        // Rendered order: the authored ten, THEN the instructor's additions. The
-        // server keeps the two sources apart and grades each on its own path (api.ts);
-        // this flattening is for rendering ORDER only.
-        const kc = [...questions.kc.authored, ...questions.kc.added]
+        // ⚠ The two stages, server-ordered, `hidden` already applied. The legacy
+        // `kc.authored` / `kc.added` / `prep` / `debrief` fields are still served for
+        // anything else reading them; the FLOW reads these.
+        const preStage = questions.stages.pre
+        const postStage = questions.stages.post
         setLoaded({
           params: state.params,
-          kc,
-          prep: questions.prep,
-          debrief: questions.debrief,
+          preStage,
+          postStage,
           prepEnabled: questions.prepEnabled,
           debriefEnabled: questions.debriefEnabled,
         })
@@ -120,15 +119,14 @@ export default function Play() {
         })
 
         const start = newsvendorResumeIndex({
-          prepEnabled: questions.prepEnabled,
-          prepSubmitted: questions.prepSubmitted,
           gameOver: state.gameOver,
-          kcCount: kc.length,
-          kcAnswered: questions.kcAnswered.length,
-          debriefEnabled: questions.debriefEnabled,
-          debriefSubmitted: questions.debriefSubmitted,
+          // ⚠ One flag per row, in served order — resume lands on the FIRST unanswered,
+          // gap or not, so a student part-way through either stage comes back to the right
+          // screen rather than to the top of it.
+          preAnswered: preStage.map(q => q.answered),
+          postAnswered: postStage.map(q => q.answered),
         })
-        if (start >= newsvendorScreenCount(questions.prepEnabled, kc.length, questions.debriefEnabled)) {
+        if (start >= newsvendorScreenCount(preStage.length, postStage.length)) {
           setScreen({ name: 'done' })
         } else {
           setScreen({
@@ -184,31 +182,48 @@ export default function Play() {
   }
 
   if (screen.name === 'flow' && loaded !== null) {
-    const { params: gameParams, kc, prep, debrief } = loaded
+    const { params: gameParams, preStage, postStage } = loaded
+
+    // ⚠⚠ ONE RENDERER FOR BOTH STAGES. `kind` picks the screen, NEVER `type`: an added
+    // free-text question is `type: 'text'` like the two paragraphs but submits to a
+    // different callable, so KcScreen renders it and FreeTextScreen does not.
+    const stageScreen = (
+      q: NewsvendorStageRowClient, i: number, total: number, title: string, submitLabel: string,
+    ): SequenceScreen => ({
+      id: q.field,
+      render: ({ onDone }: { onDone: () => void }) => (
+        q.kind === 'free-text'
+          ? (
+            <FreeTextScreen
+              question={{ field: q.field, prompt: q.prompt, placeholder: q.placeholder ?? '' }}
+              title={title}
+              submitLabel={submitLabel}
+              onDone={onDone}
+            />
+          )
+          : (
+            <KcScreen
+              question={{ field: q.field, type: q.type, prompt: q.prompt, options: q.options }}
+              index={i}
+              total={total}
+              onDone={onDone}
+            />
+          )
+      ),
+    })
 
     const screens: SequenceScreen[] = [
-      // ── The knowledge check FIRST: one graded screen per question, no gate ────
-      // Graded, and NOT a gate — a wrong answer is recorded, scored, and the student
-      // continues regardless. Only its POSITION moved; the grading path is untouched.
-      ...kc.map((q, i) => ({
-        id: q.field,
-        render: ({ onDone }: { onDone: () => void }) => (
-          <KcScreen question={q} index={i} total={kc.length} onDone={onDone} />
-        ),
-      })),
-
-      // ── Then the prep paragraph — which asks about the KC they just did ───────
-      ...(prep ? [{
-        id: prep.field,
-        render: ({ onDone }: { onDone: () => void }) => (
-          <FreeTextScreen
-            question={prep}
-            title="Before you start"
-            submitLabel="Start the game"
-            onDone={onDone}
-          />
-        ),
-      }] : []),
+      // ── THE PRE STAGE: the authored set, the prep paragraph, any pre addition ──
+      //
+      // ⚠⚠ ONE LIST, SERVER-ORDERED. This was `...kc.map(...)` followed by an optional prep
+      // screen; the prep is a ROW in the stage now (spec D9) and an instructor can put an
+      // added question anywhere among them. No new phase and no new screen kind — the same
+      // positions, rendering whatever the server hands over.
+      //
+      // Graded rows are NOT a gate: a wrong answer is recorded, scored, and the student
+      // continues regardless.
+      ...preStage.map((q, i) =>
+        stageScreen(q, i, preStage.length, 'Before you start', 'Start the game')),
 
       // ── The period loop: order → results, repeated to the configured N ───────
       loopScreen<NewsvendorRoundResult>({
@@ -257,18 +272,12 @@ export default function Play() {
         ),
       },
 
-      // ── The debrief paragraph, IF the instructor left it on ───────────────────
-      ...(debrief ? [{
-        id: debrief.field,
-        render: ({ onDone }: { onDone: () => void }) => (
-          <FreeTextScreen
-            question={debrief}
-            title="One last question"
-            submitLabel="Finish"
-            onDone={onDone}
-          />
-        ),
-      }] : []),
+      // ── THE POST STAGE: the debrief paragraph plus any post addition ─────────
+      //
+      // ⚠ AFTER THE FINAL-RESULTS SCREEN, deliberately — a student answering anything here
+      // has already seen their own profits and their optimality gap.
+      ...postStage.map((q, i) =>
+        stageScreen(q, i, postStage.length, 'One last question', 'Finish')),
     ]
 
     return (

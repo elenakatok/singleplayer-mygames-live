@@ -168,6 +168,54 @@ export type NewsvendorKcQuestionClient = {
   type?: 'mc' | 'text'
 }
 
+export type NewsvendorStageRowClient = {
+  /** `free-text` → newsvendorSubmitFreeText · otherwise → newsvendorSubmitKcAnswer. */
+  kind: 'authored' | 'added' | 'free-text'
+  field: string
+  type: 'mc' | 'text'
+  prompt: string
+  placeholder?: string
+  /** Empty for free text. Shuffled per student for an mc row. */
+  options: { value: string; label: string }[]
+  /** Presence of the stored answer. Drives resume — the first false is where they land. */
+  answered: boolean
+}
+
+/** ⚠ `post` means AFTER THE RESULTS — newsvendor's final-results screen precedes it. */
+export type NewsvendorKcStage = 'pre' | 'post'
+
+export type NewsvendorKcOverride = { prompt?: string; options?: Record<string, string> }
+
+export type NewsvendorKcInventoryQuestion = {
+  id: string
+  kind: 'builtin' | 'added'
+  stage: NewsvendorKcStage
+  prompt: string
+  options: { value: string; label: string }[]
+  correctValue: string | null
+  graded: boolean
+  visible: boolean
+  locked: boolean
+  lockReason: string | null
+  overridden: boolean
+  originalPrompt?: string
+  originalOptions?: { value: string; label: string }[]
+  type?: 'mc' | 'text'
+  order: number | null
+}
+
+export type NewsvendorKcInventory = {
+  stages: readonly NewsvendorKcStage[]
+  builtIn: NewsvendorKcInventoryQuestion[]
+  added: NewsvendorKcInventoryQuestion[]
+  /** ⚠ The two paragraphs, AS ROWS. Backed by their own config keys, not the maps. */
+  prep: NewsvendorKcInventoryQuestion
+  debrief: NewsvendorKcInventoryQuestion
+  poolTotal: number
+  visibleCount: number
+  gradedCount: number
+}
+
 export type NewsvendorFreeTextQuestionClient = {
   field: string
   prompt: string
@@ -191,6 +239,19 @@ export type NewsvendorQuestionsResult = {
   debriefEnabled: boolean
   debrief: NewsvendorFreeTextQuestionClient | null
   debriefSubmitted: boolean
+  /**
+   * ⚠⚠ THE TWO STAGES, IN ORDER, AS THE FLOW RENDERS THEM. `pre` is the authored set, the
+   * PREP paragraph and any pre-stage addition; `post` is the DEBRIEF paragraph and any
+   * post-stage addition. Both paragraphs are ROWS (spec D9), not separate fields.
+   *
+   * ⚠ `kind` ROUTES THE SUBMIT and `type` does not: an added free-text question is also
+   * `type: 'text'` but goes to newsvendorSubmitKcAnswer, while a `free-text` row goes to
+   * newsvendorSubmitFreeText.
+   */
+  stages: {
+    pre: NewsvendorStageRowClient[]
+    post: NewsvendorStageRowClient[]
+  }
 }
 
 export const newsvendorGetQuestions = () => callFn<NewsvendorQuestionsResult>('newsvendorGetQuestions')
@@ -318,6 +379,8 @@ export type NewsvendorAddedKcQuestion = {
   options?: { value: string; label: string }[]
   correct_value?: string
   explanation?: string
+  /** ⚠ Absent ⇒ `pre`, where every question newsvendor has already stored is served. */
+  stage?: NewsvendorKcStage
 }
 
 /** The editable config, exactly the scalars of spec §2 plus the flow switches. */
@@ -345,6 +408,10 @@ export type NewsvendorEditableConfig = {
   addedKcQuestions: NewsvendorAddedKcQuestion[]
   debriefEnabled: boolean
   debriefPrompt: string
+  /** ⚠ The three convergence fields (spec §5). */
+  kcHidden: Record<string, boolean>
+  kcOrder: Record<string, number>
+  kcOverrides: Record<string, NewsvendorKcOverride>
 }
 
 export type NewsvendorConfigResult = {
@@ -369,6 +436,12 @@ export type NewsvendorConfigResult = {
   authoredKcCount: number
   /** Has any student actually played a period? Drives the edit warning. */
   anyRoundsPlayed: boolean
+  /** ⚠ The three convergence fields (spec §5). */
+  kcHidden: Record<string, boolean>
+  kcOrder: Record<string, number>
+  kcOverrides: Record<string, NewsvendorKcOverride>
+  /** Everything the shared knowledge-check block renders. */
+  kc: NewsvendorKcInventory
 }
 
 export const newsvendorGetConfig = () => callFn<NewsvendorConfigResult>('newsvendorGetConfig')

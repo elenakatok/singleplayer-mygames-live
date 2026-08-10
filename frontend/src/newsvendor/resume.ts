@@ -11,19 +11,29 @@
 /**
  * Screen layout, in order:
  *
- *   [KC 0…n−1, IF ENABLED]          ← graded, first
- *   [the prep paragraph, IF ENABLED]
+ *   [the PRE stage, 0…n−1]          ← the authored set, the prep paragraph, pre additions
  *   [the period loop]
- *   [the final-results screen]      ← terminal content, last
- *   [the debrief paragraph, IF ENABLED]
+ *   [the final-results screen]      ← terminal content
+ *   [the POST stage, 0…m−1]         ← the debrief paragraph, post additions
  *
  * A return value past the last screen means everything is behind them.
+ *
+ * ⚠⚠ BOTH SEGMENTS ARE LISTS NOW. They used to be described by four booleans — prep on/off
+ * and submitted, debrief on/off and submitted — because each was a single optional screen.
+ * Each stage can now hold its paragraph PLUS any question the instructor put there, so what
+ * this needs is one answered-flag per row, in served order.
+ *
+ * ⚠ THE SHAPE IS `boolean[]`, NOT A COUNT. A count is only equivalent while the answered
+ * rows form a solid prefix; `findIndex(!answered)` lands on the FIRST UNANSWERED row
+ * whatever the pattern, so a student with rows 1 and 3 stored but not 2 goes back to row 2
+ * rather than skipping it and leaving a question permanently unanswerable with the
+ * denominator silently short.
  *
  * ⚠ THE KC COMES FIRST, AND THE PREP DEPENDS ON THAT. Students arrive having had the
  * newsvendor lecture: the graded KC checks the lecture, and the prep then asks whether
  * they intend to ORDER the optimal quantity they just computed. That question only
- * makes sense downstream of the KC, so these two cannot be reordered independently —
- * the prep's wording (functions newsvendor/config.ts) is written against this order.
+ * makes sense downstream of the KC — which is why the prep is APPENDED to the pre stage
+ * rather than prepended, and why an instructor who reorders it is doing so knowingly.
  *
  * ⚠ AND THE FINAL SCREEN MOVED WITH THEM. It used to sit mid-sequence, because the KC
  * came after play; now that the KC is first, nothing follows the game except the
@@ -36,44 +46,45 @@
  * device and land in exactly the same place.
  */
 export function newsvendorResumeIndex(args: {
-  prepEnabled: boolean
-  prepSubmitted: boolean
   gameOver: boolean
-  kcCount: number
-  kcAnswered: number
-  debriefEnabled: boolean
-  debriefSubmitted: boolean
+  /** One flag per PRE-stage row, in served order. */
+  preAnswered: readonly boolean[]
+  /** One flag per POST-stage row, in served order. */
+  postAnswered: readonly boolean[]
 }): number {
-  const { prepEnabled, prepSubmitted, gameOver, kcCount, kcAnswered, debriefEnabled, debriefSubmitted } = args
+  const { gameOver, preAnswered, postAnswered } = args
 
-  // Still in the knowledge check — it is the first block now.
-  if (kcAnswered < kcCount) return kcAnswered
-  // The prep paragraph, if it is on and unanswered.
-  if (prepEnabled && !prepSubmitted) return kcCount
-  const played = kcCount + (prepEnabled ? 1 : 0)
+  // Still in the pre stage — the first row they have not done.
+  const firstPre = preAnswered.findIndex(a => !a)
+  if (firstPre !== -1) return firstPre
+
+  const preCount = preAnswered.length
   // The period loop.
-  if (!gameOver) return played
-  // The game is over: the final-results screen, then the debrief.
-  //
-  // ⚠ A FINISHED STUDENT WITH NO DEBRIEF PENDING IS *PAST* THE END, not sitting on the
-  // final screen — Play.tsx renders the same component as the terminal state, so
-  // returning the final screen's index here would show it twice with a Continue button
-  // that leads nowhere.
-  if (!debriefEnabled) return played + 2                      // past the end (== screenCount)
-  if (!debriefSubmitted) return played + 1                    // the final screen, then the debrief
-  return played + 3                                           // past the end (== screenCount)
+  if (!gameOver) return preCount
+
+  // The game is over: the final-results screen sits at preCount + 1, then the post stage.
+  const firstPost = postAnswered.findIndex(a => !a)
+
+  // ⚠ A FINISHED STUDENT WITH NOTHING LEFT IS *PAST* THE END, not sitting on the final
+  // screen — Play.tsx renders the same component as the terminal state, so returning the
+  // final screen's index here would show it twice with a Continue button leading nowhere.
+  if (firstPost === -1) return preCount + 2 + postAnswered.length
+
+  // ⚠ NOTHING ANSWERED YET ⇒ THE RESULTS SCREEN FIRST. Arriving from the last period, a
+  // student should read their own outcome before being asked to reflect on it; the runner
+  // then walks them into the post stage. Once they are PART-WAY through that stage, the
+  // results screen is behind them and re-showing it would be a step backwards.
+  if (firstPost === 0) return preCount + 1
+
+  return preCount + 2 + firstPost
 }
 
 /** How many screens the sequence has, given the same inputs. `newsvendorResumeIndex
  *  >= this` means the student is finished. Keeping the arithmetic in one place stops
  *  the caller re-deriving "kcCount + 2" and getting it wrong when a block is off. */
-export function newsvendorScreenCount(
-  prepEnabled: boolean,
-  kcCount: number,
-  debriefEnabled: boolean,
-): number {
-  // the KC questions + prep? + the loop + the final screen + the debrief?
-  return kcCount + (prepEnabled ? 1 : 0) + 1 + 1 + (debriefEnabled ? 1 : 0)
+export function newsvendorScreenCount(preCount: number, postCount: number): number {
+  // the pre stage + the loop + the final screen + the post stage
+  return preCount + 1 + 1 + postCount
 }
 
 /** The first period NOT yet played (0-based) — for a contiguous history, its length.

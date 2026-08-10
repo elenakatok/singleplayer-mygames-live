@@ -1,7 +1,17 @@
 import type { PrepTextQuestion } from '@mygames/game-server'
 import { hash32 } from './demand'
-import type { NewsvendorConfig } from './config'
-import { DEFAULT_NEWSVENDOR_CONFIG } from './config'
+import type {
+  NewsvendorConfig, NewsvendorAddedKcQuestion, NewsvendorKcStage, KcOverrideMap,
+} from './config'
+import {
+  DEFAULT_NEWSVENDOR_CONFIG, addedKcStage, PREP_ROW_ID, DEBRIEF_ROW_ID,
+} from './config'
+import { applyKcOrder } from '../shared/kcSurface'
+
+export {
+  NEWSVENDOR_KC_STAGES, DEFAULT_ADDED_KC_STAGE, addedKcStage, PREP_ROW_ID, DEBRIEF_ROW_ID,
+} from './config'
+export type { NewsvendorKcStage } from './config'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Newsvendor — the KNOWLEDGE CHECK (spec §8, Newsvendor_KC_Questions_v1.md) and the
@@ -601,3 +611,284 @@ export const debriefQuestion: PrepTextQuestion = {
 /** The two free-text fields, in flow order. One list, so the submit callable's
  *  whitelist and the report's tiles can never disagree about what exists. */
 export const FREE_TEXT_FIELDS = [prepQuestion.field, debriefQuestion.field] as const
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// THE THREE CONVERGENCE FIELDS, APPLIED (spec §5).
+//
+// ⚠⚠ `resolveNewsvendorKc` AND `newsvendorKcScoringSet` ARE THE ONE ANSWER TO "WHICH
+// QUESTIONS DOES THIS INSTANCE ASK?", and the serve path and the grader BOTH call them. A
+// question hidden from the display but left in the grader's scoring set is graded against
+// an answer the student never saw and inflates every denominator — spec §5's named worst
+// case, and the reason there is no second list anywhere below.
+//
+// ⚠⚠ THIS IS THE FIRST GAME WHERE OVERRIDES DO REAL WORK. Nothing here interpolates, so
+// every one of the twenty is editable — see kcLock.ts, which MEASURES that rather than
+// asserting it.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Every id EITHER mode can serve — the union of both authored sets. */
+export const NEWSVENDOR_BUILT_IN_KC_IDS: ReadonlySet<string> = new Set(
+  [...KC_SPECS, ...DUAL_KC_SPECS].map(s => s.field),
+)
+
+/**
+ * Apply an instructor's wording to one authored question.
+ *
+ * ⚠⚠ TEXT ONLY, BY CONSTRUCTION. `options` maps an EXISTING option value to a replacement
+ * LABEL, so this cannot add an option, drop one, reorder them, change a value, or touch
+ * `correct_value`. Grading compares option VALUES (`submitKcAnswer` compares against
+ * `correct_value`), so an override PROVABLY cannot move a score — there is no path from
+ * this function to the key. A test asserts exactly that rather than trusting the shape.
+ *
+ * ⚠ The EXPLANATION is deliberately NOT overridable. It is the teaching text that justifies
+ * the authored numbers, and an instructor who rewrote a stem but not its explanation would
+ * ship a contradiction; leaving the explanation authoritative makes that impossible.
+ */
+export function applyKcOverride(
+  q: NewsvendorKcQuestion,
+  overrides: KcOverrideMap,
+): NewsvendorKcQuestion {
+  const o = overrides[q.field]
+  if (!o) return q
+  return {
+    ...q,
+    prompt: o.prompt ?? q.prompt,
+    options: o.options
+      ? q.options.map(opt => ({ value: opt.value, label: o.options![opt.value] ?? opt.label }))
+      : q.options,
+  }
+}
+
+/** Has an instructor rewritten this question? Drives the "edited" badge, nothing else. */
+export function isKcOverridden(id: string, overrides: KcOverrideMap): boolean {
+  return overrides[id] !== undefined
+}
+
+/**
+ * This instance's AUTHORED set: the mode's ten, overridden, hidden ones removed, in order.
+ *
+ * ⚠ `kcEnabled: false` empties it entirely — every authored question is graded, and D12
+ * says the toggle gates graded questions.
+ *
+ * ⚠ Resolved WITHOUT a participant, so the options are in authored order; the per-student
+ * shuffle happens in `toClientKcQuestions`, which both the serve path and the grader agree
+ * on because grading compares VALUES.
+ */
+export function resolveNewsvendorKc(config: NewsvendorConfig): NewsvendorKcQuestion[] {
+  return applyKcOrder(resolveNewsvendorKcUnordered(config), q => q.field, config.kcOrder)
+}
+
+/**
+ * The same set WITHOUT the ordering pass.
+ *
+ * ⚠⚠ THE STAGE BUILDERS USE THIS, AND THE REASON IS A BUG THIS PASS ACTUALLY HIT. `order`
+ * must be applied EXACTLY ONCE, over the whole stage list. Applying it inside the resolver
+ * AND again over the stage means the second pass sorts against positions the first pass
+ * produced — and because `applyKcOrder` falls back to an item's CURRENT index for an id the
+ * map does not mention, a partial map then produces an order that is not what either pass
+ * intended. Caught by an ordering test whose expectation was right and whose code was wrong.
+ */
+export function resolveNewsvendorKcUnordered(config: NewsvendorConfig): NewsvendorKcQuestion[] {
+  if (!config.kcEnabled) return []
+  const specs = config.dual ? DUAL_KC_SPECS : KC_SPECS
+  const all = specs
+    .map((spec, i) => ({
+      ...kcBase,
+      field: spec.field,
+      order: i + 1,
+      prompt: spec.prompt,
+      options: [...spec.options],
+      correct_value: spec.correct_value,
+      explanation: spec.explanation,
+    } as NewsvendorKcQuestion))
+    .filter(q => config.kcHidden[q.field] !== true)
+    .map(q => applyKcOverride(q, config.kcOverrides))
+  return all
+}
+
+/** An added question that carries a usable key, and therefore a mark. */
+export function isGradedAdded(q: NewsvendorAddedKcQuestion): boolean {
+  return q.type === 'mc' && typeof q.correct_value === 'string'
+}
+
+/**
+ * This instance's ADDED questions: hidden ones removed, in order.
+ *
+ * ⚠⚠ D12 — `kcEnabled` GATES GRADED QUESTIONS ONLY. A graded addition disappears with the
+ * toggle; an UNGRADED free-text one does not, and is governed by its own visibility, the
+ * same rule the prep and debrief paragraphs follow.
+ *
+ * ⚠ Omitted `stage` ⇒ EVERY stage. The grader calls it that way deliberately: gradedness is
+ * stage-independent (D3), so a post-stage MC question is graded exactly like a pre one.
+ */
+export function resolveAddedKcQuestions(
+  config: NewsvendorConfig,
+  stage?: NewsvendorKcStage,
+): NewsvendorAddedKcQuestion[] {
+  return applyKcOrder(resolveAddedKcQuestionsUnordered(config, stage), q => q.id, config.kcOrder)
+}
+
+/** The same, unordered — see `resolveNewsvendorKcUnordered` for why the stages need it. */
+export function resolveAddedKcQuestionsUnordered(
+  config: NewsvendorConfig,
+  stage?: NewsvendorKcStage,
+): NewsvendorAddedKcQuestion[] {
+  const visible = config.addedKcQuestions.filter(q => config.kcHidden[q.id] !== true)
+  const gated = config.kcEnabled ? visible : visible.filter(q => !isGradedAdded(q))
+  return stage === undefined ? gated : gated.filter(q => addedKcStage(q) === stage)
+}
+
+/**
+ * ⚠⚠ THE GRADER'S SCORING SET — the whole of it, in one place.
+ *
+ * `newsvendorSubmitKcAnswer` calls exactly this and builds no list of its own. Visible AND
+ * graded: a hidden question is absent (never asked), and an ungraded one — free text, or an
+ * mc whose key named no offered option — is absent from numerator AND denominator.
+ */
+export function newsvendorKcScoringSet(
+  config: NewsvendorConfig,
+): { field: string; correct_value: string }[] {
+  return [
+    ...resolveNewsvendorKc(config).map(q => ({ field: q.field, correct_value: q.correct_value })),
+    ...resolveAddedKcQuestions(config)
+      .filter(isGradedAdded)
+      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
+  ]
+}
+
+/**
+ * This instance's added questions IN THE CLIENT SHAPE — whitelisted field by field, SHUFFLED.
+ *
+ * ⚠⚠ `stage` IS REQUIRED. In pd this argument was optional for an hour and dropping it at
+ * the call site served every after-results question BEFORE play — a mutation no unit test
+ * caught, because the tests passed the stage explicitly. Requiring it makes that a compile
+ * error (spec §7). The grader's "every stage" case has its own call.
+ */
+export function addedToClientKcQuestions(
+  config: NewsvendorConfig,
+  participantId: string,
+  stage: NewsvendorKcStage,
+): { field: string; type: 'mc' | 'text'; prompt: string; options: { value: string; label: string }[] }[] {
+  return resolveAddedKcQuestions(config, stage).map(q => ({
+    field: q.id,
+    type: q.type,
+    prompt: q.prompt,
+    options: shuffleClientOptions(q.options ?? [], participantId, q.id),
+  }))
+}
+
+// ── The two free-text rows, and the two stage lists ────────────────────────────
+//
+// ⚠⚠ BOTH PARAGRAPHS ARE ROWS IN THE LIST (spec D9), not separate surfaces — the prep in
+// `pre`, the debrief in `post`. Their prompts and visibility are STORED under the existing
+// `prep_prompt`/`prep_enabled` and `debrief_prompt`/`debrief_enabled` keys, NOT in the three
+// convergence maps, which is what makes folding them in a change with no storage migration.
+// The settings page translates at the boundary and the callable REFUSES an override or hide
+// aimed at either id.
+//
+// ⚠ `kind` routes the submit: `free-text` → newsvendorSubmitFreeText, `added`/`authored` →
+// newsvendorSubmitKcAnswer. The client must not infer it from `type`, because an added
+// free-text question is also `type: 'text'` and goes to a different callable.
+
+export interface NewsvendorStageRow {
+  kind: 'authored' | 'added' | 'free-text'
+  field: string
+  type: 'mc' | 'text'
+  prompt: string
+  placeholder?: string
+  options: { value: string; label: string }[]
+}
+
+/** The PRE stage: the authored ten, the prep paragraph, and any pre-stage addition. */
+export function newsvendorPreStage(config: NewsvendorConfig): NewsvendorStageRow[] {
+  // ⚠ UNORDERED — `applyKcOrder` runs ONCE at the bottom, over the whole stage.
+  const rows: NewsvendorStageRow[] = resolveNewsvendorKcUnordered(config).map(q => ({
+    kind: 'authored' as const,
+    field: q.field,
+    type: 'mc' as const,
+    prompt: q.prompt,
+    options: q.options,
+  }))
+
+  if (config.prepEnabled) {
+    rows.push({
+      kind: 'free-text',
+      field: PREP_ROW_ID,
+      type: 'text',
+      // ⚠ The instructor's prompt from `prep_prompt`, never the literal on the data object.
+      prompt: config.prepPrompt,
+      placeholder: prepQuestion.placeholder,
+      options: [],
+    })
+  }
+
+  for (const q of resolveAddedKcQuestionsUnordered(config, 'pre')) {
+    rows.push({ kind: 'added', field: q.id, type: q.type, prompt: q.prompt, options: q.options ?? [] })
+  }
+
+  // Ordered ACROSS all three kinds, so an instructor can put the prep paragraph first or an
+  // addition between two authored questions. `applyKcOrder` is total on a partial map.
+  return applyKcOrder(rows, r => r.field, config.kcOrder)
+}
+
+/** The POST stage: the debrief paragraph plus any post-stage addition. */
+export function newsvendorPostStage(config: NewsvendorConfig): NewsvendorStageRow[] {
+  const rows: NewsvendorStageRow[] = []
+
+  if (config.debriefEnabled) {
+    rows.push({
+      kind: 'free-text',
+      field: DEBRIEF_ROW_ID,
+      type: 'text',
+      prompt: config.debriefPrompt,
+      placeholder: debriefQuestion.placeholder,
+      options: [],
+    })
+  }
+
+  for (const q of resolveAddedKcQuestionsUnordered(config, 'post')) {
+    rows.push({ kind: 'added', field: q.id, type: q.type, prompt: q.prompt, options: q.options ?? [] })
+  }
+
+  return applyKcOrder(rows, r => r.field, config.kcOrder)
+}
+
+/**
+ * The AUTHORED set as the STUDENT receives it — resolved, SHUFFLED per student, key stripped.
+ *
+ * ⚠⚠ THE SHUFFLE LIVES HERE, at the boundary the serve path composes, so a test of this
+ * function tests the wiring rather than the primitive. It used to be inside the old
+ * `resolveNewsvendorKcQuestions(participantId, dual)`, which meant hidden/order/overrides
+ * had nowhere to go; splitting resolve (no participant) from serve (participant) is what
+ * lets the grader share the first half.
+ *
+ * ⚠ Grading compares option VALUES, so the per-student order cannot touch a score — the
+ * grader deliberately does NOT shuffle.
+ */
+export function authoredToClient(config: NewsvendorConfig, participantId: string) {
+  return toClientKcQuestions(
+    resolveNewsvendorKc(config).map(q => ({
+      ...q,
+      options: shuffleFor(participantId, q.field, q.options),
+    })),
+  )
+}
+
+/**
+ * A stage as the STUDENT receives it — every mc row's options SHUFFLED, answer keys absent.
+ *
+ * ⚠⚠ THE SERVE PATH COMPOSES THIS, so a test of this function tests the wiring rather than
+ * the primitive. All three previous passes lost a mutant to exactly that distinction
+ * (spec §7).
+ */
+export function stageToClient(
+  rows: NewsvendorStageRow[],
+  participantId: string,
+): NewsvendorStageRow[] {
+  return rows.map(r => (
+    r.options.length > 1
+      ? { ...r, options: shuffleClientOptions(r.options, participantId, r.field) }
+      : r
+  ))
+}

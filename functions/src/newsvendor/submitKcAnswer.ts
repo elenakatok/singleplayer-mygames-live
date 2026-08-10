@@ -1,12 +1,14 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
-import { extractStudentOnCallIds, calcKCScore } from '@mygames/game-server'
+import { extractStudentOnCallIds, kcScoreOrNull } from '@mygames/game-server'
 import {
   NEWSVENDOR_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC,
   loadNewsvendorConfig,
 } from './config'
-import { resolveNewsvendorKcQuestions } from './questions'
+import {
+  resolveNewsvendorKc, resolveAddedKcQuestions, newsvendorKcScoringSet,
+} from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // newsvendorSubmitKcAnswer (student) — grades ONE knowledge-check question (spec §8).
@@ -58,9 +60,17 @@ export const newsvendorSubmitKcAnswer = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }
   const configSnap = await instanceRef.collection('config').doc(CONFIG_DOC).get()
   const config = loadNewsvendorConfig(configSnap.data())
 
-  if (!config.kcEnabled) {
-    throw new HttpsError('failed-precondition', 'The knowledge check is not part of this game.')
-  }
+  // ⚠⚠ THE BLANKET `if (!config.kcEnabled) throw` GATE IS GONE, and it had to go with D12.
+  // The toggle gates GRADED questions only, so an instance with the check off still SERVES
+  // an ungraded free-text addition — and the blanket gate refused an answer to a question
+  // the same instance had just handed the student. (scorecard, pd and pricing removed the
+  // identical gate for the identical reason.)
+  //
+  // ⚠ NOTHING IS WEAKENED. The routing below does the same job PER QUESTION: with
+  // `kcEnabled: false` the authored set resolves empty and every graded addition is
+  // filtered out, so answering one falls through to the "not a knowledge-check question"
+  // error. A HIDDEN question is refused by the same path, which the blanket gate never
+  // covered.
 
   // ── ROUTE THE FIELD TO ITS OWN SOURCE ─────────────────────────────────────
   // Authored FIRST. Added questions are looked up in config with their own stored
@@ -70,9 +80,12 @@ export const newsvendorSubmitKcAnswer = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }
   // dual student's answer would be checked against the regular set and rejected as "not
   // a knowledge-check question in this game" — the exact failure the shared
   // resolve-once discipline exists to prevent.
-  const authored = resolveNewsvendorKcQuestions(participantId, config.dual)
+  // ⚠⚠ THE SAME RESOLVERS THE SERVE PATH USES — hidden removed, overrides applied, in the
+  // instance's order. This is what keeps `forScoring` below honest.
+  const authored = resolveNewsvendorKc(config)
+  const addedVisible = resolveAddedKcQuestions(config)
   const authoredQ = authored.find(q => q.field === field)
-  const addedQ = authoredQ ? undefined : config.addedKcQuestions.find(q => q.id === field)
+  const addedQ = authoredQ ? undefined : addedVisible.find(q => q.id === field)
 
   if (!authoredQ && !addedQ) {
     throw new HttpsError('invalid-argument', `'${field}' is not a knowledge-check question in this game.`)
@@ -102,12 +115,10 @@ export const newsvendorSubmitKcAnswer = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }
    * key. Added free-text questions are absent from BOTH numerator and denominator, so
    * adding one cannot silently lower everyone's score.
    */
-  const forScoring = [
-    ...authored.map(q => ({ field: q.field, correct_value: q.correct_value })),
-    ...config.addedKcQuestions
-      .filter(q => q.type === 'mc' && typeof q.correct_value === 'string')
-      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
-  ]
+  // ⚠⚠ NOT BUILT HERE. `newsvendorKcScoringSet` is the single place that decides which
+  // questions this instance grades, and it derives from the same resolvers the serve path
+  // uses — so a hidden question cannot be served-but-not-graded or graded-but-not-served.
+  const forScoring = newsvendorKcScoringSet(config)
   const participantRef = instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
 
   const result = await db.runTransaction(async (tx) => {
@@ -141,7 +152,13 @@ export const newsvendorSubmitKcAnswer = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }
     // correct / total over the graded static questions. Wrong answers stay in the
     // denominator; they simply do not count in the numerator.
     if (allAnswered && pData.knowledge_check_score == null) {
-      patch.knowledge_check_score = calcKCScore(allAnswers, forScoring).score
+      // ⚠⚠ `kcScoreOrNull`, NOT `calcKCScore(...).score`. The shared helper answers the
+      // EMPTY graded set with 1.0 — right for a negotiation game's gate-only role,
+      // catastrophic here. An instructor who hides every graded question, or whose check is
+      // one free-text addition, would otherwise record a PERFECT knowledge-check score for
+      // a student who was never asked a graded question, and scoreAndRecord pushes it to
+      // the gradebook. That became reachable the moment `kc_hidden` landed.
+      patch.knowledge_check_score = kcScoreOrNull(allAnswers, forScoring)
       patch.knowledge_check_completed_at = FieldValue.serverTimestamp()
     }
 

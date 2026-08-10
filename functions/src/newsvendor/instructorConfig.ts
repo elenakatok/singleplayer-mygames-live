@@ -5,8 +5,15 @@ import {
   NEWSVENDOR_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC, TRUTH_DOC,
   HARD_MIN_PERIODS, HARD_MAX_PERIODS,
   loadNewsvendorConfig, loadNewsvendorSeed, parseAddedKcQuestion, premiumOf,
+  addedKcStage, parseKcHidden, parseKcOrder, parseKcOverrides,
+  NEWSVENDOR_KC_STAGES, PREP_ROW_ID, DEBRIEF_ROW_ID,
   type NewsvendorConfig, type NewsvendorAddedKcQuestion,
 } from './config'
+import {
+  resolveNewsvendorKc, applyKcOverride, isKcOverridden, isGradedAdded,
+  NEWSVENDOR_BUILT_IN_KC_IDS, prepQuestion, debriefQuestion,
+} from './questions'
+import { lockedKcQuestionIds, validateKcOverrides, KC_LOCK_REASON } from './kcLock'
 import { criticalRatio, optimalOrder, orderBounds, economicsError } from './economics'
 import { resolveNewsvendorKcQuestions, AUTHORED_KC_COUNT } from './questions'
 
@@ -117,6 +124,117 @@ async function readConfigView(db: admin.firestore.Firestore, gameInstanceId: str
     authoredKcCount: AUTHORED_KC_COUNT,
     /** Has any student actually played a period? Drives the edit warning. */
     anyRoundsPlayed: !playedSnap.empty,
+    /** ⚠ The three convergence fields (spec §5). */
+    kcHidden: config.kcHidden,
+    kcOrder: config.kcOrder,
+    kcOverrides: config.kcOverrides,
+    /** Everything the shared knowledge-check block renders. */
+    kc: kcInventory(config),
+  }
+}
+
+/**
+ * The instructor-facing inventory of every question this instance could ask — the payload
+ * the shared settings block renders.
+ *
+ * ⚠ THIS IS THE INSTRUCTOR CALLABLE, so `correctValue` belongs here. `newsvendorGetQuestions`
+ * (the STUDENT path) still strips every key.
+ *
+ * ⚠⚠ THE MODE'S SET ONLY. newsvendor serves two mutually exclusive tens on `dual`, so the
+ * page shows the questions THIS instance asks. The other mode's stored hides, order and
+ * overrides are untouched and reappear when the instructor flips back — they are keyed by
+ * ids this mode never serves (config.ts).
+ *
+ * ⚠⚠ BOTH FREE-TEXT PARAGRAPHS ARE ROWS (spec D9) — the prep in `pre`, the debrief in
+ * `post`. They are reported as `builtin` rows but are STORED under the existing
+ * `prep_prompt`/`prep_enabled` and `debrief_prompt`/`debrief_enabled` keys, NOT in the three
+ * convergence maps. The settings page translates at the boundary and the callable refuses an
+ * override or hide aimed at either id. No storage migration; no stored answer moves.
+ *
+ * ⚠ NOTHING IS LOCKED HERE, and that is a finding rather than an omission — every authored
+ * question is a literal string (kcLock.ts). The `locked`/`lockReason` fields still ship
+ * because the detector is live and a future edit that threaded a parameter into a stem
+ * would start populating them.
+ */
+function kcInventory(config: NewsvendorConfig) {
+  const locked = lockedKcQuestionIds(config)
+  const authored = resolveNewsvendorKc({ ...config, kcEnabled: true, kcHidden: {}, kcOverrides: {}, kcOrder: {} })
+
+  const builtIn = authored.map((raw) => {
+    const q = applyKcOverride(raw, config.kcOverrides)
+    return {
+      id: q.field,
+      kind: 'builtin' as const,
+      stage: 'pre' as const,
+      prompt: q.prompt,
+      options: q.options.map(o => ({ value: o.value, label: o.label })),
+      correctValue: q.correct_value,
+      /** Always graded — every authored question carries a key. */
+      graded: true,
+      visible: config.kcHidden[q.field] !== true,
+      locked: locked.has(q.field),
+      lockReason: locked.has(q.field) ? KC_LOCK_REASON : null,
+      overridden: isKcOverridden(q.field, config.kcOverrides),
+      /** The AUTHORED text, so the page can offer "revert to the original". */
+      originalPrompt: raw.prompt,
+      originalOptions: raw.options.map(o => ({ value: o.value, label: o.label })),
+      order: config.kcOrder[q.field] ?? null,
+    }
+  })
+
+  const added = config.addedKcQuestions.map(q => ({
+    id: q.id,
+    kind: 'added' as const,
+    stage: addedKcStage(q),
+    type: q.type,
+    prompt: q.prompt,
+    options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+    correctValue: q.correct_value ?? null,
+    graded: isGradedAdded(q),
+    visible: config.kcHidden[q.id] !== true,
+    locked: false,
+    lockReason: null,
+    overridden: false,
+    order: config.kcOrder[q.id] ?? null,
+  }))
+
+  /** ⚠ The two paragraphs, as rows. See the note on `kcInventory`. */
+  const freeTextRow = (id: string, stage: 'pre' | 'post', prompt: string, placeholder: string, visible: boolean) => ({
+    id,
+    kind: 'builtin' as const,
+    stage,
+    type: 'text' as const,
+    prompt,
+    placeholder,
+    options: [] as { value: string; label: string }[],
+    correctValue: null,
+    /** ⚠ NEVER GRADED, and by ABSENCE OF A KEY rather than by its stage or its type. */
+    graded: false,
+    visible,
+    locked: false,
+    lockReason: null,
+    overridden: false,
+    order: config.kcOrder[id] ?? null,
+  })
+
+  const prepRow = freeTextRow(
+    PREP_ROW_ID, 'pre', config.prepPrompt, prepQuestion.placeholder, config.prepEnabled,
+  )
+  const debriefRow = freeTextRow(
+    DEBRIEF_ROW_ID, 'post', config.debriefPrompt, debriefQuestion.placeholder, config.debriefEnabled,
+  )
+
+  const pool = [...builtIn, ...added, prepRow, debriefRow]
+  return {
+    stages: NEWSVENDOR_KC_STAGES,
+    builtIn,
+    added,
+    prep: prepRow,
+    debrief: debriefRow,
+    /** ⚠ THE COUNT LINE'S THREE NUMBERS — visible AND graded. Never stored (D5). */
+    poolTotal: pool.length,
+    visibleCount: pool.filter(q => q.visible).length,
+    gradedCount: pool.filter(q => q.visible && q.graded).length,
   }
 }
 
@@ -254,6 +372,68 @@ export const newsvendorUpdateConfig = onCall({ cors: NEWSVENDOR_CORS_ORIGINS }, 
       parsed.push(q)
     }
     patch.added_kc_questions = parsed
+  }
+
+  // ── The three convergence fields (spec §5) ────────────────────────────────
+  //
+  // ⚠ Every key is checked against the ids this instance could have. A stale id is REFUSED
+  // rather than stored, because a hidden map full of ids nothing serves is how
+  // "18 of 22 visible" starts lying.
+  //
+  // ⚠⚠ AGAINST THE UNION OF BOTH MODES, NOT THE CURRENT ONE. An instructor who edits in
+  // regular, flips to dual and saves must not have their regular work rejected.
+  //
+  // ⚠ THE TWO FREE-TEXT IDS ARE KNOWN FOR hidden/order — they are rows in the list and can
+  // be moved and hidden like any other — but they are REFUSED for `overrides`, because their
+  // prompts live in `prep_prompt` / `debrief_prompt` and an override on them would be
+  // written where nothing reads it.
+  if (has(data, 'kcHidden') || has(data, 'kcOrder') || has(data, 'kcOverrides')) {
+    const storedSnap = await instanceRef.collection('config').doc(CONFIG_DOC).get()
+    const stored = loadNewsvendorConfig(storedSnap.data())
+    const knownAdded = new Set(
+      (patch.added_kc_questions as NewsvendorAddedKcQuestion[] | undefined)?.map(q => q.id)
+      ?? stored.addedKcQuestions.map(q => q.id),
+    )
+    const knownId = (id: string) =>
+      NEWSVENDOR_BUILT_IN_KC_IDS.has(id) || knownAdded.has(id)
+      || id === PREP_ROW_ID || id === DEBRIEF_ROW_ID
+
+    if (has(data, 'kcHidden')) {
+      const p = parseKcHidden(data.kcHidden)
+      for (const id of Object.keys(p)) {
+        if (!knownId(id)) throw new HttpsError('invalid-argument', `'${id}' is not a question in this game.`)
+      }
+      patch.kc_hidden = p
+    }
+
+    if (has(data, 'kcOrder')) {
+      const p = parseKcOrder(data.kcOrder)
+      for (const id of Object.keys(p)) {
+        if (!knownId(id)) throw new HttpsError('invalid-argument', `'${id}' is not a question in this game.`)
+      }
+      patch.kc_order = p
+    }
+
+    if (has(data, 'kcOverrides')) {
+      // ⚠⚠ THE LOCK IS ENFORCED HERE, NOT ONLY IN THE UI (spec §5) — even though newsvendor
+      // locks nothing today. The detector is live; the day a stem gains a config value, this
+      // starts refusing without another line of code.
+      //
+      // ⚠ Classified against the PROSPECTIVE mode, so flipping `dual` in the same save is
+      // judged against the mode being saved rather than the one being left.
+      const next: NewsvendorConfig = {
+        ...stored,
+        dual: has(data, 'dual') && typeof data.dual === 'boolean' ? data.dual : stored.dual,
+      }
+      const built = resolveNewsvendorKc({ ...next, kcEnabled: true, kcHidden: {}, kcOverrides: {}, kcOrder: {} })
+      const rejections = validateKcOverrides(parseKcOverrides(data.kcOverrides), {
+        builtInIds: NEWSVENDOR_BUILT_IN_KC_IDS,
+        locked: lockedKcQuestionIds(next),
+        optionIds: new Map(built.map(q => [q.field, new Set(q.options.map(o => o.value))])),
+      })
+      if (rejections.length > 0) throw new HttpsError('invalid-argument', rejections[0].message)
+      patch.kc_overrides = parseKcOverrides(data.kcOverrides)
+    }
   }
 
   // ── The whole-config check (spec §2 + the two CR requirements) ─────────────
