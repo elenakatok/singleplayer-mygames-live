@@ -348,7 +348,15 @@ describe('PmgRulesScreen — the standalone §6.2 announcement', () => {
 })
 
 describe('pricingResumeIndex — where a returning student lands', () => {
-  const base = { pmg: false, kcCount: 4, kcAnswered: 0, gameOver: false, debriefEnabled: true, debriefSubmitted: false }
+  // ⚠ THE POST SEGMENT IS A LIST NOW. It used to be "the debrief, if enabled" — one
+  // optional screen, two booleans. The `post` stage can hold the debrief row PLUS any
+  // question the instructor put after the results, so the input is one answered-flag per
+  // row in served order. A one-element array IS the old shape, which is why every case
+  // below keeps its original meaning.
+  const base = {
+    pmg: false, kcCount: 4, kcAnswered: 0, gameOver: false,
+    postAnswered: [false] as readonly boolean[],
+  }
 
   it('brand new (Standard): the first KC question', () => {
     expect(pricingResumeIndex(base)).toBe(0)
@@ -356,7 +364,7 @@ describe('pricingResumeIndex — where a returning student lands', () => {
 
   it('brand new (PMG): the rules screen, ahead of the KC', () => {
     expect(pricingResumeIndex({ ...base, pmg: true, kcCount: 3 })).toBe(0)
-    expect(pricingScreenCount(true, 3, true)).toBe(6)   // rules + 3 KC + loop + debrief
+    expect(pricingScreenCount(true, 3, 1)).toBe(6)   // rules + 3 KC + loop + debrief
   })
 
   it('part-way through the KC: the first unanswered question — past the rules screen', () => {
@@ -369,20 +377,50 @@ describe('pricingResumeIndex — where a returning student lands', () => {
     expect(pricingResumeIndex({ ...base, pmg: true, kcCount: 3, kcAnswered: 3 })).toBe(4)
   })
 
-  it('game over: the debrief', () => {
+  it('game over: the first after-results question', () => {
     expect(pricingResumeIndex({ ...base, kcAnswered: 4, gameOver: true })).toBe(5)
   })
 
   it('debrief submitted: past the end', () => {
-    const done = { ...base, kcAnswered: 4, gameOver: true, debriefSubmitted: true }
+    const done = { ...base, kcAnswered: 4, gameOver: true, postAnswered: [true] }
     expect(pricingResumeIndex(done)).toBe(6)
-    expect(pricingResumeIndex(done)).toBeGreaterThanOrEqual(pricingScreenCount(false, 4, true))
+    expect(pricingResumeIndex(done)).toBeGreaterThanOrEqual(pricingScreenCount(false, 4, 1))
   })
 
-  it('no debrief configured: game over IS the end', () => {
-    const noDebrief = { ...base, kcAnswered: 4, gameOver: true, debriefEnabled: false }
-    expect(pricingResumeIndex(noDebrief)).toBe(5)
-    expect(pricingResumeIndex(noDebrief)).toBeGreaterThanOrEqual(pricingScreenCount(false, 4, false))
+  it('nothing in the post stage: game over IS the end', () => {
+    const noPost = { ...base, kcAnswered: 4, gameOver: true, postAnswered: [] }
+    expect(pricingResumeIndex(noPost)).toBe(5)
+    expect(pricingResumeIndex(noPost)).toBeGreaterThanOrEqual(pricingScreenCount(false, 4, 0))
+  })
+
+  it('⚠⚠ lands on the FIRST UNANSWERED after-results row, not the first row', () => {
+    // MUTANT CAUGHT: always resuming at the start of the stage (`return … + 1`). A student
+    // who wrote the debrief and closed the tab before the added question would be sent back
+    // through a paragraph the server has already stored — and pricingSubmitDebrief returns
+    // the stored answer rather than accepting a new one, so they would be stuck.
+    const post = (flags: boolean[]) =>
+      pricingResumeIndex({ ...base, kcAnswered: 4, gameOver: true, postAnswered: flags })
+    expect(post([false, false, false])).toBe(5)
+    expect(post([true, false, false])).toBe(6)
+    expect(post([true, true, false])).toBe(7)
+    expect(post([true, true, true])).toBe(8)
+  })
+
+  it('⚠ a GAP resumes AT the gap, not past it', () => {
+    // MUTANT CAUGHT: treating the flags as a COUNT. Only equivalent while the answered rows
+    // are a solid prefix; on a gap it skips the unanswered row, leaving a question
+    // permanently unanswerable and the denominator silently short.
+    const post = (flags: boolean[]) =>
+      pricingResumeIndex({ ...base, kcAnswered: 4, gameOver: true, postAnswered: flags })
+    expect(post([false, true, true])).toBe(5)
+    expect(post([true, false, true])).toBe(6)
+  })
+
+  it('⚠ the PMG rules offset applies to the post stage too', () => {
+    expect(pricingResumeIndex({
+      ...base, pmg: true, kcCount: 3, kcAnswered: 3, gameOver: true, postAnswered: [true, false],
+    })).toBe(6)
+    expect(pricingScreenCount(true, 3, 2)).toBe(7)
   })
 
   it('no KC configured: the loop is the first screen', () => {
@@ -392,8 +430,13 @@ describe('pricingResumeIndex — where a returning student lands', () => {
   it('⚠ gameOver comes from the SERVER, never from counting rounds', () => {
     // Nothing here takes a round count at all — the browser has no horizon to compare
     // against, which is exactly what spec §3 requires.
+    // ⚠ The two debrief booleans became `postAnswered` — one flag per post-stage row —
+    // when the stage became a list. The property this pins is unchanged and is the point
+    // of the assertion: NO ROUND COUNT and NO HORIZON is an input, in any shape.
     expect(Object.keys(base).sort())
-      .toEqual(['debriefEnabled', 'debriefSubmitted', 'gameOver', 'kcAnswered', 'kcCount', 'pmg'])
+      .toEqual(['gameOver', 'kcAnswered', 'kcCount', 'pmg', 'postAnswered'])
+    expect(Object.keys(base)).not.toContain('rounds')
+    expect(Object.keys(base)).not.toContain('roundsPlayed')
   })
 
   it('the round loop resumes at the next unplayed round', () => {

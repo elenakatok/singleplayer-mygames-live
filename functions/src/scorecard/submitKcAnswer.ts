@@ -44,12 +44,19 @@ export const scorecardSubmitKcAnswer = onCall({ cors: SCORECARD_CORS_ORIGINS }, 
   const db = admin.firestore()
   const { config, truth } = await loadInstance(db, gameInstanceId)
 
-  // ⚠ The gate is here as well as on the serve path. An instance with the KC switched off
-  // has no questions to show, but a client holding a stale payload — or a hand-made call —
-  // must not be able to write an answer to a check this instance does not have.
-  if (!config.kcEnabled) {
-    throw new HttpsError('failed-precondition', 'The knowledge check is not part of this game.')
-  }
+  // ⚠⚠ THE BLANKET `if (!config.kcEnabled) throw` GATE IS GONE, and it had to go with the
+  // D12 alignment. The toggle now gates GRADED questions only, so an instance with the
+  // check off still SERVES an ungraded free-text addition — and the blanket gate refused to
+  // accept an answer to a question the same instance had just handed the student. Serving a
+  // question that cannot be answered is worse than either extreme. (pd removed the
+  // identical gate for the identical reason.)
+  //
+  // ⚠ NOTHING IS WEAKENED. The gate's job was "a client holding a stale payload must not
+  // write an answer to a check this instance does not have", and the routing below does
+  // exactly that, PER QUESTION rather than wholesale: with `kcEnabled: false` the built-ins
+  // resolve to an empty list and every graded addition is filtered out, so any attempt to
+  // answer one falls through to the "not a question in this game" error. A hidden question
+  // is refused by the same path, which the blanket gate never covered.
 
   // ⚠⚠ THE SAME RESOLVER THE SERVE PATH USES — hidden questions removed, overrides
   // applied, in the instance's order. This is the line that keeps `forScoring` below

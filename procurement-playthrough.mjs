@@ -1484,6 +1484,59 @@ async function main() {
 
   // ═══════════════════════════════════════════════════════════════════════════
   console.log(`\n${'═'.repeat(70)}`)
+  // ── ⚠⚠ THE EMPTY GRADED SET — WHY IT IS UNREACHABLE HERE ────────────────────
+  //
+  // Procurement is the one game that ALREADY shipped per-question hide (`kcVisible`), so
+  // the worry was that an instructor could empty the graded set and have every student
+  // stored at 1.0 (the shared calcKCScore's answer for an empty set).
+  //
+  // ⚠⚠ THEY CANNOT, AND THE REASON IS STRUCTURAL, NOT THE `forScoring.length > 0` GUARD.
+  // Every `kc`-stage question is built by `mc()`, which always sets an answer key, and
+  // `procurementSubmitKcAnswer` refuses any field that is not a VISIBLE kc-stage question.
+  // So a call that reaches the scorer implies a non-empty graded set. The free-text
+  // questions live in the `prep`/`debrief` stages and go to `procurementSubmitFreeText`,
+  // which writes no score at all. This section pins that boundary at the callables.
+  {
+    console.log('\n[KC] The empty graded set is unreachable — pinned at the callables')
+    const gidE = await makeInstance({
+      rounds: 2, reserve: 110,
+      // KC on, and the ONLY visible question is the free-text prep one — the closest an
+      // instructor can get to "no graded questions" on the settings page.
+      kcEnabled: true, kcVisible: ['S8'],
+    })
+    const asInstructorE = (gid, extra = {}) => ({ _dev: { game_instance_id: gid }, ...extra })
+    const asStudentE = (extra = {}) => ({ _test: { participant_id: 'proc-empty-stu', game_instance_id: gidE }, ...extra })
+
+    const cfgE = await callFn('procurementGetConfig', asInstructorE(gidE))
+    check(cfgE.ok && cfgE.result.kcGradedCount === 0,
+      `⚠ zero GRADED questions are visible (${cfgE.result?.kcGradedCount}) — only the free-text prep`)
+
+    await callFn('procurementBootstrap', asStudentE())
+    const qsE = await callFn('procurementGetQuestions', asStudentE())
+    check(qsE.ok && qsE.result.kc.length === 0, 'the student is served NO graded questions')
+    check(qsE.result.prep.length === 1, 'and exactly one ungraded free-text question')
+
+    const prepField = qsE.result.prep[0].id ?? qsE.result.prep[0].field
+    // ⚠ THE GRADER REFUSES IT — a free-text question is not a knowledge-check question, so
+    // the scorer is never entered with an empty set.
+    const wrongDoor = await callFn('procurementSubmitKcAnswer', asStudentE({ field: prepField, answer: 'A plan.' }))
+    check(!wrongDoor.ok,
+      '⚠⚠ procurementSubmitKcAnswer REFUSES the free-text field — the empty-set path is unreachable')
+
+    // …and the right door stores it without touching any score.
+    const right = await callFn('procurementSubmitFreeText', asStudentE({ field: prepField, answer: 'A plan.' }))
+    check(right.ok, 'procurementSubmitFreeText accepts it')
+
+    const docE = await getDoc(`procurement_game_instances/${gidE}/participants/proc-empty-stu`)
+    const scoreE = docE?.knowledge_check_score
+    check(scoreE === undefined || scoreE?.nullValue !== undefined,
+      `⚠⚠ NO SCORE IS STORED (${JSON.stringify(scoreE ?? null)})`)
+    check(!(scoreE?.doubleValue === 1 || scoreE?.integerValue === '1'),
+      '⚠⚠ …and specifically NOT 1.0 — which is what calcKCScore answers an empty set with')
+    check(docE?.knowledge_check_completed_at === undefined,
+      '⚠ …nor is the KC stamped complete — which is why a kcScoreOrNull swap would REGRESS this')
+  }
+
   console.log(`  ${passed} passed, ${failed} failed`)
   console.log('═'.repeat(70))
   if (failed > 0) process.exit(1)

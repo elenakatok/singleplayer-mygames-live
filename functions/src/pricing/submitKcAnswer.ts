@@ -1,12 +1,12 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
-import { extractStudentOnCallIds, calcKCScore } from '@mygames/game-server'
+import { extractStudentOnCallIds, kcScoreOrNull } from '@mygames/game-server'
 import {
   PRICING_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC,
   loadPricingConfig,
 } from './config'
-import { resolvePricingKcQuestions } from './questions'
+import { pricingResolveKc, resolveAddedKcQuestions, pricingKcScoringSet } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // pricingSubmitKcAnswer (student) — grades ONE knowledge-check question (spec §8).
@@ -54,9 +54,16 @@ export const pricingSubmitKcAnswer = onCall({ cors: PRICING_CORS_ORIGINS }, asyn
   const configSnap = await instanceRef.collection('config').doc(CONFIG_DOC).get()
   const config = loadPricingConfig(configSnap.data())
 
-  if (!config.kcEnabled) {
-    throw new HttpsError('failed-precondition', 'The knowledge check is not part of this game.')
-  }
+  // ⚠⚠ THE BLANKET `if (!config.kcEnabled) throw` GATE IS GONE, and it had to go with D12.
+  // The toggle gates GRADED questions only, so an instance with the check off still SERVES
+  // an ungraded free-text addition — and the blanket gate refused an answer to a question
+  // the same instance had just handed the student. (pd and scorecard removed the identical
+  // gate for the identical reason.)
+  //
+  // ⚠ NOTHING IS WEAKENED. The routing below does the same job PER QUESTION: with
+  // `kcEnabled: false` the derived set resolves empty and every graded addition is filtered
+  // out, so answering one falls through to the "not a knowledge-check question" error. A
+  // HIDDEN question is refused by the same path, which the blanket gate never covered.
 
   // ── ROUTE THE FIELD TO ITS OWN SOURCE ─────────────────────────────────────
   // Derived FIRST: resolved against this instance's market and mode, the same call
@@ -65,9 +72,12 @@ export const pricingSubmitKcAnswer = onCall({ cors: PRICING_CORS_ORIGINS }, asyn
   // are never merged — an added question cannot even take a kc_ id (config.ts), so
   // this lookup order can never shadow one with the other. A field from the OTHER
   // mode's set is not a question in this game at all.
-  const derived = resolvePricingKcQuestions(config.market, config.pmg, config.labels)
+  // ⚠⚠ THE SAME RESOLVERS THE SERVE PATH USES — hidden removed, overrides applied, in the
+  // instance's order. This is what keeps `forScoring` below honest.
+  const derived = pricingResolveKc(config)
+  const addedVisible = resolveAddedKcQuestions(config)
   const derivedQ = derived.find(q => q.field === field)
-  const addedQ = derivedQ ? undefined : config.addedKcQuestions.find(q => q.id === field)
+  const addedQ = derivedQ ? undefined : addedVisible.find(q => q.id === field)
 
   if (!derivedQ && !addedQ) {
     throw new HttpsError('invalid-argument', `'${field}' is not a knowledge-check question in this game.`)
@@ -100,12 +110,10 @@ export const pricingSubmitKcAnswer = onCall({ cors: PRICING_CORS_ORIGINS }, asyn
    * free-text questions are absent from BOTH numerator and denominator, so adding one
    * cannot silently lower everyone's score.
    */
-  const forScoring = [
-    ...derived.map(q => ({ field: q.field, correct_value: q.correct_value })),
-    ...config.addedKcQuestions
-      .filter(q => q.type === 'mc' && typeof q.correct_value === 'string')
-      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
-  ]
+  // ⚠⚠ NOT BUILT HERE. `pricingKcScoringSet` is the single place that decides which
+  // questions this instance grades, and it derives from the same resolvers the serve path
+  // uses — so a hidden question cannot be served-but-not-graded or graded-but-not-served.
+  const forScoring = pricingKcScoringSet(config)
   const participantRef = instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
 
   const result = await db.runTransaction(async (tx) => {
@@ -141,8 +149,14 @@ export const pricingSubmitKcAnswer = onCall({ cors: PRICING_CORS_ORIGINS }, asyn
     // The score lands once, when the last question is answered — the shared rule:
     // correct / total over the graded static questions. Wrong answers stay in the
     // denominator; they simply do not count in the numerator.
+    // ⚠⚠ `kcScoreOrNull`, NOT `calcKCScore(...).score`. The shared helper answers the EMPTY
+    // graded set with 1.0 — right for a negotiation game's gate-only role, catastrophic
+    // here. An instructor who hides every graded question, or whose check is one free-text
+    // addition, would otherwise record a PERFECT knowledge-check score for a student who
+    // was never asked a graded question, and scoreAndRecord pushes it to the gradebook.
+    // That became reachable the moment `kc_hidden` landed.
     if (allAnswered && pData.knowledge_check_score == null) {
-      patch.knowledge_check_score = calcKCScore(allAnswers, forScoring).score
+      patch.knowledge_check_score = kcScoreOrNull(allAnswers, forScoring)
       patch.knowledge_check_completed_at = FieldValue.serverTimestamp()
     }
 

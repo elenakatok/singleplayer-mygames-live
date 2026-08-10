@@ -5,11 +5,16 @@ import {
   PRICING_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC, TRUTH_DOC,
   HARD_MIN_ROUNDS, HARD_MAX_ROUNDS,
   loadPricingConfig, loadPricingStrategies, activeStrategy, parseAddedKcQuestion,
-  type PricingAddedKcQuestion,
+  addedKcStage, parseKcHidden, parseKcOrder, parseKcOverrides, PRICING_KC_STAGES,
+  type PricingAddedKcQuestion, type PricingConfig,
 } from './config'
 import { STRATEGY_DESCRIPTIONS } from './strategy'
 import { nashEquilibrium } from './market'
-import { resolvePricingKcQuestions } from './questions'
+import {
+  resolvePricingKcQuestions, applyKcOverride, isKcOverridden, isGradedAdded,
+  PRICING_BUILT_IN_KC_IDS,
+} from './questions'
+import { lockedKcQuestionIds, validateKcOverrides, KC_LOCK_REASON } from './kcLock'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // pricingGetConfig / pricingUpdateConfig (instructor) — the settings page's server
@@ -100,8 +105,120 @@ async function readConfigView(db: admin.firestore.Firestore, gameInstanceId: str
     anyRoundsDrawn: !drawnSnap.empty,
     /** Has any student actually played a round? Drives the market-edit warning. */
     anyRoundsPlayed: !playedSnap.empty,
+    /** ⚠ The three convergence fields (spec §5). */
+    kcHidden: config.kcHidden,
+    kcOrder: config.kcOrder,
+    kcOverrides: config.kcOverrides,
+    /** Everything the shared knowledge-check block renders. */
+    kc: kcInventory(config),
   }
 }
+
+/**
+ * The instructor-facing inventory of every question this instance could ask — the payload
+ * the shared settings block renders.
+ *
+ * ⚠ THIS IS THE INSTRUCTOR CALLABLE, so `correctValue` belongs here. `pricingGetQuestions`
+ * (the STUDENT path) still strips every key.
+ *
+ * ⚠⚠ THE MODE'S SET ONLY. pricing serves two mutually exclusive built-in sets on one
+ * boolean, so the page shows the questions THIS instance asks. The other mode's stored
+ * hides, order and overrides are untouched and reappear when the instructor flips back —
+ * they are keyed by ids this mode never serves (config.ts).
+ *
+ * ⚠ A question `build()` returned null for is simply absent — no row, and no phantom entry
+ * in any count. `kc_share_gap` vanishes on a narrow band and `kc_below_cost` when the price
+ * floor is at or above the student's unit cost.
+ *
+ * ⚠⚠ THE DEBRIEF IS A ROW (spec D9) — an ungraded question in a later stage, not a separate
+ * surface. It is reported as a `builtin` row in the `post` stage but is STORED under the
+ * existing `debrief_prompt` / `debrief_enabled` keys, NOT in the three convergence maps.
+ * The settings page translates at the boundary and the callable refuses an override or hide
+ * aimed at its id. No storage migration; no stored answer moves.
+ */
+function kcInventory(config: PricingConfig) {
+  const locked = lockedKcQuestionIds(config)
+  const authored = resolvePricingKcQuestions(config.market, config.pmg, config.labels)
+
+  const builtIn = authored.map((raw) => {
+    const q = applyKcOverride(raw, config.kcOverrides)
+    return {
+      id: q.field,
+      kind: 'builtin' as const,
+      stage: 'pre' as const,
+      prompt: q.prompt,
+      options: q.options.map(o => ({ value: o.value, label: o.label })),
+      correctValue: q.correct_value,
+      /** Always graded — every derived question carries a key. */
+      graded: true,
+      visible: config.kcHidden[q.field] !== true,
+      locked: locked.has(q.field),
+      /** ⚠ Always populated when `locked` — a disabled control with no reason is a bug. */
+      lockReason: locked.has(q.field) ? KC_LOCK_REASON : null,
+      overridden: isKcOverridden(q.field, config.kcOverrides),
+      /** The GENERATED text, so the page can offer "revert to the original". */
+      originalPrompt: raw.prompt,
+      originalOptions: raw.options.map(o => ({ value: o.value, label: o.label })),
+      order: config.kcOrder[q.field] ?? null,
+    }
+  })
+
+  const added = config.addedKcQuestions.map(q => ({
+    id: q.id,
+    kind: 'added' as const,
+    // ⚠ The question's OWN stage, never a hardcoded 'pre'.
+    stage: addedKcStage(q),
+    type: q.type,
+    prompt: q.prompt,
+    options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+    correctValue: q.correct_value ?? null,
+    graded: isGradedAdded(q),
+    visible: config.kcHidden[q.id] !== true,
+    /** Added questions are stored DATA — edited in place, never overridden, never locked. */
+    locked: false,
+    lockReason: null,
+    overridden: false,
+    order: config.kcOrder[q.id] ?? null,
+  }))
+
+  /** ⚠ The debrief, as a row. See the note on `kcInventory`. */
+  const debriefRow = {
+    id: DEBRIEF_ROW_ID,
+    kind: 'builtin' as const,
+    stage: 'post' as const,
+    type: 'text' as const,
+    prompt: config.debriefPrompt,
+    options: [] as { value: string; label: string }[],
+    correctValue: null,
+    /** ⚠ NEVER GRADED, and by ABSENCE OF A KEY rather than by its stage. */
+    graded: false,
+    visible: config.debriefEnabled,
+    locked: false,
+    lockReason: null,
+    overridden: false,
+    order: config.kcOrder[DEBRIEF_ROW_ID] ?? null,
+  }
+
+  const pool = [...builtIn, ...added, debriefRow]
+  return {
+    stages: PRICING_KC_STAGES,
+    builtIn,
+    added,
+    debrief: debriefRow,
+    /** ⚠ THE COUNT LINE'S THREE NUMBERS — visible AND graded. Never stored (D5). */
+    poolTotal: pool.length,
+    visibleCount: pool.filter(q => q.visible).length,
+    gradedCount: pool.filter(q => q.visible && q.graded).length,
+  }
+}
+
+/**
+ * The id the debrief row uses in the settings block.
+ *
+ * ⚠ It is the question's real `field`, so the row's id matches the key its answers are
+ * already stored under and the reports already read. Nothing moves.
+ */
+export const DEBRIEF_ROW_ID = 'debrief_reflection'
 
 export const pricingGetConfig = onCall({ cors: PRICING_CORS_ORIGINS }, async (request) => {
   const data = request.data as Record<string, unknown>
@@ -257,6 +374,71 @@ export const pricingUpdateConfig = onCall({ cors: PRICING_CORS_ORIGINS }, async 
       parsed.push(q)
     }
     patch.added_kc_questions = parsed
+  }
+
+  // ── The three convergence fields (spec §5) ────────────────────────────────
+  //
+  // ⚠ Every key is checked against the ids this instance could have. A stale id — from a
+  // question deleted between page load and save — is REFUSED rather than stored, because a
+  // hidden map full of ids nothing serves is how "6 of 8 visible" starts lying.
+  //
+  // ⚠⚠ AGAINST THE UNION OF BOTH MODES, NOT THE CURRENT ONE, and not against the set the
+  // CURRENT MARKET happens to build. An instructor who edits in Standard, flips to PMG and
+  // saves must not have their Standard work rejected — and `kc_share_gap` / `kc_below_cost`
+  // legitimately vanish for some markets while their stored entries remain valid.
+  if (has(data, 'kcHidden') || has(data, 'kcOrder') || has(data, 'kcOverrides')) {
+    // ⚠ Its own handle — the shared `db` is declared further down, after the whole patch
+    // has been validated, and this block must run inside the validation.
+    const stored = loadPricingConfig(
+      (await admin.firestore().collection(INSTANCES_COLLECTION).doc(gameInstanceId)
+        .collection('config').doc(CONFIG_DOC).get()).data(),
+    )
+    const knownAdded = new Set(
+      (patch.added_kc_questions as PricingAddedKcQuestion[] | undefined)?.map(q => q.id)
+      ?? stored.addedKcQuestions.map(q => q.id),
+    )
+    const knownId = (id: string) =>
+      PRICING_BUILT_IN_KC_IDS.has(id) || knownAdded.has(id) || id === DEBRIEF_ROW_ID
+
+    if (has(data, 'kcHidden')) {
+      const p = parseKcHidden(data.kcHidden)
+      for (const id of Object.keys(p)) {
+        if (!knownId(id)) throw new HttpsError('invalid-argument', `'${id}' is not a question in this game.`)
+      }
+      patch.kc_hidden = p
+    }
+
+    if (has(data, 'kcOrder')) {
+      const p = parseKcOrder(data.kcOrder)
+      for (const id of Object.keys(p)) {
+        if (!knownId(id)) throw new HttpsError('invalid-argument', `'${id}' is not a question in this game.`)
+      }
+      patch.kc_order = p
+    }
+
+    if (has(data, 'kcOverrides')) {
+      // ⚠⚠ THE LOCK IS ENFORCED HERE, NOT ONLY IN THE UI (spec §5). A greyed-out Edit
+      // button stops an instructor; it does not stop a stale tab, a replayed payload or a
+      // hand-made call. A locked question's text is RECOMPUTED from the market, so an
+      // override on it would be discarded on the next market edit — or, worse, kept and
+      // left contradicting the numbers beside it.
+      //
+      // ⚠ The classification is per MODE, and it is measured, not listed (kcLock.ts). The
+      // prospective config is used, so flipping `pmg` in the SAME save is classified
+      // against the mode being saved rather than the one being left.
+      const next: PricingConfig = {
+        ...stored,
+        pmg: has(data, 'pmg') && typeof data.pmg === 'boolean' ? data.pmg : stored.pmg,
+      }
+      const built = resolvePricingKcQuestions(next.market, next.pmg, next.labels)
+      const rejections = validateKcOverrides(parseKcOverrides(data.kcOverrides), {
+        builtInIds: PRICING_BUILT_IN_KC_IDS,
+        locked: lockedKcQuestionIds(next),
+        optionIds: new Map(built.map(q => [q.field, new Set(q.options.map(o => o.value))])),
+      })
+      if (rejections.length > 0) throw new HttpsError('invalid-argument', rejections[0].message)
+      patch.kc_overrides = parseKcOverrides(data.kcOverrides)
+    }
   }
 
   // ── Debrief ───────────────────────────────────────────────────────────────

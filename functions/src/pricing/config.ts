@@ -4,6 +4,16 @@ import {
 import {
   DEFAULT_STANDARD_STRATEGY, DEFAULT_PMG_STRATEGY, isPricingStrategy, type PricingStrategy,
 } from './strategy'
+import {
+  parseAddedKcQuestion as parseSharedAddedKcQuestion,
+  parseKcHidden, parseKcOrder, parseKcOverrides,
+  type KcHiddenMap, type KcOrderMap, type KcOverrideMap, type KcIdGuard,
+} from '../shared/kcSurface'
+
+export type { KcHiddenMap, KcOrderMap, KcOverrideMap, KcOverride } from '../shared/kcSurface'
+/** Re-exported so the callables import every KC-config concern from one place. */
+export { parseKcHidden, parseKcOrder, parseKcOverrides } from '../shared/kcSurface'
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Pricing Game (Cheyenne Shipping) — per-game constants. Kept as DATA (not
@@ -126,7 +136,13 @@ export interface PricingConfig {
   /** Inclusive round-count range each student's count is drawn from. */
   minRounds: number
   maxRounds: number
-  /** Is the knowledge check part of this instance's flow? */
+  /**
+   * Is the GRADED knowledge check part of this instance's flow?
+   *
+   * ⚠ GRADED ONLY (convergence spec D12). Off removes the mode's derived set and any
+   * graded addition. An UNGRADED free-text addition is governed by its own visibility,
+   * exactly as the debrief paragraph is.
+   */
   kcEnabled: boolean
   /** Instructor-added KC questions, rendered AFTER the derived set. */
   addedKcQuestions: PricingAddedKcQuestion[]
@@ -142,7 +158,47 @@ export interface PricingConfig {
    * leaves the server either.
    */
   seed: string | null
+  /**
+   * ⚠ THE THREE CONVERGENCE FIELDS (spec §5). All optional, all defaulting to exactly
+   * today's behaviour, all honoured in BOTH the serve path and the grader.
+   *
+   * ⚠⚠ ONE FLAT MAP PER FIELD SERVES BOTH MODES, AND THAT IS SAFE ONLY BECAUSE THE TWO
+   * BUILT-IN SETS SHARE NO IDS. Standard owns kc_base_share / kc_share_gap /
+   * kc_contribution / kc_below_cost; PMG owns kc_pmg_effective / kc_pmg_share /
+   * kc_pmg_undercut. An edit made in one mode is therefore stored under an id the other
+   * mode never serves — so it cannot silently apply to the set that is not being shown,
+   * and it is still there when the instructor flips back. A mode-scoped key would add a
+   * nesting level to achieve exactly what id-disjointness already guarantees.
+   * `pricingModeSwap.test` pins both directions.
+   */
+  kcHidden: KcHiddenMap
+  kcOrder: KcOrderMap
+  kcOverrides: KcOverrideMap
 }
+
+/**
+ * pricing's stages.
+ *
+ * ⚠ `post` means AFTER THE RESULTS. Unlike pd, pricing HAS a reveal: the debrief screen
+ * shows the competitor-strategy sentence ABOVE the question, deliberately (getQuestions.ts
+ * gates it on `finished_at`). Anything asked in this stage is asked by a student who has
+ * already been told how the competitor was programmed.
+ */
+export const PRICING_KC_STAGES = ['pre', 'post'] as const
+export type PricingKcStage = (typeof PRICING_KC_STAGES)[number]
+
+/**
+ * ⚠⚠ THE STAGE A STAGE-LESS STORED ADDITION LANDS IN — `pre`.
+ *
+ * DETERMINED, NOT COPIED. pricing's `pdGetQuestions` equivalent has always returned added
+ * questions in `kc.added`, and Play.tsx builds its pre-play list as
+ * `[...questions.kc.derived, ...questions.kc.added]` — so every added question pricing has
+ * ever stored is served BEFORE play. Scorecard's default is `post` and pd's is `pre`;
+ * neither is transferable, because each preserves where that game's own additions already
+ * are. Defaulting this to `post` would silently move every existing pricing addition to
+ * after the results.
+ */
+export const DEFAULT_ADDED_KC_STAGE: PricingKcStage = 'pre'
 
 /**
  * ONE instructor-added knowledge-check question.
@@ -167,6 +223,8 @@ export interface PricingAddedKcQuestion {
   correct_value?: string
   /** Shown after answering, like the derived ones. */
   explanation?: string
+  /** ⚠ Absent ⇒ `pre` — see DEFAULT_ADDED_KC_STAGE for why that, and not scorecard's. */
+  stage?: PricingKcStage
 }
 
 /** The instance's competitor rules — ONE per mode (spec §5). Stored in truth/main,
@@ -194,57 +252,42 @@ export const DEFAULT_PRICING_CONFIG: PricingConfig = {
   debriefEnabled: true,
   debriefPrompt: DEFAULT_DEBRIEF_PROMPT_STANDARD,
   seed: null,
+  kcHidden: {},
+  kcOrder: {},
+  kcOverrides: {},
 }
 
-/** Defensive parse of ONE instructor-added KC question. Returns null if unusable —
- *  loadPricingConfig drops those rather than throwing, so a half-written config can
- *  never make the game unplayable (the same posture as parseMarket). Copied from PD's
- *  parseAddedKcQuestion, including its two traps. */
-export function parseAddedKcQuestion(raw: unknown): PricingAddedKcQuestion | null {
-  if (typeof raw !== 'object' || raw === null) return null
-  const q = raw as Record<string, unknown>
-  const id = typeof q.id === 'string' ? q.id.trim() : ''
-  const prompt = typeof q.prompt === 'string' ? q.prompt.trim() : ''
-  if (!id || !prompt) return null
-  // An added question may NEVER take a derived field's id, or the grader's
-  // derived-first lookup would shadow it (and the student would be graded against the
-  // market instead of the instructor's key).
-  if (id.startsWith('kc_')) return null
+/**
+ * The `kc_` PREFIX is pricing's collision-guard strategy — the derived questions own that
+ * namespace in BOTH modes, and the grader looks them up FIRST, so an added question taking
+ * one would be silently shadowed and the student graded against the market instead of the
+ * instructor's key.
+ *
+ * ⚠ Scorecard passes an explicit id SET instead, because its built-in ids are unprefixed.
+ * The shared parser carries both strategies (spec §5); picking one unprotects the other.
+ */
+export const PRICING_KC_ID_GUARD: KcIdGuard = { kind: 'prefix', prefix: 'kc_' }
 
-  // ⚠ OPTIONAL FIELDS ARE OMITTED, NEVER SET TO undefined. These objects are written
-  // straight into Firestore, which REJECTS an undefined value outright — so an
-  // explanation-less question would fail the whole save rather than store cleanly.
-  const explanation = typeof q.explanation === 'string' && q.explanation.trim()
-    ? q.explanation.trim() : null
+/**
+ * Defensive parse of ONE instructor-added KC question. Returns null if unusable —
+ * loadPricingConfig drops those rather than throwing, so a half-written config can never
+ * make the game unplayable (the same posture as parseMarket).
+ *
+ * ⚠ THE BODY LIVES IN `shared/kcSurface` (convergence spec §5 — five near-copies, no two
+ * byte-identical). pricing passes its prefix guard and its two stages; an unrecognised
+ * stage is dropped, falling back to DEFAULT_ADDED_KC_STAGE.
+ */
+export function parseAddedKcQuestion(
+  raw: unknown,
+  guard: KcIdGuard | undefined = PRICING_KC_ID_GUARD,
+): PricingAddedKcQuestion | null {
+  const q = parseSharedAddedKcQuestion(raw, { guard, stages: PRICING_KC_STAGES })
+  return q === null ? null : (q as PricingAddedKcQuestion)
+}
 
-  const type: 'mc' | 'text' = q.type === 'mc' ? 'mc' : 'text'
-  if (type === 'text') {
-    // Free text cannot be auto-graded, so it is recorded and left UNGRADED — it never
-    // enters the KC score's numerator or denominator.
-    return { id, type, prompt, ...(explanation ? { explanation } : {}) }
-  }
-
-  const optionsRaw = Array.isArray(q.options) ? q.options : []
-  const options: { value: string; label: string }[] = []
-  for (const o of optionsRaw) {
-    if (typeof o !== 'object' || o === null) continue
-    const oo = o as Record<string, unknown>
-    const value = typeof oo.value === 'string' ? oo.value : ''
-    const label = typeof oo.label === 'string' ? oo.label : ''
-    if (value && label) options.push({ value, label })
-  }
-  if (options.length < 2) return null   // an mc question needs something to choose between
-
-  const key = typeof q.correct_value === 'string' ? q.correct_value : ''
-  // A key that names no offered option is dropped rather than kept: it would mark
-  // every student wrong, silently.
-  const hasKey = options.some(o => o.value === key)
-
-  return {
-    id, type, prompt, options,
-    ...(hasKey ? { correct_value: key } : {}),
-    ...(explanation ? { explanation } : {}),
-  }
+/** The stage a stored added question is asked in. ⚠ Absent ⇒ `pre` — see the constant. */
+export function addedKcStage(q: PricingAddedKcQuestion): PricingKcStage {
+  return q.stage ?? DEFAULT_ADDED_KC_STAGE
 }
 
 /** Clamp + sanity-check a stored round range. Returns the shipped defaults when the
@@ -289,8 +332,13 @@ export function loadPricingConfig(configData: Record<string, unknown> | undefine
     // had, rather than silently losing its knowledge check.
     kcEnabled: configData?.kc_enabled !== false,
     addedKcQuestions: (Array.isArray(configData?.added_kc_questions) ? configData.added_kc_questions : [])
-      .map(parseAddedKcQuestion)
+      .map(q => parseAddedKcQuestion(q))
       .filter((q): q is PricingAddedKcQuestion => q !== null),
+    // ⚠ Total on absent — an instance written before these existed reads as "no hides,
+    // authored order, no rewrites", which is exactly the behaviour it already had.
+    kcHidden: parseKcHidden(configData?.kc_hidden),
+    kcOrder: parseKcOrder(configData?.kc_order),
+    kcOverrides: parseKcOverrides(configData?.kc_overrides),
     debriefEnabled: configData?.debrief_enabled !== false,
     debriefPrompt: typeof promptRaw === 'string' && promptRaw.trim()
       ? promptRaw.trim()

@@ -1,8 +1,14 @@
 import type { PrepTextQuestion } from '@mygames/game-server'
 import { computeRound, type PricingMarketConfig } from './market'
 import {
-  DEFAULT_LABELS, DEFAULT_DEBRIEF_PROMPT_STANDARD, type PricingFirmLabels,
+  DEFAULT_LABELS, DEFAULT_DEBRIEF_PROMPT_STANDARD, addedKcStage,
+  type PricingFirmLabels, type PricingConfig, type PricingAddedKcQuestion,
+  type PricingKcStage, type KcOverrideMap,
 } from './config'
+import { applyKcOrder } from '../shared/kcSurface'
+
+export { PRICING_KC_STAGES, DEFAULT_ADDED_KC_STAGE, addedKcStage } from './config'
+export type { PricingKcStage } from './config'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Pricing Game — the KNOWLEDGE CHECK (spec §8) and the DEBRIEF (spec §9), as DATA
@@ -434,6 +440,217 @@ export function toClientKcQuestions(resolved: PricingKcQuestion[], participantId
     options: (q.ordered ? q.options : shuffleFor(participantId, q.field, q.options))
       .map(o => ({ value: o.value, label: o.label })),
   }))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// THE THREE CONVERGENCE FIELDS, APPLIED (spec §5).
+//
+// ⚠⚠ `pricingResolveKc` AND `pricingKcScoringSet` ARE THE ONE ANSWER TO "WHICH QUESTIONS
+// DOES THIS INSTANCE ASK?", and the serve path and the grader BOTH call them. A question
+// hidden from the display but left in the grader's scoring set is graded against an answer
+// the student never saw and inflates every denominator — spec §5's named worst case.
+//
+// ⚠⚠ THREE THINGS ARE TRUE HERE AND OF NO OTHER GAME:
+//   1. `ordered` — five of the seven built-ins must NOT shuffle. It stays PER QUESTION with
+//      shuffle as the default, so a categorical question added later is protected by
+//      forgetting the flag rather than by remembering it.
+//   2. THE MODE SWAP — two mutually exclusive sets on one boolean. The maps below are flat
+//      and that is safe ONLY because the two sets share no ids (see config.ts).
+//   3. THE SET IS CONFIG-DEPENDENT IN COUNT — `kc_share_gap` and `kc_below_cost` return
+//      null for some markets and vanish from both the served set and the denominator, so
+//      every map here must tolerate an id that is not currently served.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Every id EITHER mode can serve — the union of both sets.
+ *
+ * ⚠ THE UNION, NOT THE CURRENT MODE'S. A stored override for the other mode's question must
+ * survive a save made in this mode, and a question that `build()` returned null for is
+ * still a built-in. Validating against the current mode alone would reject an instructor's
+ * own stored edit the moment they flipped the toggle or narrowed the price band.
+ */
+export const PRICING_BUILT_IN_KC_IDS: ReadonlySet<string> = new Set(
+  [...STANDARD_KC, ...PMG_KC].map(s => s.field),
+)
+
+/**
+ * Apply an instructor's wording to one built-in.
+ *
+ * ⚠⚠ TEXT ONLY, BY CONSTRUCTION. `options` maps an EXISTING option value to a replacement
+ * LABEL, so this cannot add an option, drop one, reorder them, change a value, or touch
+ * `correct_value`. Grading compares option VALUES, so an override provably cannot move a
+ * score.
+ *
+ * ⚠ THE `ordered` FLAG AND THE SORT SURVIVE UNTOUCHED. The five ladder questions sort their
+ * options ascending by value; relabelling cannot reorder them, because the labels are
+ * replaced in place rather than rebuilt from the map.
+ */
+export function applyKcOverride(q: PricingKcQuestion, overrides: KcOverrideMap): PricingKcQuestion {
+  const o = overrides[q.field]
+  if (!o) return q
+  return {
+    ...q,
+    prompt: o.prompt ?? q.prompt,
+    options: o.options
+      ? q.options.map(opt => ({ value: opt.value, label: o.options![opt.value] ?? opt.label }))
+      : q.options,
+  }
+}
+
+/** Has an instructor rewritten this question? Drives the "edited" badge, nothing else. */
+export function isKcOverridden(id: string, overrides: KcOverrideMap): boolean {
+  return overrides[id] !== undefined
+}
+
+/**
+ * This instance's DERIVED set: the mode's questions, overridden, hidden ones removed, in
+ * the instance's order.
+ *
+ * ⚠ `kcEnabled: false` empties it entirely — every derived question is graded, and D12 says
+ * the toggle gates graded questions.
+ */
+export function pricingResolveKc(config: PricingConfig): PricingKcQuestion[] {
+  if (!config.kcEnabled) return []
+  const all = resolvePricingKcQuestions(config.market, config.pmg, config.labels)
+    .filter(q => config.kcHidden[q.field] !== true)
+    .map(q => applyKcOverride(q, config.kcOverrides))
+  return applyKcOrder(all, q => q.field, config.kcOrder)
+}
+
+/** An added question that carries a usable key, and therefore a mark. */
+export function isGradedAdded(q: PricingAddedKcQuestion): boolean {
+  return q.type === 'mc' && typeof q.correct_value === 'string'
+}
+
+/**
+ * This instance's ADDED questions: hidden ones removed, in order.
+ *
+ * ⚠⚠ D12 — `kcEnabled` GATES GRADED QUESTIONS ONLY. A graded addition disappears with the
+ * toggle; an UNGRADED free-text one does not, and is governed by its own visibility, the
+ * same rule the debrief paragraph follows.
+ *
+ * ⚠ Omitted `stage` ⇒ EVERY stage. The grader calls it that way deliberately: gradedness is
+ * stage-independent (D3).
+ */
+export function resolveAddedKcQuestions(
+  config: PricingConfig,
+  stage?: PricingKcStage,
+): PricingAddedKcQuestion[] {
+  const visible = config.addedKcQuestions.filter(q => config.kcHidden[q.id] !== true)
+  const gated = config.kcEnabled ? visible : visible.filter(q => !isGradedAdded(q))
+  const scoped = stage === undefined ? gated : gated.filter(q => addedKcStage(q) === stage)
+  return applyKcOrder(scoped, q => q.id, config.kcOrder)
+}
+
+/**
+ * ⚠⚠ THE GRADER'S SCORING SET — the whole of it, in one place.
+ *
+ * `pricingSubmitKcAnswer` calls exactly this and builds no list of its own. Visible AND
+ * graded: a hidden question is absent (never asked), and an ungraded one — free text, or an
+ * mc whose key named no offered option — is absent from numerator AND denominator.
+ *
+ * ⚠ A question `build()` returned null for is absent too, automatically: it never enters
+ * `resolvePricingKcQuestions`, so the denominator follows the market without a special case.
+ */
+export function pricingKcScoringSet(
+  config: PricingConfig,
+): { field: string; correct_value: string }[] {
+  return [
+    ...pricingResolveKc(config).map(q => ({ field: q.field, correct_value: q.correct_value })),
+    ...resolveAddedKcQuestions(config)
+      .filter(isGradedAdded)
+      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
+  ]
+}
+
+/**
+ * This instance's added questions IN THE CLIENT SHAPE — whitelisted field by field, and
+ * SHUFFLED.
+ *
+ * ⚠⚠ `stage` IS REQUIRED. In pd this argument was optional for an hour and dropping it at
+ * the call site served every after-results question BEFORE play — a mutation no unit test
+ * caught, because the tests passed the stage explicitly. Requiring it makes that a compile
+ * error. The grader's "every stage" case has its own call, `resolveAddedKcQuestions(config)`.
+ *
+ * ⚠ ADDED QUESTIONS ARE NEVER `ordered`. The flag exists for the five derived numeric
+ * ladders; an instructor typing a question has arbitrary labels in the order they typed
+ * them, and most people type the right answer first.
+ */
+export function addedToClientKcQuestions(
+  config: PricingConfig,
+  participantId: string,
+  stage: PricingKcStage,
+): { field: string; type: 'mc' | 'text'; prompt: string; options: { value: string; label: string }[] }[] {
+  return resolveAddedKcQuestions(config, stage).map(q => ({
+    field: q.id,
+    type: q.type,
+    prompt: q.prompt,
+    options: shuffleClientOptions(q.options ?? [], participantId, q.id),
+  }))
+}
+
+/**
+ * ⚠⚠ THE WHOLE `post` STAGE, IN ORDER — the debrief row plus any added question assigned
+ * there. pricing's debrief screen walks this list.
+ *
+ * The debrief is a ROW (spec D9): it takes part in `order` under its own id, and its
+ * visibility is `debriefEnabled` rather than the `hidden` map, because it is stored under
+ * `debrief_prompt` / `debrief_enabled` and NOT in the three convergence maps. That boundary
+ * is what makes folding it into the list a change with no storage migration.
+ *
+ * ⚠ `kind` routes the submit: `debrief` → pricingSubmitDebrief, `added` →
+ * pricingSubmitKcAnswer. The client must not infer it from `type`, because an added
+ * free-text question is also `type: 'text'` and goes to a different callable.
+ */
+export interface PricingPostStageQuestion {
+  kind: 'debrief' | 'added'
+  field: string
+  type: 'mc' | 'text'
+  prompt: string
+  placeholder?: string
+  options: { value: string; label: string }[]
+}
+
+export function pricingPostStageQuestions(config: PricingConfig): PricingPostStageQuestion[] {
+  const rows: PricingPostStageQuestion[] = []
+
+  if (config.debriefEnabled) {
+    rows.push({
+      kind: 'debrief',
+      field: debriefQuestion.field,
+      type: 'text',
+      // ⚠ The instructor's prompt from `debrief_prompt` — which itself defaults PER MODE
+      // (config.ts) — never the literal on the data object.
+      prompt: config.debriefPrompt,
+      placeholder: debriefQuestion.placeholder,
+      options: [],
+    })
+  }
+
+  for (const q of resolveAddedKcQuestions(config, 'post')) {
+    rows.push({ kind: 'added', field: q.id, type: q.type, prompt: q.prompt, options: q.options ?? [] })
+  }
+
+  // Ordered ACROSS both kinds, so an instructor can put an added question before the
+  // debrief paragraph. `applyKcOrder` is total on a partial map.
+  return applyKcOrder(rows, r => r.field, config.kcOrder)
+}
+
+/**
+ * The `post` stage as the STUDENT receives it — added options SHUFFLED.
+ *
+ * ⚠ The serve path composes THIS, so a test of this function tests the wiring rather than
+ * the primitive. Both previous passes lost a mutant to that distinction.
+ */
+export function postStageToClient(
+  config: PricingConfig,
+  participantId: string,
+): PricingPostStageQuestion[] {
+  return pricingPostStageQuestions(config).map(r => (
+    r.kind === 'added'
+      ? { ...r, options: shuffleClientOptions(r.options, participantId, r.field) }
+      : r
+  ))
 }
 
 // ── The debrief (spec §9) ──────────────────────────────────────────────────────

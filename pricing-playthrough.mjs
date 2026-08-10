@@ -1191,6 +1191,121 @@ async function main() {
   check(addScore === 1,
     `⚠ the score is 5/5 over the four derived + the graded added one — the free-text one is in NEITHER numerator nor denominator (got ${addScore})`)
 
+  // ── ⚠⚠ The shared KC surface, AT THE CALLABLES ──────────────────────────────
+  //
+  // ⚠⚠ TESTS WHAT THE CALLABLE SERVES, NOT THE HELPER. The unit suite passes stage and
+  // mode explicitly, so a mutation that drops an argument at the call site is invisible to
+  // it. That class of mutant survived first calibration in BOTH previous passes; this
+  // section is what catches it here.
+  console.log('\n[KC] The shared KC surface, at the callables')
+  {
+    const GIDK = `pricing-kc-${Date.now()}`
+    const KPID = 'pricing-kc-stu'
+
+    const inv0 = await callFn('pricingGetConfig', asDev(GIDK))
+    check(inv0.ok && inv0.result.kc != null, 'pricingGetConfig returns the kc inventory')
+    const kc0 = inv0.result.kc
+    check(kc0.builtIn.length === 4, `⚠ the STANDARD set is listed — four questions (${kc0.builtIn.length})`)
+    check(kc0.builtIn.every(q => q.locked), '⚠⚠ ALL FOUR are LOCKED — every one is built from the market')
+    check(kc0.builtIn.every(q => (q.lockReason ?? '').length > 0),
+      '⚠ …and every locked row carries a REASON')
+    check(kc0.debrief != null && kc0.debrief.id === 'debrief_reflection'
+      && kc0.debrief.stage === 'post' && kc0.debrief.graded === false,
+    '⚠⚠ THE DEBRIEF IS A ROW in the post stage, and never graded')
+    check(kc0.gradedCount === 4 && kc0.poolTotal === 5,
+      `the count line reads 5 in the pool, 4 graded (${kc0.poolTotal}/${kc0.gradedCount})`)
+
+    // ── Overrides refused on a locked question, AT THE CALLABLE ────────────
+    const ovLocked = await callFn('pricingUpdateConfig',
+      { ...asDev(GIDK), kcOverrides: { kc_base_share: { prompt: 'mine' } } })
+    check(!ovLocked.ok && (ovLocked.error ?? '').includes('cannot be edited'),
+      '⚠⚠ an override on a LOCKED question is REFUSED, with a reason')
+    const ovDebrief = await callFn('pricingUpdateConfig',
+      { ...asDev(GIDK), kcOverrides: { debrief_reflection: { prompt: 'x' } } })
+    check(!ovDebrief.ok, '⚠ an override aimed at the DEBRIEF row is refused')
+
+    // ── Hidden: not served, and out of the denominator ─────────────────────
+    const hid = await callFn('pricingUpdateConfig', { ...asDev(GIDK), kcHidden: { kc_contribution: true } })
+    check(hid.ok && hid.result.kc.gradedCount === 3,
+      `⚠ hiding one question moves the count line to 3 graded (${hid.result?.kc?.gradedCount})`)
+
+    await callFn('pricingBootstrap', asStudent(GIDK, KPID))
+    const qs = await callFn('pricingGetQuestions', asStudent(GIDK, KPID))
+    check(!qs.result.kc.derived.some(q => q.field === 'kc_contribution'),
+      '⚠⚠ a hidden question is NOT SERVED to the student')
+    check(qs.result.kc.derived.length === 3, `three derived questions remain (${qs.result.kc.derived.length})`)
+    const hidSubmit = await callFn('pricingSubmitKcAnswer',
+      asStudent(GIDK, KPID, { field: 'kc_contribution', answer: '0' }))
+    check(!hidSubmit.ok, '⚠⚠ …and SUBMITTING it is refused')
+
+    // ── ⚠ THE `ordered` FLAG, through the callable ─────────────────────────
+    const firstOf = {}
+    for (let i = 0; i < 25; i++) {
+      const r = await callFn('pricingGetQuestions', asStudent(GIDK, `pricing-ord-${i}`))
+      for (const q of r.result.kc.derived) {
+        firstOf[q.field] = firstOf[q.field] ?? new Set()
+        firstOf[q.field].add(q.options[0].value)
+      }
+    }
+    check(firstOf.kc_base_share.size === 1,
+      '⚠⚠ kc_base_share is a numeric ladder and does NOT shuffle — one order for everyone')
+    check(firstOf.kc_share_gap.size === 1, '⚠ …nor does kc_share_gap')
+    check(firstOf.kc_below_cost.size > 1,
+      '⚠⚠ …while the CATEGORICAL kc_below_cost DOES shuffle')
+
+    // ── ⚠ THE MODE SWAP, through the callable ──────────────────────────────
+    const toPmg = await callFn('pricingUpdateConfig', { ...asDev(GIDK), pmg: true })
+    check(toPmg.ok, 'flipping to PMG saves')
+    check(toPmg.result.kc.builtIn.length === 3
+      && toPmg.result.kc.builtIn.every(q => q.id.startsWith('kc_pmg')),
+    '⚠ the PMG set replaces the Standard one entirely')
+    check(toPmg.result.kc.gradedCount === 3,
+      `⚠⚠ …and the Standard HIDE does not apply here — 3 graded, not 2 (${toPmg.result.kc.gradedCount})`)
+
+    const backToStd = await callFn('pricingUpdateConfig', { ...asDev(GIDK), pmg: false })
+    check(backToStd.ok && backToStd.result.kc.gradedCount === 3,
+      '⚠⚠ …and flipping BACK restores the Standard hide — the edit was never lost')
+    check(backToStd.result.kcHidden.kc_contribution === true,
+      'the stored hide survived the round trip through PMG')
+
+    // ── The debrief row writes to the EXISTING key ─────────────────────────
+    const dbSave = await callFn('pricingUpdateConfig',
+      { ...asDev(GIDK), debriefPrompt: 'Rewritten by the row.' })
+    check(dbSave.ok, 'the debrief row\'s prompt saves')
+    const dbDoc = await getDoc(`pricing_game_instances/${GIDK}/config/main`)
+    check(dbDoc?.debrief_prompt?.stringValue === 'Rewritten by the row.',
+      '⚠⚠ …to the EXISTING `debrief_prompt` key — NO storage migration')
+    check(dbDoc?.kc_overrides == null || !JSON.stringify(dbDoc.kc_overrides).includes('debrief_reflection'),
+      '⚠ …and NOT into kc_overrides')
+
+    // ── ⚠ A POST-STAGE ADDITION is served after the results and IS graded ──
+    const staged = await callFn('pricingUpdateConfig', {
+      ...asDev(GIDK),
+      addedKcQuestions: [
+        { id: 'akc_pre', type: 'mc', prompt: 'Before play?', stage: 'pre',
+          options: [{ value: 'p0', label: 'P0' }, { value: 'p1', label: 'P1' }], correct_value: 'p0' },
+        { id: 'akc_post', type: 'mc', prompt: 'After the results?', stage: 'post',
+          options: [{ value: 'a0', label: 'A0' }, { value: 'a1', label: 'A1' },
+            { value: 'a2', label: 'A2' }, { value: 'a3', label: 'A3' }], correct_value: 'a0' },
+        { id: 'akc_legacy', type: 'mc', prompt: 'No stage — must stay BEFORE play.',
+          options: [{ value: 'l0', label: 'L0' }, { value: 'l1', label: 'L1' }], correct_value: 'l0' },
+      ],
+    })
+    check(staged.ok, 'added questions with an explicit stage save')
+    check(staged.result.kc.added.find(q => q.id === 'akc_legacy').stage === 'pre',
+      '⚠⚠ a stage-less addition stays BEFORE play — nothing already stored moves')
+
+    const sq = await callFn('pricingGetQuestions', asStudent(GIDK, 'pricing-stage-stu'))
+    const preIds = sq.result.kc.added.map(q => q.field)
+    const postIds = sq.result.postStage.map(q => q.field)
+    check(preIds.includes('akc_pre') && preIds.includes('akc_legacy') && !preIds.includes('akc_post'),
+      '⚠⚠ the pre list holds the pre + legacy questions and NOT the post one')
+    check(postIds.includes('akc_post') && postIds[0] === 'debrief_reflection',
+      '⚠ the post stage leads with the debrief row and carries the after-results question')
+    check(!JSON.stringify(sq.result.postStage).includes('correct_value'),
+      '⚠ the post payload ships no answer key')
+  }
+
   console.log(`\n${failed === 0 ? '✅' : '❌'} pricing harness: ${passed} passed, ${failed} failed`)
   process.exit(failed === 0 ? 0 : 1)
 }

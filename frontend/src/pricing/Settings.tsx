@@ -6,9 +6,13 @@ import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   pricingGetConfig, pricingUpdateConfig, pricingInstructorSession, CLASSROOM_URL,
-  type PricingConfigResult, type PricingAddedKcQuestion, type PricingLabels,
+  type PricingConfigResult, type PricingLabels,
 } from './api'
 import { MarketFacts, Formulas } from './MarketPanel'
+import {
+  KnowledgeCheckSettings,
+  type KcSettingsDraft, type KcSettingsQuestion, type KcSettingsStage,
+} from '../shared/KnowledgeCheckSettings'
 import { formatPrice } from './format'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -43,18 +47,34 @@ import { formatPrice } from './format'
 //     a choice of one.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const shortId = () =>
-  (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).slice(2, 10))
+/**
+ * Pricing's two stages, for the shared block.
+ *
+ * ⚠⚠ `post` READS "AFTER THE RESULTS", NOT pd's "After play" AND NOT scorecard's "After the
+ * reveal". Pricing DOES have a reveal — the debrief screen shows the competitor-strategy
+ * sentence above the question — so the note says so plainly: anything an instructor puts
+ * here is answered by a student who has already been told how the competitor was
+ * programmed. That is exactly the sort of thing they need to know before writing one.
+ */
+const KC_STAGES: KcSettingsStage[] = [
+  { id: 'pre', label: 'Before play', note: 'Asked before the first round.' },
+  {
+    id: 'post',
+    label: 'After the results',
+    note: 'Asked once the game is over. ⚠ Students have already been shown their final '
+      + 'results AND the sentence saying how the competitor was programmed, so anything you '
+      + 'ask here is answered by someone who already knows what the competitor was doing.',
+  },
+]
+
+/** ⚠ The debrief row's id IS its stored answer key. Nothing moves. */
+const DEBRIEF_ROW_ID = 'debrief_reflection'
 
 const field: CSSProperties = {
   width: '100%', fontSize: '0.95rem', padding: '0.45rem 0.55rem',
   borderRadius: 4, border: `1px solid ${colors.inputBorder}`, boxSizing: 'border-box',
 }
 const numField: CSSProperties = { ...field, width: '7rem' }
-const smallBtn: CSSProperties = {
-  padding: '0.25rem 0.55rem', fontSize: '0.85rem', cursor: 'pointer',
-  borderRadius: 4, border: `1px solid ${colors.inputBorder}`, background: '#fff',
-}
 const sectionStyle: CSSProperties = {
   border: `1px solid ${colors.sectionBorder}`, borderRadius: 8,
   padding: '1rem 1.25rem', marginBottom: '1.25rem',
@@ -90,49 +110,81 @@ export default function Settings() {
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
-  // Add-question form.
-  const [newType, setNewType] = useState<'mc' | 'text'>('mc')
-  const [newPrompt, setNewPrompt] = useState('')
-  const [newOptions, setNewOptions] = useState<string[]>(['', ''])
-  const [newCorrect, setNewCorrect] = useState(0)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // THE KNOWLEDGE CHECK — the SHARED block (convergence spec §2, §8.2).
+  //
+  // ⚠ The composer, the added-question list, the id minting and the standalone debrief
+  // textarea all moved into `shared/KnowledgeCheckSettings`. Pricing supplies only what is
+  // its own: the stage labels, the toggle copy, and the debrief↔row translation.
+  //
+  // ⚠ THE OPTION-REMOVAL GAP IS FIXED BY ADOPTION, not by a change here. Pricing's own add
+  // form had "Add option" and no way to take one back — an instructor who added a fifth
+  // option had to reload. The shared form already ships a ✕ per option (down to the
+  // two-option minimum), so removing pricing's form removes the bug.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const [kcDraft, setKcDraft] = useState<KcSettingsDraft | null>(null)
 
   useEffect(() => {
     if (session.kind !== 'ready') return
     pricingGetConfig()
-      .then(setCfg)
+      .then(r => { setCfg(r); setKcDraft(seedKc(r)) })
       .catch(e => setErr(e instanceof Error ? e.message : 'Failed to load settings.'))
   }, [session.kind])
 
   const patch = (p: Partial<PricingConfigResult>) => setCfg(c => (c ? { ...c, ...p } : c))
+
+  /** The server's inventory in the shared block's shape — the debrief row included. */
+  function kcQuestions(r: PricingConfigResult): KcSettingsQuestion[] {
+    return [...r.kc.builtIn, ...r.kc.added, r.kc.debrief]
+  }
+
+  /**
+   * ⚠⚠ THE DEBRIEF ROW IS BACKED BY `debriefPrompt` / `debriefEnabled`, NOT BY THE THREE
+   * CONVERGENCE MAPS — that is what makes folding it into the list a UI change with NO
+   * STORAGE MIGRATION (spec D9). Inside the block it behaves like any row, so its edits
+   * land in `overrides[debrief_reflection]` and `hidden[debrief_reflection]`; this pair
+   * translates those to and from the real config keys at the boundary, so the server never
+   * sees either. It ALSO refuses them, so a hand-made call cannot write one nothing reads.
+   */
+  function seedKc(r: PricingConfigResult): KcSettingsDraft {
+    return {
+      enabled: r.kcEnabled,
+      hidden: {
+        ...r.kcHidden,
+        ...(r.debriefEnabled ? {} : { [DEBRIEF_ROW_ID]: true }),
+      },
+      order: { ...r.kcOrder },
+      overrides: { ...r.kcOverrides },
+      added: r.addedKcQuestions.map(q => ({ ...q })),
+    }
+  }
+
+  /** The draft, split back into the callable's real field names. */
+  function kcPatch(d: KcSettingsDraft) {
+    const { [DEBRIEF_ROW_ID]: debriefHidden, ...hidden } = d.hidden
+    const { [DEBRIEF_ROW_ID]: debriefOverride, ...overrides } = d.overrides
+    return {
+      kcEnabled: d.enabled,
+      kcHidden: hidden,
+      kcOrder: d.order,
+      kcOverrides: overrides,
+      // ⚠ The shared draft types `stage` as a plain string (it is generic across six
+      // games); pricing's callable takes its own two-value union. Narrowed here, and the
+      // server drops anything it does not recognise anyway.
+      addedKcQuestions: d.added.map(q => ({
+        ...q,
+        stage: q.stage === 'post' ? ('post' as const) : ('pre' as const),
+      })),
+      debriefEnabled: debriefHidden !== true,
+      // ⚠ Falls back to what is stored, so a save that never touched the debrief sends the
+      // prompt unchanged rather than blanking it — the callable rejects an empty prompt.
+      debriefPrompt: debriefOverride?.prompt ?? cfg?.debriefPrompt ?? '',
+    }
+  }
   const setMarket = (k: keyof PricingConfigResult['market'], v: number) =>
     setCfg(c => (c ? { ...c, market: { ...c.market, [k]: v } } : c))
   const setLabel = (k: keyof PricingLabels, v: string) =>
     setCfg(c => (c ? { ...c, labels: { ...c.labels, [k]: v } } : c))
-
-  const addQuestion = () => {
-    if (!cfg) return
-    if (!newPrompt.trim()) { setErr('Enter a prompt for the new question.'); return }
-    let options: { value: string; label: string }[] | undefined
-    let correct_value: string | undefined
-    if (newType === 'mc') {
-      const labels = newOptions.map(o => o.trim()).filter(Boolean)
-      if (labels.length < 2) { setErr('A multiple-choice question needs at least two options.'); return }
-      options = labels.map(label => ({ value: `o_${shortId()}`, label }))
-      correct_value = options[Math.min(newCorrect, options.length - 1)].value
-    }
-    const q: PricingAddedKcQuestion = {
-      // `akc_` — never `kc_`, which the derived questions own. The server refuses that
-      // prefix outright, because the grader looks up derived questions FIRST and an
-      // added one taking a derived id would be silently shadowed.
-      id: `akc_${shortId()}`,
-      type: newType,
-      prompt: newPrompt.trim(),
-      ...(options ? { options } : {}),
-      ...(correct_value ? { correct_value } : {}),
-    }
-    patch({ addedKcQuestions: [...cfg.addedKcQuestions, q] })
-    setNewPrompt(''); setNewOptions(['', '']); setNewCorrect(0); setErr(null)
-  }
 
   const save = async () => {
     if (!cfg) return
@@ -144,14 +196,12 @@ export default function Settings() {
         market: cfg.market,
         minRounds: cfg.minRounds,
         maxRounds: cfg.maxRounds,
-        kcEnabled: cfg.kcEnabled,
-        addedKcQuestions: cfg.addedKcQuestions,
-        debriefEnabled: cfg.debriefEnabled,
-        debriefPrompt: cfg.debriefPrompt,
+        ...(kcDraft ? kcPatch(kcDraft) : {}),
       })
       // Show what was STORED (server-normalized), not what we hoped we sent — and the
       // re-derived KC preview and equilibrium the new market produces.
       setCfg(res)
+      setKcDraft(seedKc(res))
       setMsg('Saved.')
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Save failed.')
@@ -367,133 +417,33 @@ export default function Settings() {
         )}
       </Section>
 
-      {/* ── Knowledge check ─────────────────────────────────────────────────── */}
-      <Section title="Knowledge check">
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', fontSize: '0.9rem' }}>
-          <input
-            data-testid="pricing-set-kc-enabled" type="checkbox"
-            checked={cfg.kcEnabled} onChange={e => patch({ kcEnabled: e.target.checked })}
-          />
-          Include the knowledge check
-        </label>
-
-        {cfg.kcEnabled && (
-          <>
-            <div style={{ marginTop: '1rem' }}>
-              <p style={{ ...hint, marginTop: 0 }}>
-                These {cfg.derivedKcPreview.length} question(s) are <strong>derived from the
-                market above</strong> every time they are served and every time they are
-                graded, so they can never disagree with the screen a student is looking at.
-                They are not editable — change the market and they follow.
-              </p>
-              <ol data-testid="pricing-set-derived-kc" style={{ margin: '0.5rem 0 0', paddingLeft: '1.2rem', fontSize: '0.85rem', color: colors.text }}>
-                {cfg.derivedKcPreview.map(q => (
-                  <li key={q.field} style={{ marginBottom: '0.35rem', lineHeight: 1.5 }}>
-                    {q.prompt}{' '}
-                    <span style={{ color: colors.textSecondary }}>
-                      (answer: {q.options.find(o => o.value === q.correct_value)?.label ?? q.correct_value})
-                    </span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-
-            {/* Instructor's own questions — a SEPARATE list, own keys, own grading. */}
-            <div style={{ marginTop: '1.25rem' }}>
-              <p style={{ ...hint, marginTop: 0, fontWeight: 600 }}>Your own extra questions</p>
-              {cfg.addedKcQuestions.length === 0 && <p style={hint}>None yet.</p>}
-              {cfg.addedKcQuestions.map(q => (
-                <div key={q.id} data-testid={`pricing-set-added-${q.id}`} style={{ border: `1px solid ${colors.borderMid}`, borderRadius: 6, padding: '0.5rem 0.7rem', marginTop: '0.4rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
-                    <span style={{ fontSize: '0.88rem' }}>{q.prompt}</span>
-                    <button
-                      style={smallBtn}
-                      onClick={() => patch({ addedKcQuestions: cfg.addedKcQuestions.filter(x => x.id !== q.id) })}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                  <div style={{ fontSize: '0.78rem', color: colors.textSecondary, marginTop: '0.2rem' }}>
-                    {q.type === 'text'
-                      ? 'Free text — recorded, never graded'
-                      : `${(q.options ?? []).length} options · answer: ${(q.options ?? []).find(o => o.value === q.correct_value)?.label ?? '—'}`}
-                  </div>
-                </div>
-              ))}
-
-              <div style={{ marginTop: '0.8rem', border: `1px dashed ${colors.borderMid}`, borderRadius: 6, padding: '0.7rem 0.8rem' }}>
-                <div style={row}>
-                  <Labelled label="Type">
-                    <select
-                      data-testid="pricing-set-new-type" style={{ ...field, width: '10rem' }}
-                      value={newType} onChange={e => setNewType(e.target.value as 'mc' | 'text')}
-                    >
-                      <option value="mc">Multiple choice</option>
-                      <option value="text">Free text (ungraded)</option>
-                    </select>
-                  </Labelled>
-                </div>
-                <div style={{ marginTop: '0.5rem' }}>
-                  <Labelled label="Prompt">
-                    <input
-                      data-testid="pricing-set-new-prompt" style={field}
-                      value={newPrompt} onChange={e => setNewPrompt(e.target.value)}
-                    />
-                  </Labelled>
-                </div>
-                {newType === 'mc' && (
-                  <div style={{ marginTop: '0.5rem' }}>
-                    {newOptions.map((o, i) => (
-                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.3rem' }}>
-                        <input
-                          type="radio" name="pricing-new-correct" checked={newCorrect === i}
-                          onChange={() => setNewCorrect(i)} title="Correct answer"
-                        />
-                        <input
-                          data-testid={`pricing-set-new-option-${i}`} style={field}
-                          value={o}
-                          onChange={e => setNewOptions(opts => opts.map((x, j) => (j === i ? e.target.value : x)))}
-                        />
-                      </div>
-                    ))}
-                    <button style={{ ...smallBtn, marginTop: '0.4rem' }} onClick={() => setNewOptions(o => [...o, ''])}>
-                      Add option
-                    </button>
-                  </div>
-                )}
-                <button data-testid="pricing-set-add-question" style={{ ...smallBtn, marginTop: '0.6rem' }} onClick={addQuestion}>
-                  Add question
-                </button>
-              </div>
-            </div>
-          </>
-        )}
-      </Section>
-
-      {/* ── Debrief ─────────────────────────────────────────────────────────── */}
-      <Section title="Debrief">
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', fontSize: '0.9rem' }}>
-          <input
-            data-testid="pricing-set-debrief-enabled" type="checkbox"
-            checked={cfg.debriefEnabled} onChange={e => patch({ debriefEnabled: e.target.checked })}
-          />
-          Ask for a debrief paragraph
-        </label>
-        {cfg.debriefEnabled && (
-          <div style={{ marginTop: '0.7rem' }}>
-            <Labelled label="Prompt">
-              <textarea
-                data-testid="pricing-set-debrief-prompt" style={{ ...field, minHeight: '5rem', resize: 'vertical' }}
-                value={cfg.debriefPrompt} onChange={e => patch({ debriefPrompt: e.target.value })}
-              />
-            </Labelled>
-            <p style={hint}>
-              Ungraded. The default differs by mode — switch the PMG toggle on a fresh
-              instance and this reverts to the price-matching version of the question.
-            </p>
-          </div>
-        )}
-      </Section>
+      {/* ═══ THE KNOWLEDGE CHECK — the SHARED block (convergence spec §2) ════ */}
+      {kcDraft && (
+        <KnowledgeCheckSettings
+          testIdPrefix="pricing-kc"
+          questions={kcQuestions(cfg)}
+          stages={KC_STAGES}
+          draft={kcDraft}
+          onChange={setKcDraft}
+          // ⚠ D12 — THE TOGGLE GATES GRADED QUESTIONS ONLY, and the copy says exactly that.
+          // The debrief paragraph has its own visibility checkbox in the list below.
+          enableNote={(
+            <>
+              Off removes the questions derived from your market and any graded question you
+              have added. ⚠ It does <em>not</em> remove the debrief paragraph, or any
+              free-text question you have added — those are ungraded, and each has its own
+              visibility checkbox in the list below.
+            </>
+          )}
+          // ⚠ NO STARTED-BANNER IS PASSED, DELIBERATELY. Pricing has two started SIGNALS
+          // (`anyRoundsPlayed`, `anyRoundsDrawn`) and two warnings that use them — but both
+          // warnings live inside other sections and their copy is entirely about those
+          // sections (editing the market; changing the round range). Neither is a
+          // page-level banner like scorecard's, and writing new KC-specific banner copy
+          // here would be inventing a mechanism this page does not have. Raised in the
+          // handoff for Elena's call — same position pd is in.
+        />
+      )}
 
       {/* ── Save ────────────────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '2rem' }}>

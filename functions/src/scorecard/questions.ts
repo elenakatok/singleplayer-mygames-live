@@ -509,6 +509,17 @@ export function resolveKcQuestions(
   config: ScorecardConfig,
   truth: ScorecardTruth,
 ): KcQuestion[] {
+  // ⚠⚠ THE `kcEnabled` GATE LIVES HERE, not in the caller. It used to be a
+  // `config.kcEnabled ? resolveKcQuestions(...) : []` ternary in `getQuestions` ALONE —
+  // which meant `kcScoringSet` (and therefore the grader's denominator) still counted all
+  // ten built-ins on an instance whose students were served none of them. The blanket
+  // `if (!kcEnabled) throw` in submitKcAnswer hid that, and removing that gate for D12
+  // would have exposed it. One function decides; both callers get the same answer.
+  //
+  // ⚠ The built-ins are ALL graded, so gating them here is exactly D12: the toggle removes
+  // graded questions. Ungraded additions survive it — see `resolveAddedKcQuestions`.
+  if (!config.kcEnabled) return []
+
   const all = scorecardKcQuestions(config, truth)
     .filter(q => config.kcHidden[q.id] !== true)
     .map(q => applyKcOverride(q, config.kcOverrides))
@@ -520,13 +531,26 @@ export function resolveKcQuestions(
     ))
 }
 
-/** One instance's added questions: hidden ones removed, in order, for ONE stage. */
+/**
+ * One instance's added questions: hidden ones removed, in order, for ONE stage.
+ *
+ * ⚠⚠ D12 — `kcEnabled` GATES GRADED QUESTIONS ONLY. A graded addition disappears with the
+ * toggle, exactly as the built-in ten do. An UNGRADED free-text addition does NOT: it is
+ * governed by its own visibility checkbox, the same rule the §10 free-text steps follow.
+ *
+ * ⚠ ALIGNED TO PD. Scorecard used to gate ALL additions on the toggle — the gating lived in
+ * `getQuestions` as `config.kcEnabled ? resolve(...) : []`, which also meant the grader's
+ * scoring set (which calls this with no stage) disagreed with the serve path about what an
+ * instance asks. Moving the rule in here makes one function answer that question for both,
+ * and makes scorecard and pd say the same thing about the same toggle.
+ */
 export function resolveAddedKcQuestions(
   config: ScorecardConfig,
   stage?: KcStage,
 ): ScorecardAddedKcQuestion[] {
   const visible = config.addedKcQuestions.filter(q => config.kcHidden[q.id] !== true)
-  const scoped = stage === undefined ? visible : visible.filter(q => addedKcStage(q) === stage)
+  const gated = config.kcEnabled ? visible : visible.filter(q => !isGradedAdded(q))
+  const scoped = stage === undefined ? gated : gated.filter(q => addedKcStage(q) === stage)
   return applyKcOrder(scoped, q => q.id, config.kcOrder)
 }
 

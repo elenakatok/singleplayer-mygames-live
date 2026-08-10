@@ -68,11 +68,14 @@ export const scorecardGetQuestions = onCall({ cors: SCORECARD_CORS_ORIGINS }, as
   // ⚠⚠ HIDDEN, ORDER AND OVERRIDES ARE APPLIED BY `resolveKcQuestions`, WHICH THE GRADER
   // ALSO CALLS. Do not filter here as well — a second filter is a second answer to "which
   // questions exist", and the two would eventually disagree (spec §5).
-  const resolved = config.kcEnabled ? resolveKcQuestions(config, truth) : []
+  const resolved = resolveKcQuestions(config, truth)
   const pre = questionsForStage(resolved, 'pre')
   const post = questionsForStage(resolved, 'post')
-  const addedPre = config.kcEnabled ? resolveAddedKcQuestions(config, 'pre') : []
-  const addedPost = config.kcEnabled ? resolveAddedKcQuestions(config, 'post') : []
+  // ⚠ NO `kcEnabled ?` TERNARY HERE ANY MORE — D12's rule lives inside the resolver, so
+  // the serve path and the grader's scoring set cannot disagree about it. An ungraded
+  // free-text addition survives the toggle with its own visibility; a graded one does not.
+  const addedPre = resolveAddedKcQuestions(config, 'pre')
+  const addedPost = resolveAddedKcQuestions(config, 'post')
 
   const noticing = noticingQuestion(config)
   const linking = linkingQuestion(config)

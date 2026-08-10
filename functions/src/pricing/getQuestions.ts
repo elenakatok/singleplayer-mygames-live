@@ -7,7 +7,8 @@ import {
 } from './config'
 import { STRATEGY_DESCRIPTIONS } from './strategy'
 import {
-  resolvePricingKcQuestions, toClientKcQuestions, shuffleClientOptions, debriefQuestion,
+  pricingResolveKc, toClientKcQuestions, addedToClientKcQuestions, postStageToClient,
+  debriefQuestion,
 } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -61,9 +62,12 @@ export const pricingGetQuestions = onCall({ cors: PRICING_CORS_ORIGINS }, async 
   const pData = participantSnap.data() ?? {}
   const finished = pData.finished_at != null
 
-  const derived = config.kcEnabled
-    ? toClientKcQuestions(resolvePricingKcQuestions(config.market, config.pmg, config.labels), participantId)
-    : []
+  // ⚠⚠ HIDDEN, ORDER AND OVERRIDES ARE APPLIED BY `pricingResolveKc`, WHICH THE GRADER
+  // ALSO CALLS (through `pricingKcScoringSet`). Do not filter again here — a second filter
+  // is a second answer to "which questions exist", and the two would eventually disagree
+  // (spec §5). The `ordered` flag still decides shuffling, per question, inside
+  // `toClientKcQuestions`.
+  const derived = toClientKcQuestions(pricingResolveKc(config), participantId)
 
   // Added questions, whitelisted field by field — never spread, so a stored
   // `correct_value` cannot ride along.
@@ -71,14 +75,10 @@ export const pricingGetQuestions = onCall({ cors: PRICING_CORS_ORIGINS }, async 
   // ⚠ SHUFFLED TOO. An instructor typing a question into Settings has no reason to think
   // about where they put the right answer, and most people type it first — so the same
   // tell the derived set just lost would come straight back in through this door.
-  const added = config.kcEnabled
-    ? config.addedKcQuestions.map(q => ({
-        field: q.id,
-        type: q.type,
-        prompt: q.prompt,
-        options: shuffleClientOptions(q.options ?? [], participantId, q.id),
-      }))
-    : []
+  // ⚠ PRE-STAGE ONLY. Added questions used to be stage-less and every one of them was
+  // appended here, before play. They are stage-aware now, so this is explicitly the `pre`
+  // ones and the `post` ones are served below — a question cannot appear twice.
+  const added = addedToClientKcQuestions(config, participantId, 'pre')
 
   const answers = (pData.kc_static_answers ?? {}) as Record<string, unknown>
   const answered = [...derived, ...added].filter(q => answers[q.field] != null).map(q => q.field)
@@ -106,6 +106,21 @@ export const pricingGetQuestions = onCall({ cors: PRICING_CORS_ORIGINS }, async 
         }
       : null,
     kcAnswered: answered,
+    /**
+     * ⚠⚠ THE WHOLE `post` STAGE, IN ORDER — the debrief row plus any added question the
+     * instructor put after the results. The debrief screen walks this list.
+     *
+     * ⚠ ANSWERED IS READ FROM TWO MAPS, because the two kinds submit to two callables: the
+     * debrief lands in `debrief_answers` (pricingSubmitDebrief) and an added question in
+     * `kc_static_answers` (pricingSubmitKcAnswer). Presence of the key IS "answered", and
+     * the client resumes at the first row whose flag is false.
+     */
+    postStage: postStageToClient(config, participantId).map(r => ({
+      ...r,
+      answered: r.kind === 'debrief'
+        ? (pData.debrief_answers ?? {})[r.field] != null
+        : (pData.kc_static_answers ?? {})[r.field] != null,
+    })),
     debriefSubmitted: (pData.debrief_answers ?? {})[debriefQuestion.field] != null,
     /** ⚠ null until the game is over — see the header. */
     competitorReveal,

@@ -561,3 +561,50 @@ describe('the three fields are total on absent, and default to current behaviour
     expect(visibleKcIds(['a', 'b', 'c'], { b: true })).toEqual(['a', 'c'])
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// D12 ALIGNMENT WITH PD — the toggle gates GRADED questions only.
+//
+// ⚠ Scorecard used to gate ALL additions on `kcEnabled`, and pd did not. pd was right
+// (D12 is explicit), so scorecard moved. This block pins the aligned rule and the two
+// things that had to move with it.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('⚠⚠ D12 — kcEnabled gates GRADED questions only (aligned to pd)', () => {
+  it('off removes the built-in ten and any GRADED addition', () => {
+    const c = cfg({ kcEnabled: false, addedKcQuestions: [addedMc('akc_graded')] })
+    expect(resolveKcQuestions(c, DEFAULT_TRUTH)).toHaveLength(0)
+    expect(resolveAddedKcQuestions(c).map(q => q.id)).not.toContain('akc_graded')
+    expect(kcScoringSet(c, DEFAULT_TRUTH)).toHaveLength(0)
+  })
+
+  it('⚠ …and LEAVES an ungraded free-text addition, which has its own visibility', () => {
+    // MUTANT CAUGHT: the toggle gating EVERY addition — scorecard's old behaviour, and the
+    // thing this alignment removes.
+    const c = cfg({ kcEnabled: false, addedKcQuestions: [addedText('akc_free')] })
+    expect(resolveAddedKcQuestions(c).map(q => q.id)).toEqual(['akc_free'])
+    expect(kcScoringSet(c, DEFAULT_TRUTH)).toHaveLength(0)
+  })
+
+  it('…and its own hidden flag still removes it', () => {
+    const c = cfg({
+      kcEnabled: false,
+      addedKcQuestions: [addedText('akc_free')],
+      kcHidden: { akc_free: true },
+    })
+    expect(resolveAddedKcQuestions(c)).toHaveLength(0)
+  })
+
+  it('⚠⚠ the GRADER agrees with the serve path when the toggle is off', () => {
+    // MUTANT CAUGHT: leaving the `kcEnabled` gate in `getQuestions` alone, as it was. The
+    // grader's `kcScoringSet` calls `resolveKcQuestions` directly, so with the gate in the
+    // caller only, an instance with the KC OFF served ZERO questions while the denominator
+    // still counted all TEN. The blanket `if (!kcEnabled) throw` in submitKcAnswer hid it;
+    // removing that gate for D12 would have exposed it.
+    const c = cfg({ kcEnabled: false })
+    expect(resolveKcQuestions(c, DEFAULT_TRUTH)).toHaveLength(0)
+    expect(kcScoringSet(c, DEFAULT_TRUTH)).toHaveLength(0)
+    // …and with it ON, both are the full set again.
+    expect(kcScoringSet(cfg(), DEFAULT_TRUTH)).toHaveLength(10)
+  })
+})

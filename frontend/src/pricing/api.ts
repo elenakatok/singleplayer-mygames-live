@@ -162,6 +162,53 @@ export type PricingKcQuestionClient = {
   type?: 'mc' | 'text'
 }
 
+export type PricingPostStageQuestionClient = {
+  /** `debrief` → pricingSubmitDebrief · `added` → pricingSubmitKcAnswer. */
+  kind: 'debrief' | 'added'
+  field: string
+  type: 'mc' | 'text'
+  prompt: string
+  placeholder?: string
+  /** Empty for free text. Shuffled per student for an added mc question. */
+  options: { value: string; label: string }[]
+  /** Presence of the stored answer. Drives resume — the first false is where they land. */
+  answered: boolean
+}
+
+/** ⚠ `post` means AFTER THE RESULTS — pricing shows the competitor-strategy sentence. */
+export type PricingKcStage = 'pre' | 'post'
+
+export type PricingKcOverride = { prompt?: string; options?: Record<string, string> }
+
+export type PricingKcInventoryQuestion = {
+  id: string
+  kind: 'builtin' | 'added'
+  stage: PricingKcStage
+  prompt: string
+  options: { value: string; label: string }[]
+  correctValue: string | null
+  graded: boolean
+  visible: boolean
+  locked: boolean
+  lockReason: string | null
+  overridden: boolean
+  originalPrompt?: string
+  originalOptions?: { value: string; label: string }[]
+  type?: 'mc' | 'text'
+  order: number | null
+}
+
+export type PricingKcInventory = {
+  stages: readonly PricingKcStage[]
+  builtIn: PricingKcInventoryQuestion[]
+  added: PricingKcInventoryQuestion[]
+  /** ⚠ The debrief paragraph, AS A ROW (spec D9). Backed by debriefPrompt/debriefEnabled. */
+  debrief: PricingKcInventoryQuestion
+  poolTotal: number
+  visibleCount: number
+  gradedCount: number
+}
+
 export type PricingDebriefQuestionClient = {
   field: string
   /** The MODE's prompt (spec §9), or the instructor's edit of it. */
@@ -185,6 +232,15 @@ export type PricingQuestionsResult = {
   debrief: PricingDebriefQuestionClient | null
   kcAnswered: string[]
   debriefSubmitted: boolean
+  /**
+   * ⚠⚠ THE WHOLE `post` STAGE, IN SERVED ORDER — the debrief row plus any added question
+   * the instructor put after the results. The debrief screen walks this list.
+   *
+   * ⚠ `kind` ROUTES THE SUBMIT and `type` does not: an added free-text question is also
+   * `type: 'text'` but goes to pricingSubmitKcAnswer, while the debrief goes to
+   * pricingSubmitDebrief.
+   */
+  postStage: PricingPostStageQuestionClient[]
   /**
    * "Your competitor was programmed to …" (spec §9).
    *
@@ -325,6 +381,8 @@ export type PricingAddedKcQuestion = {
   options?: { value: string; label: string }[]
   correct_value?: string
   explanation?: string
+  /** ⚠ Absent ⇒ `pre`, which is where every question pricing has already stored is served. */
+  stage?: PricingKcStage
 }
 
 export type PricingConfigResult = {
@@ -351,6 +409,12 @@ export type PricingConfigResult = {
   anyRoundsDrawn: boolean
   /** Has any student actually played a round? Drives the market-edit warning. */
   anyRoundsPlayed: boolean
+  /** ⚠ The three convergence fields (spec §5). */
+  kcHidden: Record<string, boolean>
+  kcOrder: Record<string, number>
+  kcOverrides: Record<string, PricingKcOverride>
+  /** Everything the shared knowledge-check block renders. */
+  kc: PricingKcInventory
 }
 
 export const pricingGetConfig = () => callFn<PricingConfigResult>('pricingGetConfig')
@@ -367,4 +431,7 @@ export const pricingUpdateConfig = (patch: Partial<{
   addedKcQuestions: PricingAddedKcQuestion[]
   debriefEnabled: boolean
   debriefPrompt: string
+  kcHidden: Record<string, boolean>
+  kcOrder: Record<string, number>
+  kcOverrides: Record<string, PricingKcOverride>
 }>) => callFn<PricingConfigResult>('pricingUpdateConfig', patch)
