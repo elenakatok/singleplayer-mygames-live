@@ -153,6 +153,29 @@ export type PdQuestionsResult = {
   /** Fields already answered — drives KC resume (poll's findIndex pattern). */
   kcAnswered: string[]
   debriefSubmitted: boolean
+  /**
+   * ⚠⚠ THE WHOLE `post` STAGE, IN SERVED ORDER — the debrief row plus any added question
+   * the instructor put AFTER PLAY. The post-play position in the sequence walks this list
+   * exactly as the pre-play position walks the KC list.
+   *
+   * ⚠ `kind` ROUTES THE SUBMIT and `type` does not: an added free-text question is also
+   * `type: 'text'` but goes to pdSubmitKcAnswer, while the debrief goes to
+   * pdSubmitDebrief. Never infer one from the other.
+   */
+  postStage: PdPostStageQuestionClient[]
+}
+
+export type PdPostStageQuestionClient = {
+  /** `debrief` → pdSubmitDebrief · `added` → pdSubmitKcAnswer. See the note above. */
+  kind: 'debrief' | 'added'
+  field: string
+  type: 'mc' | 'text'
+  prompt: string
+  placeholder?: string
+  /** Empty for free text. Shuffled per student for an added mc question. */
+  options: { value: string; label: string }[]
+  /** Presence of the stored answer. Drives resume — the first false is where they land. */
+  answered: boolean
 }
 
 /** The KC + debrief question set, plus what this student has already answered. */

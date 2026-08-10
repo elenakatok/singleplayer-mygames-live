@@ -117,7 +117,39 @@ export interface PdAddedKcQuestion {
   correct_value?: string
   /** Shown after answering, like the derived four. */
   explanation?: string
+  /**
+   * Which stage asks it.
+   *
+   * ⚠⚠ ABSENT ⇒ `'pre'`, AND THAT IS THE OPPOSITE OF SCORECARD'S DEFAULT. Every added
+   * question pd has ever stored was written before this field existed and is served
+   * BEFORE play — `pdGetQuestions` has always appended them to the derived four, and
+   * Play.tsx concatenates the two into one pre-play list. Defaulting an absent stage to
+   * `'post'` (scorecard's rule, for scorecard's reasons) would silently move every
+   * existing added question to after the last round. See DEFAULT_ADDED_KC_STAGE.
+   */
+  stage?: PdKcStage
 }
+
+/**
+ * pd's stages.
+ *
+ * ⚠ `post` means AFTER PLAY, NOT "after the reveal" — pd has NO reveal. The other
+ * player's assigned strategy is never shown; inferring it from play IS the exercise
+ * (spec §5). The settings block's labels say so.
+ *
+ * ⚠ Declared HERE rather than in questions.ts so `parseAddedKcQuestion` can validate a
+ * stored `stage` against it without an import cycle.
+ */
+export const PD_KC_STAGES = ['pre', 'post'] as const
+export type PdKcStage = (typeof PD_KC_STAGES)[number]
+
+/**
+ * ⚠⚠ THE STAGE AN ADDED QUESTION LANDS IN WHEN IT DOES NOT NAME ONE — `pre`, which is
+ * where every question stored before this field existed is already being served. This
+ * one line is the whole backward-compatibility guarantee for the change that let the
+ * `post` stage receive questions; a test pins it.
+ */
+export const DEFAULT_ADDED_KC_STAGE: PdKcStage = 'pre'
 
 /** The effective instance config. NOTHING secret lives here — config/main is
  *  student-readable by rules, and the payoff matrix is shown to students anyway.
@@ -211,17 +243,27 @@ export const PD_KC_ID_GUARD: KcIdGuard = { kind: 'prefix', prefix: 'kc_' }
  * loadPdConfig drops those rather than throwing, so a half-written config can never make
  * the game unplayable (the same posture as parsePayoffs).
  *
- * ⚠ THE BODY NOW LIVES IN `shared/kcSurface` (convergence spec §5 — five near-copies, no
- * two byte-identical). Behaviour is unchanged: pd passes its prefix guard, and pd declares
- * no stages, so a `stage` field on an incoming question is DROPPED rather than stored.
- * That last point is deliberate — see PD_KC_STAGES in questions.ts.
+ * ⚠ THE BODY LIVES IN `shared/kcSurface` (convergence spec §5 — five near-copies, no two
+ * byte-identical). pd passes its prefix guard and its two stages; an unrecognised stage is
+ * dropped by the shared parser, so it falls back to `DEFAULT_ADDED_KC_STAGE`.
+ *
+ * ⚠ `stages` USED TO BE OMITTED HERE, which dropped every incoming `stage`. That was
+ * correct while nothing rendered a post-play question list — the settings block did not
+ * offer the choice either. Both halves changed together; offering the picker without this
+ * would store a stage the serve path ignores, and passing this without the picker would
+ * accept a stage no instructor could set.
  */
 export function parseAddedKcQuestion(
   raw: unknown,
   guard: KcIdGuard | undefined = PD_KC_ID_GUARD,
 ): PdAddedKcQuestion | null {
-  const q = parseSharedAddedKcQuestion(raw, { guard })
+  const q = parseSharedAddedKcQuestion(raw, { guard, stages: PD_KC_STAGES })
   return q === null ? null : (q as PdAddedKcQuestion)
+}
+
+/** The stage a stored added question is asked in. ⚠ Absent ⇒ `pre` — see the interface. */
+export function addedKcStage(q: PdAddedKcQuestion): PdKcStage {
+  return q.stage ?? DEFAULT_ADDED_KC_STAGE
 }
 
 /** Clamp + sanity-check a stored round range. Returns the shipped defaults when the

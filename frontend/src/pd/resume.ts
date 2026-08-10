@@ -9,38 +9,50 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Screen layout: [KC 0…n−1] [loop at n] [debrief at n+1, IF ENABLED].
+ * Screen layout: [KC 0…n−1] [loop at n] [POST STAGE n+1 … n+m].
  * A return value past the last screen means everything is behind them.
  *
  * `kcCount` is 0 when the instructor turned the knowledge check off, which collapses
  * the KC segment to nothing and puts the loop at index 0 — no special case needed.
- * The debrief is different: it is the LAST screen, so when it is off the sequence is
- * simply one shorter, and `debriefEnabled` has to be an input rather than something
- * inferred from `debriefSubmitted` (which is false both when it is pending and when
- * it does not exist).
  *
- * Every input is a fact READ FROM THE SERVER (answers stored, game finished, debrief
- * stored) — never browser state — which is what lets a student resume on a different
- * device and land in exactly the same place.
+ * ⚠⚠ THE POST SEGMENT IS A LIST NOW, NOT ONE SCREEN. It used to be "the debrief, if
+ * enabled" — a single optional screen — so the two booleans `debriefEnabled` /
+ * `debriefSubmitted` were enough. The `post` stage can now hold the debrief row PLUS any
+ * added question the instructor put after play, so what this needs is one answered-flag
+ * per row, in served order.
+ *
+ * ⚠ THE SHAPE IS DELIBERATELY `boolean[]`, NOT A COUNT. A count would resume a student at
+ * `postAnswered` screens in, which is only the same thing while the flags are a solid
+ * prefix. `findIndex(!answered)` lands on the FIRST UNANSWERED row whatever the pattern —
+ * so a student who somehow has row 2 stored but not row 1 goes back to row 1 rather than
+ * skipping it. An empty array is the "no post questions at all" case and needs no branch:
+ * findIndex returns −1 and the student is past the end.
+ *
+ * Every input is a fact READ FROM THE SERVER (answers stored, game finished, each post row
+ * stored) — never browser state — which is what lets a student resume on a different device
+ * and land in exactly the same place.
  */
 export function resumeIndex(args: {
   kcCount: number
   kcAnswered: number
   gameOver: boolean
-  debriefEnabled: boolean
-  debriefSubmitted: boolean
+  /** One flag per POST-stage row, in served order. See the note above. */
+  postAnswered: readonly boolean[]
 }): number {
-  const { kcCount, kcAnswered, gameOver, debriefEnabled, debriefSubmitted } = args
+  const { kcCount, kcAnswered, gameOver, postAnswered } = args
   if (kcAnswered < kcCount) return kcAnswered   // first unanswered KC question
   if (!gameOver) return kcCount                 // the round loop
-  if (!debriefEnabled) return kcCount + 1       // no debrief screen ⇒ already past the end
-  if (!debriefSubmitted) return kcCount + 1     // the debrief
-  return kcCount + 2                            // past the end ⇒ nothing left to do
+
+  const firstUnanswered = postAnswered.findIndex(a => !a)
+  // Every post row answered (or there are none) ⇒ past the end, nothing left to do.
+  if (firstUnanswered === -1) return kcCount + 1 + postAnswered.length
+  return kcCount + 1 + firstUnanswered
 }
 
 /** How many screens the sequence has, given the same inputs. `resumeIndex >= this`
  *  means the student is finished. Keeping the arithmetic in one place stops the
- *  caller re-deriving "kcCount + 2" and getting it wrong when the debrief is off. */
-export function screenCount(kcCount: number, debriefEnabled: boolean): number {
-  return kcCount + 1 + (debriefEnabled ? 1 : 0)
+ *  caller re-deriving "kcCount + 1 + m" and getting it wrong when the post stage is
+ *  empty. */
+export function screenCount(kcCount: number, postCount: number): number {
+  return kcCount + 1 + postCount
 }

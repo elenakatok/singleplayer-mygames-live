@@ -3,7 +3,7 @@ import { auth } from '../firebase'
 import {
   pdBootstrap, pdGetState, pdGetQuestions, STUDENT_CLASSROOM_URL,
   type PdHistoryRow, type PdMoveLabels, type PdPayoffs, type PdRoundResult,
-  type PdKcQuestionClient, type PdDebriefQuestionClient,
+  type PdKcQuestionClient, type PdPostStageQuestionClient,
 } from './api'
 import { PageShell } from '../shared/PageShell'
 import { SequenceRunner, loopScreen, type SequenceScreen } from '../shared/sequence'
@@ -18,9 +18,9 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 // ═══════════════════════════════════════════════════════════════════════════════
 // Repeated Prisoner's Dilemma — student entry. THE WHOLE FLOW, in one sequence:
 //
-//   KC Q1 … Q4  →  the round loop  →  the debrief paragraph  →  done
-//   (graded,        (self-paced,        (ungraded)
-//    no gate)        server-ended)
+//   KC Q1 … Q4  →  the round loop  →  the AFTER-PLAY stage  →  done
+//   (graded,        (self-paced,        (the debrief row, plus any
+//    no gate)        server-ended)       question the instructor put there)
 //
 // The KC comes FIRST (spec §7): it confirms the student can read the payoff matrix
 // before they start making decisions with it. It is graded but it is NOT A GATE —
@@ -28,7 +28,7 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 //
 // RESUME, one rule for the whole flow: every step's completion is a fact stored on
 // the server, so `startIndex` is just "how many steps are already done" —
-// KC answers first, then the loop's own gameOver, then the debrief's stored answer.
+// KC answers first, then the loop's own gameOver, then one flag per AFTER-PLAY row.
 // Nothing is kept in the browser; a student resumes identically on another device.
 //
 // The round count and the strategy still never reach this file (spec §3, §5) — see
@@ -39,7 +39,7 @@ type Loaded = {
   /** derived-then-added, flattened ONLY for rendering order — the server keeps the
    *  two sources apart and grades each on its own path (see api.ts). */
   kc: PdKcQuestionClient[]
-  debrief: PdDebriefQuestionClient | null
+  postStage: PdPostStageQuestionClient[]
   payoffs: PdPayoffs
   labels: PdMoveLabels
   unit: string
@@ -120,7 +120,9 @@ export default function Play() {
         const kc = [...questions.kc.derived, ...questions.kc.added]
         setLoaded({
           kc,
-          debrief: questions.debrief,
+          // ⚠ The whole AFTER PLAY stage, server-ordered: the debrief row plus any added
+          // question assigned there. Empty when the instructor hid everything in it.
+          postStage: questions.postStage,
           payoffs: state.payoffs,
           labels: state.labels,
           unit: state.unit,
@@ -132,11 +134,13 @@ export default function Play() {
           kcCount: kc.length,
           kcAnswered: questions.kcAnswered.length,
           gameOver: state.gameOver,
-          debriefEnabled: questions.debriefEnabled,
-          debriefSubmitted: questions.debriefSubmitted,
+          // ⚠ One flag per post row, in served order — resume lands on the FIRST
+          // unanswered one, so a student part-way through the after-play questions comes
+          // back to the right screen rather than to the top of the stage.
+          postAnswered: questions.postStage.map(q => q.answered),
         })
         // Past the last screen ⇒ everything is done.
-        if (start >= screenCount(kc.length, questions.debriefEnabled)) setScreen({ name: 'done' })
+        if (start >= screenCount(kc.length, questions.postStage.length)) setScreen({ name: 'done' })
         else setScreen({ name: 'flow', startIndex: start })
       })
       .catch(err => {
@@ -182,7 +186,7 @@ export default function Play() {
   }
 
   if (screen.name === 'flow' && loaded !== null) {
-    const { kc, debrief, payoffs, labels, unit, minRounds, maxRounds } = loaded
+    const { kc, postStage, payoffs, labels, unit, minRounds, maxRounds } = loaded
 
     const screens: SequenceScreen[] = [
       // ── The knowledge check: one graded screen per question, no gate ──────────
@@ -221,13 +225,42 @@ export default function Play() {
         ),
       }),
 
-      // ── The debrief paragraph, IF the instructor left it on ──────────────────
-      ...(debrief ? [{
-        id: debrief.field,
+      // ── AFTER PLAY: the whole `post` stage, one screen per row ──────────────
+      //
+      // ⚠⚠ THIS IS THE SAME POSITION THE DEBRIEF ALWAYS OCCUPIED — no new phase, no new
+      // screen kind. It used to be `...(debrief ? [oneScreen] : [])`; the post stage can
+      // now hold added questions as well as the debrief row, so the slot maps a LIST
+      // exactly as the pre-play KC slot above does. The server orders the list and applies
+      // `hidden`; this renders whatever it is handed.
+      //
+      // ⚠ `kind` PICKS THE SCREEN, NOT `type`. An added free-text question is `type:'text'`
+      // like the debrief but submits to a different callable, so KcScreen renders it.
+      ...postStage.map((q, i) => ({
+        id: q.field,
         render: ({ onDone }: { onDone: () => void }) => (
-          <DebriefScreen question={debrief} history={history} labels={labels} unit={unit} onDone={onDone} />
+          q.kind === 'debrief'
+            ? (
+              <DebriefScreen
+                question={{ field: q.field, prompt: q.prompt, placeholder: q.placeholder ?? '' }}
+                history={history}
+                labels={labels}
+                unit={unit}
+                onDone={onDone}
+              />
+            )
+            : (
+              <KcScreen
+                question={{ field: q.field, type: q.type, prompt: q.prompt, options: q.options }}
+                index={i}
+                total={postStage.length}
+                payoffs={payoffs}
+                labels={labels}
+                unit={unit}
+                onDone={onDone}
+              />
+            )
         ),
-      }] : []),
+      })),
     ]
 
     return (

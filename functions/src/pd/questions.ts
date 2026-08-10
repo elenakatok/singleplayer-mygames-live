@@ -1,8 +1,9 @@
 import type { PrepTextQuestion } from '@mygames/game-server'
 import { yearsFor, type PayoffConfig } from './payoff'
 import {
-  DEFAULT_MOVE_LABELS, DEFAULT_UNIT,
+  DEFAULT_MOVE_LABELS, DEFAULT_UNIT, addedKcStage,
   type PdMoveLabels, type PdConfig, type PdAddedKcQuestion, type KcOverrideMap,
+  type PdKcStage,
 } from './config'
 import { applyKcOrder } from '../shared/kcSurface'
 import type { Move } from './strategy'
@@ -259,20 +260,22 @@ export function toClientKcQuestions(resolved: PdKcQuestion[]) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * PD's stages, for the shared settings block.
+ * PD's stages. Declared in config.ts (so the parser can validate against them without an
+ * import cycle) and re-exported here, which is where callers look for question concerns.
  *
  * ⚠⚠ `post` MEANS **AFTER PLAY**, NOT "AFTER THE REVEAL" — pd has NO reveal. The bot's
  * assigned strategy is never shown to the student; inferring it from play IS the exercise
- * (spec §5). Shipping scorecard's "After the reveal" wording here would name a screen this
- * game does not have.
+ * (spec §5). Shipping scorecard's "After the reveal" wording would name a screen this game
+ * does not have.
  *
- * ⚠ Only the DEBRIEF lives in `post` today. pd's Play.tsx renders KC screens, then the
- * round loop, then the debrief — there is no post-play KC screen for an added question to
- * occupy, so `parseAddedKcQuestion` deliberately drops a `stage` field and the settings
- * block is told that `post` accepts no additions. See the handoff.
+ * ⚠ `post` NOW RECEIVES ADDED QUESTIONS. It used to hold only the debrief, and the settings
+ * block was told the stage accepted no additions — because no post-play question LIST was
+ * rendered. It is rendered now: the post-play screen walks this whole stage, the debrief
+ * row included, exactly as the pre-play screens walk theirs. No new phase was needed; the
+ * debrief was already occupying that position in the sequence.
  */
-export const PD_KC_STAGES = ['pre', 'post'] as const
-export type PdKcStage = (typeof PD_KC_STAGES)[number]
+export { PD_KC_STAGES, DEFAULT_ADDED_KC_STAGE, addedKcStage } from './config'
+export type { PdKcStage } from './config'
 
 /** The derived four's ids — pd's built-in set. */
 export const PD_BUILT_IN_KC_IDS: ReadonlySet<string> = new Set(kcQuestions.map(q => q.field))
@@ -335,10 +338,72 @@ export function isGradedAdded(q: PdAddedKcQuestion): boolean {
  * That is a deliberate behaviour change from the pre-convergence build, where the toggle
  * removed every addition regardless — recorded in the handoff.
  */
-export function resolveAddedKcQuestions(config: PdConfig): PdAddedKcQuestion[] {
+export function resolveAddedKcQuestions(
+  config: PdConfig,
+  /** ⚠ Omitted ⇒ EVERY stage. The grader calls it that way on purpose: gradedness is
+   *  stage-independent (D3), so a post-stage MC question is graded and counts in the
+   *  denominator exactly like a pre-play one. */
+  stage?: PdKcStage,
+): PdAddedKcQuestion[] {
   const visible = config.addedKcQuestions.filter(q => config.kcHidden[q.id] !== true)
   const gated = config.kcEnabled ? visible : visible.filter(q => !isGradedAdded(q))
-  return applyKcOrder(gated, q => q.id, config.kcOrder)
+  const scoped = stage === undefined ? gated : gated.filter(q => addedKcStage(q) === stage)
+  return applyKcOrder(scoped, q => q.id, config.kcOrder)
+}
+
+/**
+ * ⚠⚠ THE WHOLE `post` STAGE, IN ORDER — the debrief row plus any added questions assigned
+ * there. This is what the post-play screen walks.
+ *
+ * The debrief is a ROW here, not a special case (spec D9): it takes part in `order` under
+ * its own id, and its visibility is `debriefEnabled` rather than the `hidden` map, because
+ * it is stored under `debrief_prompt` / `debrief_enabled` and NOT in the three convergence
+ * maps. That boundary is what makes folding it into the list a change with no storage
+ * migration.
+ *
+ * ⚠ `kind` is what routes a submit: `debrief` → pdSubmitDebrief, `added` → pdSubmitKcAnswer.
+ * The client must not infer it from `type`, because an added free-text question is also
+ * `type: 'text'` and goes to a different callable.
+ */
+export interface PdPostStageQuestion {
+  kind: 'debrief' | 'added'
+  field: string
+  type: 'mc' | 'text'
+  prompt: string
+  placeholder?: string
+  options: { value: string; label: string }[]
+}
+
+export function pdPostStageQuestions(config: PdConfig): PdPostStageQuestion[] {
+  const rows: PdPostStageQuestion[] = []
+
+  if (config.debriefEnabled) {
+    rows.push({
+      kind: 'debrief',
+      field: debriefQuestion.field,
+      type: 'text',
+      // ⚠ The instructor's prompt from `debrief_prompt`, never the literal in the data
+      // object — that literal is only the shape's required field.
+      prompt: config.debriefPrompt,
+      placeholder: debriefQuestion.placeholder,
+      options: [],
+    })
+  }
+
+  for (const q of resolveAddedKcQuestions(config, 'post')) {
+    rows.push({
+      kind: 'added',
+      field: q.id,
+      type: q.type,
+      prompt: q.prompt,
+      options: q.options ?? [],
+    })
+  }
+
+  // ⚠ Ordered ACROSS both kinds, so an instructor can put an added question before the
+  // debrief paragraph. `applyKcOrder` is total on a partial map, so a row with no entry
+  // keeps its authored position — the debrief first, additions after it.
+  return applyKcOrder(rows, r => r.field, config.kcOrder)
 }
 
 /**
@@ -354,16 +419,46 @@ export function resolveAddedKcQuestions(config: PdConfig): PdAddedKcQuestion[] {
  * student. A free-text question keeps `options: []`, which is the signal the client renders
  * a textarea on.
  */
+/**
+ * ⚠ `stage` IS REQUIRED, DELIBERATELY. It was optional-meaning-all-stages for about an
+ * hour, and dropping the argument at the call site silently served every after-play
+ * question BEFORE play — a mutation no unit test caught, because the tests passed the stage
+ * explicitly. Requiring it makes that mutation a compile error; the harness covers the
+ * runtime half. The grader's "every stage" case has its own call,
+ * `resolveAddedKcQuestions(config)`, where the absence of a stage is the point.
+ */
 export function addedToClientKcQuestions(
   config: PdConfig,
   participantId: string,
+  stage: PdKcStage,
 ): { field: string; type: 'mc' | 'text'; prompt: string; options: { value: string; label: string }[] }[] {
-  return resolveAddedKcQuestions(config).map(q => ({
+  return resolveAddedKcQuestions(config, stage).map(q => ({
     field: q.id,
     type: q.type,
     prompt: q.prompt,
     options: shuffleClientOptions(q.options ?? [], participantId, q.id),
   }))
+}
+
+/**
+ * The `post` stage as the STUDENT receives it — the same list, with every added question's
+ * options SHUFFLED.
+ *
+ * ⚠⚠ THE SHUFFLE APPLIES HERE TOO. A post-play added question is exactly as leakable as a
+ * pre-play one — an instructor still types the right answer first — and routing the post
+ * list around `shuffleClientOptions` would reintroduce the `cef36fe` tell in the one place
+ * nobody thought to look. The serve path composes THIS, so a test of this function tests
+ * the wiring rather than the primitive.
+ */
+export function postStageToClient(
+  config: PdConfig,
+  participantId: string,
+): PdPostStageQuestion[] {
+  return pdPostStageQuestions(config).map(r => (
+    r.kind === 'added'
+      ? { ...r, options: shuffleClientOptions(r.options, participantId, r.field) }
+      : r
+  ))
 }
 
 /**

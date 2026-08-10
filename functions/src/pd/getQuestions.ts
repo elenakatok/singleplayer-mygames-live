@@ -5,7 +5,8 @@ import {
   PD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC, loadPdConfig,
 } from './config'
 import {
-  pdResolveKc, addedToClientKcQuestions, toClientKcQuestions, debriefQuestion,
+  pdResolveKc, addedToClientKcQuestions, toClientKcQuestions, postStageToClient,
+  debriefQuestion,
 } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -65,7 +66,10 @@ export const pdGetQuestions = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
   // offer the SAME sorted ladder of payoff values and their answers are 1/15/0/10, so
   // position says nothing. An instructor typing a question into Settings has no such
   // protection, and most people type the right answer first.
-  const added = addedToClientKcQuestions(config, participantId)
+  // ⚠ PRE-STAGE ONLY. Added questions used to be stage-less and every one of them was
+  // appended here, before play. They are stage-aware now, so this list is explicitly the
+  // `pre` ones and the `post` ones are served below — a question cannot appear twice.
+  const added = addedToClientKcQuestions(config, participantId, 'pre')
 
   const answers = (pData.kc_static_answers ?? {}) as Record<string, unknown>
   const answered = [...derived, ...added].filter(q => answers[q.field] != null).map(q => q.field)
@@ -85,5 +89,25 @@ export const pdGetQuestions = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
       : null,
     kcAnswered: answered,
     debriefSubmitted: (pData.debrief_answers ?? {})[debriefQuestion.field] != null,
+    /**
+     * ⚠⚠ THE WHOLE `post` STAGE, IN ORDER — the debrief row plus any added questions the
+     * instructor put after play. The post-play screen walks this list exactly as the
+     * pre-play screens walk the KC list.
+     *
+     * ⚠ ANSWERED IS READ FROM TWO DIFFERENT MAPS, because the two kinds submit to two
+     * different callables: the debrief lands in `debrief_answers` (pdSubmitDebrief) and an
+     * added question in `kc_static_answers` (pdSubmitKcAnswer). Presence of the key IS
+     * "answered" — the client resumes at the first row whose flag is false, so a student
+     * part-way through the post stage comes back to the right screen on any device.
+     *
+     * ⚠ The answer key never ships here either: `postStageToClient` carries prompt and
+     * options only, and the options are shuffled per student.
+     */
+    postStage: postStageToClient(config, participantId).map(r => ({
+      ...r,
+      answered: r.kind === 'debrief'
+        ? (pData.debrief_answers ?? {})[r.field] != null
+        : (pData.kc_static_answers ?? {})[r.field] != null,
+    })),
   }
 })

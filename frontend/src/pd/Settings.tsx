@@ -56,10 +56,16 @@ import {
  * exercise (spec §5). Scorecard's wording names a screen this game does not have, which is
  * exactly why these labels are props and not baked into the shared block.
  *
- * ⚠ `acceptsAdded: false` on `post`. Only the debrief lives there: pd's Play.tsx runs the
- * KC screens, then the round loop, then the debrief, with NO post-play KC screen. An added
- * question assigned to `post` would be served before play instead — so the picker does not
- * offer it rather than silently contradicting the instructor. Flagged in the handoff.
+ * ⚠⚠ BOTH STAGES NOW ACCEPT ADDED QUESTIONS, so the picker offers both. `post` used to be
+ * `acceptsAdded: false`, which was right at the time: nothing rendered a post-play question
+ * LIST, so a question assigned there would have been served before play instead. It renders
+ * one now — the post-play position in Play.tsx walks the whole stage, the debrief row
+ * included — so the heading an instructor reads as "a place to put things" is one.
+ *
+ * ⚠ NO SAVE-TIME WARNING ON EITHER STAGE, unlike scorecard. Scorecard warns on `pre_game`
+ * because its §9.1 forbids hinting before play that a target can become unreachable. pd has
+ * no equivalent rule and no reveal — the other player's strategy is never shown at all — so
+ * there is nothing to caution about and a warning would be noise.
  */
 const KC_STAGES: KcSettingsStage[] = [
   { id: 'pre', label: 'Before play', note: 'Asked before the first round.' },
@@ -68,7 +74,6 @@ const KC_STAGES: KcSettingsStage[] = [
     label: 'After play',
     note: 'Asked once the last round is over. There is no reveal in this game — the other '
       + 'player’s strategy is never shown.',
-    acceptsAdded: false,
   },
 ]
 

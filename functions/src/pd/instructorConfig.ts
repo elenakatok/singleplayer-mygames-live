@@ -3,7 +3,7 @@ import * as admin from 'firebase-admin'
 import { extractInstructorGameId } from '@mygames/game-server'
 import {
   PD_CORS_ORIGINS, INSTANCES_COLLECTION, CONFIG_DOC,
-  HARD_MIN_ROUNDS, HARD_MAX_ROUNDS, loadPdConfig, parseAddedKcQuestion,
+  HARD_MIN_ROUNDS, HARD_MAX_ROUNDS, loadPdConfig, parseAddedKcQuestion, addedKcStage,
   parseKcHidden, parseKcOrder, parseKcOverrides,
   type PdAddedKcQuestion, type PdConfig,
 } from './config'
@@ -337,7 +337,10 @@ function kcInventory(config: PdConfig) {
   const added = config.addedKcQuestions.map(q => ({
     id: q.id,
     kind: 'added' as const,
-    stage: 'pre' as const,
+    // ⚠ THE QUESTION'S OWN STAGE, not a hardcoded 'pre'. It was hardcoded while `post`
+    // could not receive additions; leaving it would file every post-stage question under
+    // the wrong heading on the settings page while the student saw it after play.
+    stage: addedKcStage(q),
     type: q.type,
     prompt: q.prompt,
     options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),

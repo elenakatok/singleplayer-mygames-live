@@ -1006,6 +1006,129 @@ async function main() {
     check(!/round\s*\{?\s*\w*\s*\}?\s*of\s*\{/i.test(js), 'the bundle has no "round N of M" template')
   }
 
+  // ── 16. ⚠⚠ The AFTER PLAY stage receives added questions, AT THE CALLABLES ──
+  //
+  // ⚠⚠ TESTS WHAT THE CALLABLE SERVES, NOT THE HELPER. The unit suite passes the stage
+  // explicitly, so a mutation that DROPS the stage argument in pdGetQuestions — serving
+  // every after-play question before play — is invisible to it. That mutant survived the
+  // first calibration run of this pass, exactly as the shuffle one did last pass. This
+  // section is what kills it.
+  console.log('\n[16] The AFTER PLAY stage, at the callables')
+  {
+    const GIDP = `pd-poststage-${stamp}`
+    const PPID = 'pd-post-stu'
+
+    const saved = await callFn('pdUpdateConfig', {
+      ...asDev(GIDP),
+      minRounds: 2,
+      maxRounds: 2,
+      debriefPrompt: 'What was your plan, and when did it change?',
+      addedKcQuestions: [
+        { id: 'akc_before', type: 'mc', prompt: 'Asked BEFORE play?', stage: 'pre',
+          options: [{ value: 'b0', label: 'B0' }, { value: 'b1', label: 'B1' },
+            { value: 'b2', label: 'B2' }, { value: 'b3', label: 'B3' }], correct_value: 'b0' },
+        { id: 'akc_after', type: 'mc', prompt: 'Asked AFTER play?', stage: 'post',
+          options: [{ value: 'a0', label: 'A0' }, { value: 'a1', label: 'A1' },
+            { value: 'a2', label: 'A2' }, { value: 'a3', label: 'A3' }], correct_value: 'a0' },
+        { id: 'akc_after_text', type: 'text', prompt: 'A paragraph, after play.', stage: 'post' },
+        { id: 'akc_legacy', type: 'mc', prompt: 'No stage given — must stay BEFORE play.',
+          options: [{ value: 'l0', label: 'L0' }, { value: 'l1', label: 'L1' }], correct_value: 'l0' },
+      ],
+    })
+    check(saved.ok, 'added questions with an explicit stage save')
+    check(saved.result.kc.added.find(q => q.id === 'akc_after').stage === 'post',
+      '⚠ the settings inventory files the post question under the AFTER PLAY heading')
+    check(saved.result.kc.added.find(q => q.id === 'akc_legacy').stage === 'pre',
+      '⚠⚠ …and a stage-less question stays BEFORE play — nothing already stored moves')
+
+    await callFn('pdBootstrap', asStudent(GIDP, PPID))
+    const qs = await callFn('pdGetQuestions', asStudent(GIDP, PPID))
+
+    // ── The split, as the STUDENT receives it ────────────────────────────
+    const preIds = qs.result.kc.added.map(q => q.field)
+    const postIds = qs.result.postStage.map(q => q.field)
+    check(preIds.includes('akc_before') && preIds.includes('akc_legacy'),
+      'the pre-play list carries the pre question and the stage-less one')
+    check(!preIds.includes('akc_after') && !preIds.includes('akc_after_text'),
+      '⚠⚠ …and NOT the after-play ones — they are not served before play')
+    check(postIds.includes('akc_after') && postIds.includes('akc_after_text'),
+      '⚠⚠ the AFTER PLAY stage carries them')
+    check(postIds[0] === 'debrief_reflection',
+      'the debrief row leads the after-play stage')
+    check(qs.result.postStage.find(q => q.field === 'debrief_reflection').prompt
+      === 'What was your plan, and when did it change?',
+    '⚠ the debrief row renders the instructor\'s prompt from debrief_prompt')
+    check(!JSON.stringify(qs.result.postStage).includes('correct_value'),
+      '⚠ the after-play payload ships no answer key')
+
+    // ── The shuffle, through the callable ────────────────────────────────
+    const slots = new Set()
+    for (let i = 0; i < 60; i++) {
+      const r = await callFn('pdGetQuestions', asStudent(GIDP, `pd-post-shuf-${i}`))
+      const row = r.result.postStage.find(q => q.field === 'akc_after')
+      slots.add(row.options.findIndex(o => o.value === 'a0'))
+    }
+    check(slots.size === 4,
+      `⚠⚠ the after-play question's answer reaches EVERY slot over a cohort (${slots.size}/4)`)
+
+    // ── Answering it AFTER the rounds, and the denominator ───────────────
+    const st0 = await callFn('pdGetState', asStudent(GIDP, PPID))
+    check(st0.ok, 'the student has a game')
+    for (const q of [...qs.result.kc.derived, ...qs.result.kc.added]) {
+      await callFn('pdSubmitKcAnswer', asStudent(GIDP, PPID, { field: q.field, answer: q.options[0].value }))
+    }
+    let done = false
+    for (let n = 1; n <= 40 && !done; n++) {
+      const r = await callFn('pdSubmitRound', asStudent(GIDP, PPID, { round: n, move: 'C' }))
+      if (!r.ok) break
+      done = r.result.gameOver === true
+    }
+    check(done, 'the game finishes')
+
+    const mid = await callFn('pdGetQuestions', asStudent(GIDP, PPID))
+    check(mid.result.postStage.every(q => q.answered === false),
+      'every after-play row is still unanswered when the game ends')
+
+    // Answer the DEBRIEF only — resume must then land on the next row, not the first.
+    await callFn('pdSubmitDebrief', asStudent(GIDP, PPID, { answer: 'I cooperated throughout.' }))
+    const afterDebrief = await callFn('pdGetQuestions', asStudent(GIDP, PPID))
+    const flags = afterDebrief.result.postStage.map(q => q.answered)
+    check(flags[0] === true && flags.slice(1).every(f => f === false),
+      '⚠⚠ RESUME: the debrief reads answered and the rest do not — the client lands on row 2')
+
+    // The graded after-play question counts in the denominator.
+    const gradedRow = afterDebrief.result.postStage.find(q => q.field === 'akc_after')
+    const ans = await callFn('pdSubmitKcAnswer',
+      asStudent(GIDP, PPID, { field: 'akc_after', answer: gradedRow.options[0].value }))
+    check(ans.ok, '⚠ an after-play MC question is answerable through pdSubmitKcAnswer')
+    check(ans.result.graded === true,
+      '⚠⚠ …and it is GRADED — gradedness follows the answer key, never the stage (D3)')
+    const txt = await callFn('pdSubmitKcAnswer',
+      asStudent(GIDP, PPID, { field: 'akc_after_text', answer: 'Because it seemed safest.' }))
+    check(txt.ok && txt.result.graded === false,
+      '⚠ …while an after-play FREE-TEXT question is recorded and NOT graded')
+
+    const pdoc = await getDoc(`pd_game_instances/${GIDP}/participants/${PPID}`)
+    // 4 derived + akc_before + akc_legacy + akc_after = 7 graded; akc_after_text ungraded.
+    check(pdoc?.knowledge_check_score != null,
+      '⚠ the score lands only once EVERY graded question — including the after-play one — is answered')
+
+    // ── Hiding an after-play addition removes it from the stage ──────────
+    const hid = await callFn('pdUpdateConfig', { ...asDev(GIDP), kcHidden: { akc_after_text: true } })
+    check(hid.ok, 'hiding an after-play addition is accepted')
+    const hidQs = await callFn('pdGetQuestions', asStudent(GIDP, 'pd-post-hid'))
+    check(!hidQs.result.postStage.some(q => q.field === 'akc_after_text'),
+      '⚠ a hidden after-play question is not served')
+
+    // ── Reordering ACROSS both kinds ─────────────────────────────────────
+    const ord = await callFn('pdUpdateConfig',
+      { ...asDev(GIDP), kcOrder: { akc_after: 0, debrief_reflection: 1 } })
+    check(ord.ok, 'reordering the after-play stage is accepted')
+    const ordQs = await callFn('pdGetQuestions', asStudent(GIDP, 'pd-post-ord'))
+    check(ordQs.result.postStage[0].field === 'akc_after',
+      '⚠ an added question can be put BEFORE the debrief paragraph')
+  }
+
   // ⚠ BLOCK-SCOPED. This file is one long function and section 15 introduces a dozen
   // locals; braces keep them off the shared scope rather than renaming each one.
   {

@@ -3,10 +3,12 @@ import { kcScoreOrNull, calcKCScore } from '@mygames/game-server'
 import {
   resolveKcQuestions, pdResolveKc, resolveAddedKcQuestions, pdKcScoringSet,
   applyKcOverride, isGradedAdded, shuffleClientOptions, addedToClientKcQuestions,
+  pdPostStageQuestions, postStageToClient,
   PD_BUILT_IN_KC_IDS, PD_KC_STAGES,
 } from '../src/pd/questions'
 import {
   DEFAULT_PD_CONFIG, parseAddedKcQuestion, PD_KC_ID_GUARD,
+  DEFAULT_ADDED_KC_STAGE, addedKcStage,
   type PdConfig, type PdAddedKcQuestion,
 } from '../src/pd/config'
 import { lockedKcQuestionIds, validateKcOverrides, KC_LOCK_REASON } from '../src/pd/kcLock'
@@ -426,13 +428,21 @@ describe('⚠⚠ an added question cannot take a derived question\'s id', () => 
     expect(parseAddedKcQuestion({ id: 'akc_mine', type: 'text', prompt: 'x' })).not.toBeNull()
   })
 
-  it('⚠ pd declares NO stages to the parser, so a stage field is DROPPED', () => {
-    // pd's Play.tsx has no post-play KC screen, so a stored `stage` would be a promise the
-    // student flow cannot keep. The settings block does not offer the choice either
-    // (`acceptsAdded: false`), and this is the server-side half of that.
-    const q = parseAddedKcQuestion({ id: 'akc_x', type: 'text', prompt: 'x', stage: 'post' })!
-    expect((q as PdAddedKcQuestion & { stage?: string }).stage).toBeUndefined()
+  it('⚠ pd now declares BOTH stages to the parser, so a valid stage is KEPT', () => {
+    // ⚠ THIS TEST ASSERTED THE OPPOSITE LAST PASS, and the reversal is the point of this
+    // change. `stage` used to be dropped because pd's Play.tsx rendered no post-play
+    // question list — a stored stage would have been a promise the student flow could not
+    // keep, and the settings block did not offer the choice either (`acceptsAdded: false`).
+    // Both halves moved together: the post-play position now walks the whole stage, so the
+    // parser keeps the field and the picker offers it.
     expect(PD_KC_STAGES).toEqual(['pre', 'post'])
+    expect(parseAddedKcQuestion({ id: 'akc_x', type: 'text', prompt: 'x', stage: 'post' })!.stage)
+      .toBe('post')
+    expect(parseAddedKcQuestion({ id: 'akc_y', type: 'text', prompt: 'y', stage: 'pre' })!.stage)
+      .toBe('pre')
+    // An unrecognised stage is still dropped rather than stored.
+    const bogus = parseAddedKcQuestion({ id: 'akc_z', type: 'text', prompt: 'z', stage: 'debrief' })!
+    expect((bogus as PdAddedKcQuestion & { stage?: string }).stage).toBeUndefined()
   })
 })
 
@@ -560,5 +570,210 @@ describe('the three fields are total on absent, and default to current behaviour
 
   it('⚠ only `true` is kept in the hidden map — a stale `false` is not an assertion', () => {
     expect(parseKcHidden({ a: true, b: false, c: 'yes', d: 1 })).toEqual({ a: true })
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// THE `post` STAGE RECEIVES ADDED QUESTIONS.
+//
+// It used to hold only the debrief, and the settings block was told the stage accepted no
+// additions — correctly, because nothing rendered a post-play question LIST. It renders one
+// now: the post-play position in Play.tsx walks the whole stage, the debrief row included,
+// exactly as the pre-play position walks the KC list. No new phase; the debrief was already
+// occupying that slot.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const postMc = (id: string) => addedMc(id, { stage: 'post' })
+const postText = (id: string) => addedText(id, { stage: 'post' })
+
+describe('⚠⚠ an added question assigned to `post` is served AFTER play, not before', () => {
+  it('it is absent from the pre-play list and present in the post list', () => {
+    // MUTANT CAUGHT: serving the post list in the pre-play phase — i.e. dropping the stage
+    // filter from `addedToClientKcQuestions`, which is what pd did before this change (it
+    // appended EVERY addition to the derived four). The student would answer an
+    // after-play reflection before playing a single round.
+    const c = cfg({ addedKcQuestions: [addedMc('akc_pre'), postMc('akc_post')] })
+
+    const pre = addedToClientKcQuestions(c, 'stu-1', 'pre').map(q => q.field)
+    expect(pre).toEqual(['akc_pre'])
+    expect(pre).not.toContain('akc_post')
+
+    const post = postStageToClient(c, 'stu-1').map(r => r.field)
+    expect(post).toContain('akc_post')
+    expect(post).not.toContain('akc_pre')
+  })
+
+  it('⚠ a stage-less addition still lands in `pre` — nothing already stored moves', () => {
+    // ⚠⚠ THE MOST DANGEROUS LINE IN THIS CHANGE. Every added question pd has ever stored
+    // predates the `stage` field and is being served BEFORE play. Scorecard's default is
+    // 'post'; adopting it here would silently move every existing pd addition to after the
+    // last round. MUTANT CAUGHT: DEFAULT_ADDED_KC_STAGE = 'post'.
+    expect(DEFAULT_ADDED_KC_STAGE).toBe('pre')
+    const legacy = addedMc('akc_legacy')
+    expect(legacy.stage).toBeUndefined()
+    expect(addedKcStage(legacy)).toBe('pre')
+
+    const c = cfg({ addedKcQuestions: [legacy] })
+    expect(addedToClientKcQuestions(c, 'stu-1', 'pre').map(q => q.field)).toEqual(['akc_legacy'])
+    expect(postStageToClient(c, 'stu-1').map(r => r.field)).not.toContain('akc_legacy')
+  })
+
+  it('the stage SURVIVES the parser now — it used to be dropped', () => {
+    expect(parseAddedKcQuestion({ id: 'akc_p', type: 'text', prompt: 'x', stage: 'post' })!.stage)
+      .toBe('post')
+    // …and an unrecognised one is still dropped, falling back to `pre`.
+    const bogus = parseAddedKcQuestion({ id: 'akc_b', type: 'text', prompt: 'x', stage: 'debrief' })!
+    expect(bogus.stage).toBeUndefined()
+    expect(addedKcStage(bogus)).toBe('pre')
+  })
+
+  it('the debrief row leads the post stage, with added questions after it', () => {
+    const c = cfg({ addedKcQuestions: [postMc('akc_post')] })
+    const rows = pdPostStageQuestions(c)
+    expect(rows.map(r => r.kind)).toEqual(['debrief', 'added'])
+    expect(rows[0].field).toBe('debrief_reflection')
+  })
+
+  it('⚠⚠ the debrief row renders the INSTRUCTOR\'S prompt from `debrief_prompt`', () => {
+    // MUTANT CAUGHT: reading the hardcoded literal on the `debriefQuestion` data object
+    // instead of `config.debriefPrompt` — i.e. the row silently ignoring every edit the
+    // instructor has ever made and showing the shipped default forever.
+    //
+    // ⚠⚠ THE PROMPT MUST BE NON-DEFAULT FOR THIS TO TEST ANYTHING. An earlier version of
+    // this test asserted against DEFAULT_PD_CONFIG.debriefPrompt, which is the SAME STRING
+    // as the literal — so the mutant was invisible and survived the first calibration run.
+    const custom = 'What was your plan, and when did it change?'
+    expect(custom).not.toBe(DEFAULT_PD_CONFIG.debriefPrompt)
+
+    const c = cfg({ debriefPrompt: custom, addedKcQuestions: [postMc('akc_post')] })
+    expect(pdPostStageQuestions(c)[0].prompt).toBe(custom)
+    expect(postStageToClient(c, 'stu-1')[0].prompt).toBe(custom)
+    // …and the field it is keyed by is unchanged, so no stored answer moves.
+    expect(pdPostStageQuestions(c)[0].field).toBe('debrief_reflection')
+  })
+
+  it('⚠ the debrief row is NOT backed by the override map', () => {
+    // MUTANT CAUGHT: routing the row's prompt through `kcOverrides` — which would store the
+    // instructor's wording in a map the reports and pdSubmitDebrief never read, and leave
+    // `debrief_prompt` stale. The callable refuses such an override; this pins that even a
+    // stored one is ignored by the serve path.
+    const c = cfg({ kcOverrides: { debrief_reflection: { prompt: 'FROM THE OVERRIDE MAP' } } })
+    expect(pdPostStageQuestions(c)[0].prompt).toBe(DEFAULT_PD_CONFIG.debriefPrompt)
+    expect(pdPostStageQuestions(c)[0].prompt).not.toBe('FROM THE OVERRIDE MAP')
+  })
+})
+
+describe('⚠ grading in the post stage follows the ANSWER KEY, never the stage (D3)', () => {
+  it('an added MC question in `post` IS graded and IS in the denominator', () => {
+    // MUTANT CAUGHT: grade by stage — "only pre-play questions count". A post-stage MC
+    // question is exactly as graded as a pre-play one; the stage is about WHEN it is
+    // asked, never about whether it is marked.
+    const c = cfg({ addedKcQuestions: [postMc('akc_post')] })
+    const ids = pdKcScoringSet(c).map(x => x.field)
+    expect(ids).toContain('akc_post')
+    expect(pdKcScoringSet(c)).toHaveLength(5)   // the derived four + this one
+  })
+
+  it('an added FREE-TEXT question in `post` is NOT graded', () => {
+    // MUTANT CAUGHT: grade by type, or grade everything in the stage.
+    const c = cfg({ addedKcQuestions: [postText('akc_free')] })
+    expect(isGradedAdded(postText('akc_free'))).toBe(false)
+    expect(pdKcScoringSet(c).map(x => x.field)).not.toContain('akc_free')
+    expect(pdKcScoringSet(c)).toHaveLength(4)
+  })
+
+  it('⚠ the DEBRIEF row is still never graded, wherever it sits in the order', () => {
+    const c = cfg({
+      addedKcQuestions: [postMc('akc_post')],
+      kcOrder: { akc_post: 0, debrief_reflection: 1 },
+    })
+    expect(pdPostStageQuestions(c).map(r => r.field)).toEqual(['akc_post', 'debrief_reflection'])
+    expect(pdKcScoringSet(c).map(x => x.field)).not.toContain('debrief_reflection')
+  })
+})
+
+describe('⚠ hidden and order are honoured in the post list', () => {
+  it('a hidden post-stage addition is not served', () => {
+    // MUTANT CAUGHT: ignoring `hidden` in the post path specifically — the pre path
+    // filters, so a suite that only checked pre would pass.
+    const c = cfg({
+      addedKcQuestions: [postMc('akc_a'), postMc('akc_b')],
+      kcHidden: { akc_b: true },
+    })
+    const fields = postStageToClient(c, 'stu-1').map(r => r.field)
+    expect(fields).toContain('akc_a')
+    expect(fields).not.toContain('akc_b')
+  })
+
+  it('hiding the debrief removes ITS row and leaves the additions', () => {
+    const c = cfg({ debriefEnabled: false, addedKcQuestions: [postMc('akc_a')] })
+    expect(pdPostStageQuestions(c).map(r => r.field)).toEqual(['akc_a'])
+  })
+
+  it('`order` reorders the post list ACROSS both kinds', () => {
+    // MUTANT CAUGHT: ignoring `order` in the post path. An instructor can put an added
+    // question BEFORE the debrief paragraph.
+    const c = cfg({
+      addedKcQuestions: [postMc('akc_a'), postMc('akc_b')],
+      kcOrder: { akc_b: 0, debrief_reflection: 1, akc_a: 2 },
+    })
+    expect(pdPostStageQuestions(c).map(r => r.field))
+      .toEqual(['akc_b', 'debrief_reflection', 'akc_a'])
+  })
+
+  it('an empty post stage is legal — the debrief hidden and nothing added', () => {
+    expect(pdPostStageQuestions(cfg({ debriefEnabled: false }))).toEqual([])
+  })
+})
+
+describe('⚠⚠ an added MC question in `post` still shuffles — through the SERVE path', () => {
+  it('the answer reaches EVERY position over a cohort', () => {
+    // MUTANTS CAUGHT: (b) a two-slot swap, and (c) routing the post list around the
+    // shuffle entirely. ⚠ "Not always first" would pass (b) with three-quarters of the
+    // information still leaking — this is the cef36fe assertion.
+    //
+    // ⚠ TESTED THROUGH `postStageToClient`, which is what pdGetQuestions composes — NOT
+    // through `shuffleClientOptions`. Last pass five tests called the helper directly and
+    // the "don't shuffle" mutant survived because nothing invoked it.
+    const c = cfg({ addedKcQuestions: [postMc('akc_a')] })
+    const positions = new Set(
+      Array.from({ length: 200 }, (_, i) => {
+        const row = postStageToClient(c, `stu-${i}`).find(r => r.field === 'akc_a')!
+        return row.options.findIndex(o => o.value === 'o0')
+      }),
+    )
+    expect(positions.size).toBe(4)
+  })
+
+  it('two post-stage questions are permuted INDEPENDENTLY', () => {
+    // MUTANT CAUGHT: (a) dropping the question id from the seed — every question would
+    // carry the same permutation for a student, so one revealed answer gives away the rest.
+    const c = cfg({ addedKcQuestions: [postMc('akc_a'), postMc('akc_b')] })
+    const same = Array.from({ length: 60 }, (_, i) => {
+      const rows = postStageToClient(c, `stu-${i}`)
+      const a = rows.find(r => r.field === 'akc_a')!.options.findIndex(o => o.value === 'o0')
+      const b = rows.find(r => r.field === 'akc_b')!.options.findIndex(o => o.value === 'o0')
+      return a === b
+    })
+    expect(same.every(Boolean)).toBe(false)
+  })
+
+  it('the same student sees the same order twice, and no option is lost', () => {
+    const c = cfg({ addedKcQuestions: [postMc('akc_a')] })
+    expect(postStageToClient(c, 'stu-7')).toEqual(postStageToClient(c, 'stu-7'))
+    const opts = postStageToClient(c, 'stu-7').find(r => r.field === 'akc_a')!.options
+    expect([...opts].sort((x, y) => x.value.localeCompare(y.value)))
+      .toEqual(addedMc('akc_a').options)
+  })
+
+  it('⚠ the DEBRIEF row is not shuffled and ships no options', () => {
+    const rows = postStageToClient(cfg(), 'stu-1')
+    expect(rows[0].kind).toBe('debrief')
+    expect(rows[0].options).toEqual([])
+  })
+
+  it('⚠ the post payload ships no answer key', () => {
+    const c = cfg({ addedKcQuestions: [postMc('akc_a')] })
+    expect(JSON.stringify(postStageToClient(c, 'stu-1'))).not.toContain('correct_value')
   })
 })
