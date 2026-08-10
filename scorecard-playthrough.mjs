@@ -996,6 +996,176 @@ const run = async () => {
   check(!offEarlyLink.ok,
     '⚠⚠ …and linking is STILL refused before noticing — §10 ordering is untouched by the KC gate')
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  section('§10d ⚠⚠ The shared KC surface — hidden / order / overrides, AT THE CALLABLES')
+  // ⚠⚠ THESE RUN AGAINST THE DEPLOYED CALLABLES, not the compiled modules. The unit suite
+  // (functions/test/scorecardKcSurface.test.ts) pins the pure logic and kills 14 mutants;
+  // this pins that scorecardUpdateConfig, scorecardGetQuestions and scorecardSubmitKcAnswer
+  // are actually WIRED to it. A guard that exists only in a module nothing calls is the
+  // exact failure mode spec §5 warns about ("enforced at the callable, not only in the UI").
+
+  const gidKc = `sc-kcsurface-${Date.now()}`
+  await openInstance(gidKc, { seed: 'kcsurface' })
+
+  // ── The inventory the settings block renders ─────────────────────────────
+  const inv0 = await callFn('scorecardGetConfig', asInstructor(gidKc))
+  check(inv0.ok && inv0.result.kc != null, 'scorecardGetConfig returns the kc inventory')
+  const kc0 = inv0.result.kc
+  check(kc0.builtIn.length === 10, `⚠ ALL TEN built-ins are listed for the instructor (${kc0.builtIn.length})`)
+  check(kc0.builtIn.filter(q => q.stage === 'pre').length === 6
+    && kc0.builtIn.filter(q => q.stage === 'post').length === 4,
+  '⚠ …in BOTH stages — 6 pre, 4 post — which the page could not show before')
+  check(kc0.builtIn.every(q => q.prompt.length > 0 && q.options.length >= 2 && q.correctValue),
+    '…each with its prompt, its options and its answer')
+  check(kc0.poolTotal === 10 && kc0.visibleCount === 10 && kc0.gradedCount === 10,
+    `the count line reads 10 of 10 visible, 10 graded (${kc0.visibleCount}/${kc0.poolTotal}, ${kc0.gradedCount})`)
+
+  // ── The lock classification, off the wire ────────────────────────────────
+  const lockedIds = kc0.builtIn.filter(q => q.locked).map(q => q.id).sort()
+  check(lockedIds.length === 9, `⚠ NINE of the ten are locked (${lockedIds.length})`)
+  check(!kc0.builtIn.find(q => q.id === 'q2_charged_for_clean_parts').locked,
+    '⚠ q2_charged_for_clean_parts is the ONE editable question — it interpolates nothing')
+  check(kc0.builtIn.filter(q => q.locked).every(q => (q.lockReason ?? '').length > 0),
+    '⚠ every locked row carries a REASON — a disabled control with no explanation reads as a bug')
+
+  // ── Overrides: refused on a locked question, AT THE CALLABLE ─────────────
+  const ovLocked = await callFn('scorecardUpdateConfig',
+    asInstructor(gidKc, { kcOverrides: { q5_earnings_arithmetic: { prompt: 'my own stem' } } }))
+  check(!ovLocked.ok, '⚠⚠ an override on a LOCKED question is REFUSED by the callable')
+  check((ovLocked.error ?? '').includes('cannot be edited'), '…with a reason the page can show')
+
+  const ovAdded = await callFn('scorecardUpdateConfig',
+    asInstructor(gidKc, { kcOverrides: { akc_nothere: { prompt: 'x' } } }))
+  check(!ovAdded.ok, 'an override aimed at a non-built-in id is refused')
+
+  const ovBadOpt = await callFn('scorecardUpdateConfig',
+    asInstructor(gidKc, { kcOverrides: { q2_charged_for_clean_parts: { options: { zzz: 'x' } } } }))
+  check(!ovBadOpt.ok, 'an option key that names no offered option is refused, not ignored')
+
+  // ── …and accepted on the editable one, changing TEXT ONLY ────────────────
+  const beforeQ2 = kc0.builtIn.find(q => q.id === 'q2_charged_for_clean_parts')
+  const ovOk = await callFn('scorecardUpdateConfig', asInstructor(gidKc, {
+    kcOverrides: {
+      q2_charged_for_clean_parts: {
+        prompt: 'MY REWRITTEN STEM',
+        options: { [beforeQ2.options[1].value]: 'MY REWRITTEN OPTION' },
+      },
+    },
+  }))
+  check(ovOk.ok, '⚠ an override on the EDITABLE question is accepted')
+  const afterQ2 = ovOk.result.kc.builtIn.find(q => q.id === 'q2_charged_for_clean_parts')
+  check(afterQ2.prompt === 'MY REWRITTEN STEM', '…the served prompt is the instructor\'s')
+  check(afterQ2.correctValue === beforeQ2.correctValue,
+    '⚠⚠ …the ANSWER KEY is unchanged — an override cannot move a score')
+  check(afterQ2.options.length === beforeQ2.options.length
+    && JSON.stringify(afterQ2.options.map(o => o.value)) === JSON.stringify(beforeQ2.options.map(o => o.value)),
+  '⚠ …and the option COUNT and IDS are unchanged')
+  check(afterQ2.options[1].label === 'MY REWRITTEN OPTION', '…only the label moved')
+  check(afterQ2.overridden === true, '…and the row is flagged as edited')
+
+  const untouched = ovOk.result.kc.builtIn.find(q => q.id === 'q1_negotiated_ppm')
+  check(untouched.prompt === kc0.builtIn.find(q => q.id === 'q1_negotiated_ppm').prompt,
+    '⚠ a built-in with NO override still serves its generated text')
+
+  // ── The student sees the override ────────────────────────────────────────
+  const stuOv = await callFn('scorecardGetQuestions', asStudent(gidKc, 'stu-ov'))
+  check(stuOv.result.kc.pre.find(q => q.id === 'q2_charged_for_clean_parts').prompt === 'MY REWRITTEN STEM',
+    '⚠ the STUDENT is served the overridden stem')
+
+  // ── Hidden: gone from the serve path AND from the denominator ────────────
+  const hid = await callFn('scorecardUpdateConfig', asInstructor(gidKc, {
+    kcHidden: { q1_negotiated_ppm: true, q7_coasting: true },
+  }))
+  check(hid.ok, 'hiding two questions is accepted')
+  check(hid.result.kc.visibleCount === 8 && hid.result.kc.gradedCount === 8,
+    `⚠ the count line follows: 8 of 10 visible, 8 graded (${hid.result.kc.visibleCount}/${hid.result.kc.gradedCount})`)
+
+  const stuHid = await callFn('scorecardGetQuestions', asStudent(gidKc, 'stu-hid'))
+  const servedIds = [...stuHid.result.kc.pre, ...stuHid.result.kc.post].map(q => q.id)
+  check(!servedIds.includes('q1_negotiated_ppm') && !servedIds.includes('q7_coasting'),
+    '⚠⚠ a hidden question is NOT SERVED, in either stage')
+  check(stuHid.result.kc.total === 8,
+    `⚠⚠ …and the DENOMINATOR is 8, not 10 — the grader dropped it too (${stuHid.result.kc.total})`)
+  mustFail(() => stuHid.result.kc.total === 10,
+    'the denominator would still be 10 if forScoring kept the hidden questions')
+
+  const hidSubmit = await callFn('scorecardSubmitKcAnswer',
+    asStudent(gidKc, 'stu-hid', { questionId: 'q1_negotiated_ppm', answer: 'a' }))
+  check(!hidSubmit.ok,
+    '⚠⚠ …and SUBMITTING a hidden question is refused — it is not a question in this game')
+
+  // ── Reorder survives a save/reload round trip ────────────────────────────
+  const preIds = hid.result.kc.builtIn.filter(q => q.stage === 'pre').map(q => q.id)
+  const wantedOrder = [...preIds].reverse()
+  const ord = await callFn('scorecardUpdateConfig', asInstructor(gidKc, {
+    kcOrder: Object.fromEntries(wantedOrder.map((id, i) => [id, i])),
+  }))
+  check(ord.ok, 'a reorder is accepted')
+  const reread = await callFn('scorecardGetConfig', asInstructor(gidKc))
+  // ⚠ Compared ENTRY BY ENTRY, sorted. Firestore returns a map with its own key order, so
+  // a JSON.stringify comparison fails on a faithful round trip — which is a bug in the
+  // check, not in the storage, and cost one debugging cycle here.
+  const sortedEntries = o => Object.entries(o ?? {}).sort(([a], [b]) => a.localeCompare(b))
+  check(JSON.stringify(sortedEntries(reread.result.config.kcOrder))
+    === JSON.stringify(sortedEntries(Object.fromEntries(wantedOrder.map((id, i) => [id, i])))),
+  '⚠ the order SURVIVES a save/reload round trip')
+  const stuOrd = await callFn('scorecardGetQuestions', asStudent(gidKc, 'stu-ord'))
+  check(JSON.stringify(stuOrd.result.kc.pre.map(q => q.id))
+    === JSON.stringify(wantedOrder.filter(id => id !== 'q1_negotiated_ppm')),
+  '⚠ …and the STUDENT is served that order')
+
+  // ── The id-collision guard: the explicit SET, not a kc_ prefix ───────────
+  const collide = await callFn('scorecardUpdateConfig', asInstructor(gidKc, {
+    addedKcQuestions: [{
+      id: 'q5_earnings_arithmetic', type: 'mc', prompt: 'mine',
+      options: [{ value: 'x', label: 'X' }, { value: 'y', label: 'Y' }], correct_value: 'x',
+    }],
+  }))
+  check(!collide.ok, '⚠⚠ an added question CANNOT take a built-in id')
+  check((collide.error ?? '').includes('built-in'), '…and says so')
+  mustFail(() => 'q5_earnings_arithmetic'.startsWith('kc_'),
+    'a kc_ PREFIX rule would have let this through — scorecard\'s ids are unprefixed')
+
+  // ── D13: the added-question stage is the instructor's ────────────────────
+  const staged = await callFn('scorecardUpdateConfig', asInstructor(gidKc, {
+    addedKcQuestions: [
+      { id: 'akc_pre1', type: 'mc', prompt: 'Added, before play?', stage: 'pre',
+        options: [{ value: 'a1', label: 'A' }, { value: 'b1', label: 'B' }], correct_value: 'a1' },
+      { id: 'akc_post1', type: 'text', prompt: 'Added, after the reveal?', stage: 'post' },
+      { id: 'akc_legacy', type: 'mc', prompt: 'No stage given',
+        options: [{ value: 'a2', label: 'A' }, { value: 'b2', label: 'B' }], correct_value: 'a2' },
+    ],
+  }))
+  check(staged.ok, 'added questions with an explicit stage are accepted')
+  const stuStage = await callFn('scorecardGetQuestions', asStudent(gidKc, 'stu-stage'))
+  check(stuStage.result.kc.pre.some(q => q.id === 'akc_pre1'),
+    '⚠⚠ D13 — an added question CHOSEN for `pre` is served BEFORE play')
+  check(stuStage.result.kc.post.some(q => q.id === 'akc_post1'),
+    '…and one chosen for `post` is served after the reveal')
+  check(stuStage.result.kc.post.some(q => q.id === 'akc_legacy'),
+    '⚠ …and one with NO stage still lands in `post` — nothing stored before D13 moves')
+  check(stuStage.result.kc.total === 8 + 2,
+    `⚠ the denominator counts the two GRADED additions and not the free-text one (${stuStage.result.kc.total})`)
+
+  // ── Zero visible graded ⇒ null, not 0 and not 1 ──────────────────────────
+  const gidZero = `sc-kczero-${Date.now()}`
+  await openInstance(gidZero, { seed: 'kczero' })
+  const zeroSet = await callFn('scorecardUpdateConfig', asInstructor(gidZero, {
+    kcHidden: Object.fromEntries(kc0.builtIn.map(q => [q.id, true])),
+    addedKcQuestions: [{ id: 'akc_only', type: 'text', prompt: 'Just a paragraph, please.' }],
+  }))
+  check(zeroSet.ok, 'an instance with every graded question hidden is a legal configuration')
+  check(zeroSet.result.kc.gradedCount === 0, '…and the count line says 0 graded')
+  const zAns = await callFn('scorecardSubmitKcAnswer',
+    asStudent(gidZero, 'stu-zero', { questionId: 'akc_only', answer: 'here you go' }))
+  check(zAns.ok, 'the one ungraded question is still answerable')
+  const zDoc = await getDoc(`scorecard_game_instances/${gidZero}/participants/stu-zero`)
+  const zScore = zDoc?.fields?.knowledge_check_score
+  check(zScore != null && zScore.nullValue !== undefined,
+    `⚠⚠ ZERO VISIBLE GRADED ⇒ the stored score is NULL, not 0 and not 1 (${JSON.stringify(zScore)})`)
+  mustFail(() => zScore?.doubleValue === 1 || zScore?.integerValue === '1',
+    'calcKCScore answers the empty set with 1.0 — a perfect score for a student never asked anything')
+
   section('§11  Per-section check counts (T7)')
   // ─────────────────────────────────────────────────────────────────────────────
   // ⚠ A nondeterministic TOTAL means sections silently did not run. Pinning per-section
@@ -1013,6 +1183,7 @@ const run = async () => {
     '§10  The split KC (§9) and the three ordered steps (§10)': 47,
     '§10b ⚠ Solver vs the slide-6 fixtures, and Monte Carlo vs analytic (spec §13)': 17,
     '§10c ⚠ KC parity — added questions and the kcEnabled gate': 18,
+    '§10d ⚠⚠ The shared KC surface — hidden / order / overrides, AT THE CALLABLES': 42,
   }
   for (const [name, want] of Object.entries(EXPECTED_COUNTS)) {
     const got = perSection[name] ?? 0

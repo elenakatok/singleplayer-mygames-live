@@ -379,6 +379,55 @@ export interface ScorecardAddedKcQuestion {
   /** mc only. Absent ⇒ recorded but UNGRADED — in neither numerator nor denominator. */
   correct_value?: string
   explanation?: string
+  /** ⚠ Absent ⇒ `post`, so every question stored before D13 keeps its placement. */
+  stage?: ScorecardKcStage
+}
+
+/** ⚠ TWO stages, and `post` means AFTER THE REVEAL — see SCORECARD_KC_STAGES on the
+ *  server for why the spec's third stage (`post_game`) has no home in this game yet. */
+export type ScorecardKcStage = 'pre' | 'post'
+
+/** One question's instructor wording. ⚠ `options` maps an EXISTING option value to a
+ *  replacement LABEL — it cannot add, drop, reorder or re-key an option, and therefore
+ *  cannot move a score. */
+export interface ScorecardKcOverride {
+  prompt?: string
+  options?: Record<string, string>
+}
+
+/**
+ * The instructor-facing inventory of every question this instance could ask — what the
+ * shared knowledge-check block renders.
+ *
+ * ⚠ THIS IS THE INSTRUCTOR PAYLOAD, so `correctValue` belongs here. The STUDENT payload
+ * (`scorecardGetQuestions`) still strips every key.
+ */
+export interface ScorecardKcInventoryQuestion {
+  id: string
+  kind: 'builtin' | 'added'
+  stage: ScorecardKcStage
+  prompt: string
+  options: { value: string; label: string }[]
+  correctValue: string | null
+  graded: boolean
+  visible: boolean
+  locked: boolean
+  /** ⚠ Populated whenever `locked` — a disabled control with no reason reads as a bug. */
+  lockReason: string | null
+  overridden: boolean
+  originalPrompt?: string
+  originalOptions?: { value: string; label: string }[]
+  type?: 'mc' | 'text'
+  order: number | null
+}
+
+export interface ScorecardKcInventory {
+  stages: readonly ScorecardKcStage[]
+  builtIn: ScorecardKcInventoryQuestion[]
+  added: ScorecardKcInventoryQuestion[]
+  poolTotal: number
+  visibleCount: number
+  gradedCount: number
 }
 
 /**
@@ -392,6 +441,11 @@ export interface ScorecardAddedKcQuestion {
 export interface ScorecardInstructorConfig extends ScorecardParams {
   kcEnabled: boolean
   addedKcQuestions: ScorecardAddedKcQuestion[]
+  /** ⚠ The three convergence fields (spec §5). All optional server-side, all defaulting
+   *  to today's behaviour, all honoured in BOTH the serve path and the grader. */
+  kcHidden: Record<string, boolean>
+  kcOrder: Record<string, number>
+  kcOverrides: Record<string, ScorecardKcOverride>
 }
 
 export interface ScorecardConfigResponse {
@@ -408,6 +462,8 @@ export interface ScorecardConfigResponse {
   /** ⚠ Has anyone STARTED? The standing parameter lock's input (spec §3.1). */
   started: boolean
   induced: ScorecardInducedBehaviour
+  /** Everything the shared knowledge-check block renders. */
+  kc: ScorecardKcInventory
 }
 
 export function scorecardGetReport() {

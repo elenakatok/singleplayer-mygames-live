@@ -1,5 +1,10 @@
-import type { ScorecardAddedKcQuestion, ScorecardConfig, ScorecardTruth } from './config'
+import { calcKCScore } from '@mygames/game-server'
+import type { ScorecardAddedKcQuestion, ScorecardConfig, ScorecardTruth, KcStage } from './config'
+import { addedKcStage, DEFAULT_CONFIG, DEFAULT_TRUTH } from './config'
 import { hash32 } from './rng'
+import { applyKcOrder, type KcOverrideMap, type KcIdGuard } from '../shared/kcSurface'
+
+export type { KcStage } from './config'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // KNOWLEDGE CHECK (spec §9) — SPLIT PRE/POST PLAY — and the two free-text steps (§10).
@@ -36,9 +41,6 @@ export interface KcOption {
   id: string
   text: string
 }
-
-/** When a question is asked. ⚠ The split is the whole point — see the header. */
-export type KcStage = 'pre' | 'post'
 
 export interface KcQuestion {
   id: string
@@ -459,6 +461,140 @@ export function questionsForStage(all: readonly KcQuestion[], stage: KcStage): K
   return all.filter(q => q.stage === stage)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// THE THREE CONVERGENCE FIELDS, APPLIED (spec §5).
+//
+// ⚠⚠ `resolveKcQuestions` IS THE ONE ANSWER TO "WHICH QUESTIONS DOES THIS INSTANCE ASK?",
+// and BOTH the serve path (`scorecardGetQuestions`) and the grader
+// (`scorecardSubmitKcAnswer`) call it. That is not tidiness — a question hidden from the
+// display but left in the grader's `forScoring` set is graded against an answer the student
+// never saw and inflates every denominator, and it is the single most plausible bug this
+// change introduces (spec §5). One function, two callers, no second filter.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Apply an instructor's wording to one question.
+ *
+ * ⚠⚠ TEXT ONLY, BY CONSTRUCTION. `options` is a map from an EXISTING option id to a
+ * replacement LABEL, so this cannot add an option, drop one, reorder them, change an id, or
+ * touch `correctOptionId`. Grading compares option IDS (`answer === q.correctOptionId`), so
+ * an override provably cannot move a score. An unknown option id in the map is ignored
+ * rather than appended.
+ *
+ * ⚠ The EXPLANATION is deliberately NOT overridable. It is generated prose that cites the
+ * question's own numbers, and a locked question cannot be overridden at all — so the only
+ * questions reachable here are static ones whose explanation is already correct as written.
+ */
+export function applyKcOverride(q: KcQuestion, overrides: KcOverrideMap): KcQuestion {
+  const o = overrides[q.id]
+  if (!o) return q
+  return {
+    ...q,
+    prompt: o.prompt ?? q.prompt,
+    options: o.options
+      ? q.options.map(opt => ({ id: opt.id, text: o.options![opt.id] ?? opt.text }))
+      : q.options,
+  }
+}
+
+/** Has an instructor rewritten this question? Drives the "edited" badge, nothing else. */
+export function isKcOverridden(id: string, overrides: KcOverrideMap): boolean {
+  return overrides[id] !== undefined
+}
+
+/** ⚠ Stage order is structural, not an instructor setting. See `resolveKcQuestions`. */
+const SCORECARD_STAGE_ORDER = ['pre', 'post'] as const
+
+/** One instance's built-in questions: overridden, hidden ones removed, in stage order. */
+export function resolveKcQuestions(
+  config: ScorecardConfig,
+  truth: ScorecardTruth,
+): KcQuestion[] {
+  const all = scorecardKcQuestions(config, truth)
+    .filter(q => config.kcHidden[q.id] !== true)
+    .map(q => applyKcOverride(q, config.kcOverrides))
+  // Ordered WITHIN a stage — the pre/post split is structural and an `order` map must
+  // never be able to move a post-play strategy question in front of play.
+  return ([...SCORECARD_STAGE_ORDER] as KcStage[])
+    .flatMap(stage => applyKcOrder(
+      all.filter(q => q.stage === stage), q => q.id, config.kcOrder,
+    ))
+}
+
+/** One instance's added questions: hidden ones removed, in order, for ONE stage. */
+export function resolveAddedKcQuestions(
+  config: ScorecardConfig,
+  stage?: KcStage,
+): ScorecardAddedKcQuestion[] {
+  const visible = config.addedKcQuestions.filter(q => config.kcHidden[q.id] !== true)
+  const scoped = stage === undefined ? visible : visible.filter(q => addedKcStage(q) === stage)
+  return applyKcOrder(scoped, q => q.id, config.kcOrder)
+}
+
+/**
+ * ⚠⚠ THE GRADER'S SCORING SET — the whole of it, in one place.
+ *
+ * `scorecardSubmitKcAnswer` calls exactly this and does not build a list of its own. That
+ * is the mechanism behind spec §5's warning: the serve path and the grader must agree about
+ * which questions exist, and they cannot disagree if only one of them decides.
+ *
+ * ⚠ VISIBLE **AND** GRADED. A hidden question is absent (it was never asked); an ungraded
+ * one — free text, or an mc whose key named no offered option and was dropped at parse
+ * time — is absent from the numerator AND the denominator, so adding one cannot lower
+ * anybody's score.
+ */
+export function kcScoringSet(
+  config: ScorecardConfig,
+  truth: ScorecardTruth,
+): { field: string; correct_value: string }[] {
+  return [
+    ...resolveKcQuestions(config, truth).map(q => ({ field: q.id, correct_value: q.correctOptionId })),
+    ...resolveAddedKcQuestions(config)
+      .filter(isGradedAdded)
+      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
+  ]
+}
+
+/**
+ * The knowledge-check score to STORE, or null when there is nothing to score.
+ *
+ * ⚠⚠ AN EMPTY SCORING SET IS `null`, NEVER A NUMBER. The shared `calcKCScore` answers the
+ * empty set with 1.0 — a sensible identity for a fraction and a disastrous thing to store.
+ * An instance whose graded questions are all hidden, or which carries only free-text
+ * additions, would record a PERFECT knowledge-check score for a student who was never asked
+ * a graded question, and `scoreAndRecord` would push it to the gradebook. `null` is the
+ * honest value and is what every consumer downstream already handles.
+ */
+export function kcScoreOrNull(
+  answers: Record<string, string>,
+  forScoring: ReadonlyArray<{ field: string; correct_value: string }>,
+): number | null {
+  if (forScoring.length === 0) return null
+  return calcKCScore(answers, [...forScoring]).score
+}
+
+/**
+ * The BUILT-IN ids — the collision guard's authority, and scorecard's strategy for it.
+ *
+ * ⚠⚠ AN EXPLICIT SET, NOT A `kc_` PREFIX RULE, AND THAT IS SCORECARD-SPECIFIC. pd, pricing,
+ * forecast and newsvendor reject any added id starting with `kc_` because their built-ins
+ * own that namespace. Scorecard's built-in ids are UNPREFIXED (`q1_negotiated_ppm`), so a
+ * prefix rule would let one straight through — and the grader looks built-ins up FIRST, so
+ * the instructor's key would be shadowed and students marked against the built-in answer.
+ * The shared parser carries both strategies (spec §5); this is the one scorecard passes.
+ *
+ * ⚠ Resolved against the DEFAULTS, deliberately, and it needs no Firestore read: a built-in
+ * question's ID is a literal, while only its prompt and options interpolate config.
+ *
+ * ⚠ Do NOT migrate these ids to gain a prefix — stored answers are keyed by question id,
+ * and renaming orphans every stored answer.
+ */
+export const BUILT_IN_KC_IDS: ReadonlySet<string> = new Set(
+  scorecardKcQuestions(DEFAULT_CONFIG, DEFAULT_TRUTH).map(q => q.id),
+)
+
+export const SCORECARD_KC_ID_GUARD: KcIdGuard = { kind: 'idSet', ids: BUILT_IN_KC_IDS }
+
 /** The KC as it ships to a student. ⚠ Answer key and explanation are DROPPED. */
 export interface ClientKcQuestion {
   id: string
@@ -514,9 +650,11 @@ export function toClientKcQuestions(
  * Instructor-added questions in the SAME client shape as the built-in ten, so the student
  * screen and the resume logic cannot tell them apart.
  *
- * ⚠⚠ ALWAYS `stage: 'post'` — see `ScorecardAddedKcQuestion` in config.ts. Spec §9.1 keeps
- * the PRE set closed because nothing before play may state that a target can become
- * unreachable, and an instructor writing a question has no way to know that constraint.
+ * ⚠⚠ THE STAGE IS THE INSTRUCTOR'S (spec D13). It used to be pinned to `'post'` because
+ * spec §9.1 keeps the PRE set closed — nothing before play may state that a target can
+ * become unreachable. That rule survives as the settings page's save-time warning rather
+ * than as this pin. An added question with no stage is still `post`, so nothing stored
+ * before the change moves.
  *
  * ⚠⚠ THE SAME SHUFFLE, DELIBERATELY. `cef36fe` fixed instructor-added questions being
  * served in typed order across forecast, newsvendor, pricing and pd — an instructor has no
@@ -535,7 +673,7 @@ export function addedToClientKcQuestions(
     const options: KcOption[] = (q.options ?? []).map(o => ({ id: o.value, text: o.label }))
     return {
       id: q.id,
-      stage: 'post' as const,
+      stage: addedKcStage(q),
       prompt: q.prompt,
       options: options.length > 1 ? shuffleFor(participantId, q.id, options) : options,
     }

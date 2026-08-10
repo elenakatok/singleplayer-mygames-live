@@ -5,9 +5,14 @@ import { useInstructorSession } from '../shared/useInstructorSession'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import {
   scorecardGetConfig, scorecardUpdateConfig, scorecardInstructorSession, instructorErrorMessage,
-  type ScorecardConfigResponse, type ScorecardConditionPanel, type ScorecardAddedKcQuestion,
+  type ScorecardConfigResponse, type ScorecardConditionPanel,
+  type ScorecardKcStage,
 } from './api'
 import { PolicyGridSVG, PolicyGridLegend } from './PolicyGridSVG'
+import {
+  KnowledgeCheckSettings, visibleGradedIds,
+  type KcSettingsDraft, type KcSettingsQuestion, type KcSettingsStage,
+} from '../shared/KnowledgeCheckSettings'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Settings (spec §3) + THE INDUCED-BEHAVIOUR PANEL (spec §3.1).
@@ -28,6 +33,42 @@ import { PolicyGridSVG, PolicyGridLegend } from './PolicyGridSVG'
 // instructor can see what an edit induced BEFORE anyone plays.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * ⚠⚠ TWO STAGES, AND `post` MEANS AFTER THE REVEAL.
+ *
+ * The convergence spec's D11 names three — `pre_game`, `post_game` (after play, BEFORE the
+ * results) and `debrief` (after the reveal). Scorecard's `'pre'` is `pre_game`; its
+ * `'post'` questions are served AFTER the §10 reveal, so `'post'` IS `debrief`.
+ *
+ * ⚠ Scorecard's post_game slot holds only the `noticing` free-text step, and there is NO
+ * render phase between the session summary and the reveal for a KC question to occupy.
+ * Offering a third option here would let an instructor write a question that never appears.
+ * See the report — this is flagged for Elena, not silently dropped.
+ */
+const KC_STAGES: KcSettingsStage[] = [
+  {
+    id: 'pre',
+    label: 'Before play',
+    note: 'Asked before the first contract begins.',
+  },
+  {
+    id: 'post',
+    label: 'After the reveal',
+    note: 'Asked once the student has seen their two effort curves.',
+  },
+]
+
+/**
+ * ⚠ §9.1 SURVIVES AS A WARNING, NOT AS A MECHANISM (spec D13, §4.1 — warn-never-block).
+ * Added questions used to be pinned to the post stage precisely because an instructor
+ * cannot be expected to know this rule. Now they are told it instead.
+ */
+const KC_STAGE_WARNINGS: Record<string, string> = {
+  pre:
+    'This question is asked before play. Don’t write anything that suggests a target '
+    + 'can stop being reachable — noticing that is what the game tests.',
+}
+
 const row: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: '0.75rem', margin: '0.4rem 0' }
 const lbl: React.CSSProperties = { flex: '0 0 15rem', fontSize: '0.9rem' }
 const inp: React.CSSProperties = { width: '9rem', padding: '0.3rem 0.45rem' }
@@ -41,52 +82,50 @@ export default function Settings() {
   const [savedAt, setSavedAt] = useState<string | null>(null)
   const navigate = useNavigate()
 
-  // ── The added-question composer (ported from pd/pricing) ───────────────────
-  const [newType, setNewType] = useState<'mc' | 'text'>('mc')
-  const [newPrompt, setNewPrompt] = useState('')
-  const [newOptions, setNewOptions] = useState<string[]>(['', ''])
-  const [newCorrect, setNewCorrect] = useState(0)
-  const [addError, setAddError] = useState<string | null>(null)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // THE KNOWLEDGE CHECK — now the SHARED block (convergence spec §2, §8.1).
+  //
+  // ⚠ The composer, the added-question list and the id minting all moved into
+  // `shared/KnowledgeCheckSettings`. Scorecard supplies only what is genuinely its own:
+  // the stage names, the §9.1 warning, and the copy saying what the toggle removes.
+  // ═══════════════════════════════════════════════════════════════════════════
 
-  const addedQuestions = (form.addedKcQuestions ?? []) as ScorecardAddedKcQuestion[]
-
-  /** Short, collision-resistant enough for ids the instructor never types. */
-  const shortId = () => Math.random().toString(36).slice(2, 8)
-
-  function addQuestion() {
-    setAddError(null)
-    if (!newPrompt.trim()) { setAddError('A question needs a prompt.'); return }
-
-    let options: { value: string; label: string }[] | undefined
-    let correct_value: string | undefined
-    if (newType === 'mc') {
-      const labels = newOptions.map(o => o.trim()).filter(Boolean)
-      if (labels.length < 2) { setAddError('A multiple-choice question needs at least two options.'); return }
-      options = labels.map(label => ({ value: `o_${shortId()}`, label }))
-      correct_value = options[Math.min(newCorrect, options.length - 1)].value
-    }
-    const q: ScorecardAddedKcQuestion = {
-      // ⚠ `akc_` — never a built-in id. The server refuses any id in the built-in set
-      // outright, because the grader looks built-ins up FIRST and a collision would grade
-      // the student against the built-in key instead of this one.
-      id: `akc_${shortId()}`,
-      type: newType,
-      prompt: newPrompt.trim(),
-      ...(options ? { options } : {}),
-      ...(correct_value ? { correct_value } : {}),
-    }
-    set('addedKcQuestions')([...addedQuestions, q])
-    setNewPrompt(''); setNewOptions(['', '']); setNewCorrect(0)
-  }
+  /** ⚠ The draft is separate from `form` because it is a nested shape and `form`'s
+   *  `set(k)(v)` helper is flat. Both go into the same `scorecardUpdateConfig` call. */
+  const [kcDraft, setKcDraft] = useState<KcSettingsDraft | null>(null)
+  /** What was graded when the page loaded — D2's comparison point. */
+  const [gradedAtLoad, setGradedAtLoad] = useState<string[]>([])
 
   useEffect(() => {
     if (session.kind !== 'ready') return
     let cancelled = false
     scorecardGetConfig()
-      .then(r => { if (!cancelled) { setData(r); setForm(seed(r)) } })
+      .then(r => {
+        if (cancelled) return
+        setData(r)
+        setForm(seed(r))
+        const d = seedKc(r)
+        setKcDraft(d)
+        setGradedAtLoad(visibleGradedIds(kcQuestions(r), d))
+      })
       .catch(e => { if (!cancelled) setError(instructorErrorMessage(e)) })
     return () => { cancelled = true }
   }, [session])
+
+  /** The server's inventory in the shared block's shape. Both kinds, one list. */
+  function kcQuestions(r: ScorecardConfigResponse): KcSettingsQuestion[] {
+    return [...r.kc.builtIn, ...r.kc.added]
+  }
+
+  function seedKc(r: ScorecardConfigResponse): KcSettingsDraft {
+    return {
+      enabled: r.config.kcEnabled,
+      hidden: { ...r.config.kcHidden },
+      order: { ...r.config.kcOrder },
+      overrides: { ...r.config.kcOverrides },
+      added: r.config.addedKcQuestions.map(q => ({ ...q })),
+    }
+  }
 
   function seed(r: ScorecardConfigResponse): Record<string, unknown> {
     return {
@@ -111,8 +150,8 @@ export default function Settings() {
       periodNoun: r.config.periodNoun,
       deliveryNoun: r.config.deliveryNoun,
       scorecardNoun: r.config.scorecardNoun,
-      kcEnabled: r.config.kcEnabled,
-      addedKcQuestions: r.config.addedKcQuestions,
+      // ⚠ The knowledge check is NOT seeded into `form` — it lives in `kcDraft` and is
+      // merged into the patch at save time. Two homes for one field would drift.
       reliabilityHigh: r.truth.reliabilityHigh,
       reliabilityLow: r.truth.reliabilityLow,
       reliabilitySchedule: r.truth.reliabilitySchedule,
@@ -126,14 +165,34 @@ export default function Settings() {
     setSaving(true)
     setError(null)
     try {
-      const r = await scorecardUpdateConfig(form)
+      // ⚠ ONE CALL. The knowledge-check draft is merged into the same patch as everything
+      // else, so a save is atomic from the instructor's point of view and the server's
+      // re-read returns one consistent picture.
+      const patch = { ...form, ...(kcDraft ? kcPatch(kcDraft) : {}) }
+      const r = await scorecardUpdateConfig(patch)
       setData(r)
       setForm(seed(r))
+      const d = seedKc(r)
+      setKcDraft(d)
+      // ⚠ The D2 baseline moves to what was just SAVED, so the banner reflects "changed
+      // since you last saved" rather than firing forever after one edit.
+      setGradedAtLoad(visibleGradedIds(kcQuestions(r), d))
       setSavedAt(new Date().toLocaleTimeString())
     } catch (e) {
       setError(instructorErrorMessage(e))
     } finally {
       setSaving(false)
+    }
+  }
+
+  /** The draft, in the callable's field names. */
+  function kcPatch(d: KcSettingsDraft) {
+    return {
+      kcEnabled: d.enabled,
+      kcHidden: d.hidden,
+      kcOrder: d.order,
+      kcOverrides: d.overrides,
+      addedKcQuestions: d.added,
     }
   }
 
@@ -172,6 +231,19 @@ export default function Settings() {
   }
 
   const { induced } = data
+
+  /** ⚠ D2's trigger: has the VISIBLE GRADED set moved since the last load or save? A
+   *  reworded prompt or a reordered stage does not change anybody's denominator and must
+   *  not raise the banner — only adding, hiding or unhiding a graded question does. */
+  const gradedChanged = kcDraft !== null
+    && JSON.stringify(visibleGradedIds(kcQuestions(data), kcDraft)) !== JSON.stringify(gradedAtLoad)
+
+  /** ⚠ The §9.1 caution, shown beside Save so it is in front of the instructor at the
+   *  moment they commit. It never blocks — `save()` does not consult it. */
+  const preStageAdded = (kcDraft?.added ?? []).filter(
+    a => (a.stage as ScorecardKcStage | undefined) === 'pre',
+  )
+
   const pct = (x: number) => `${Math.round(x * 100)}%`
   const ecu = (x: number) => (Number.isFinite(x) ? (Math.round(x * 100) / 100).toString() : '—')
 
@@ -255,105 +327,61 @@ export default function Settings() {
       {textField('scorecardNoun', 'Noun — scorecard')}
       {textField('seed', 'Seed (blank = random)')}
 
-      {/* ═══ THE KNOWLEDGE CHECK (spec §9) ═══════════════════════════════════ */}
-      <h3>Knowledge check</h3>
-      {boolField('kcEnabled', 'Include the knowledge check')}
-      <p style={{ fontSize: '0.8rem', color: colors.textSecondary, marginTop: 0 }}>
-        Off removes both stages — the six asked before play and the four asked after the
-        reveal — along with anything added below. ⚠ The three ordered steps of the debrief
-        are <em>not</em> part of the knowledge check and are unaffected: students still
-        answer the noticing question, see their two curves, and answer the linking
-        question.
-      </p>
+      {/* ═══ THE KNOWLEDGE CHECK — the SHARED block (convergence spec §2) ════ */}
+      {kcDraft && (
+        <KnowledgeCheckSettings
+          testIdPrefix="sc-kc"
+          questions={kcQuestions(data)}
+          stages={KC_STAGES}
+          draft={kcDraft}
+          onChange={setKcDraft}
+          stageWarnings={KC_STAGE_WARNINGS}
+          // ⚠ SCORECARD'S OWN WORDING, PRESERVED (D12 — "Scorecard's shipped copy is the
+          // model"). The block supplies the toggle; this sentence says what OFF removes,
+          // and it must keep saying that the §10 debrief steps are NOT part of it.
+          enableNote={(
+            <>
+              Off removes both stages — the questions asked before play and those asked
+              after the reveal — along with anything you have added. ⚠ The three ordered
+              steps of the debrief are <em>not</em> part of the knowledge check and are
+              unaffected: students still answer the noticing question, see their two
+              curves, and answer the linking question.
+            </>
+          )}
+          // ⚠ D2 — WARN, NEVER BLOCK. The banner already exists at the top of this page for
+          // parameter edits; the knowledge check becomes one more thing that triggers it,
+          // and it fires on the VISIBLE GRADED SET changing rather than on any keystroke.
+          startedWarning={
+            data.started && gradedChanged ? (
+              <p
+                data-testid="sc-kc-started-warning"
+                style={{
+                  background: '#fff8e6', border: '1px solid #e6d3a3', borderRadius: 6,
+                  padding: '0.6rem 0.9rem', fontSize: '0.85rem', marginTop: '0.75rem',
+                }}
+              >
+                ⚠ Students have already started, and you have changed which graded questions
+                are asked. Anyone who has already finished was scored out of the OLD set —
+                the reports will pool two different denominators. Saving is still allowed.
+              </p>
+            ) : null
+          }
+        />
+      )}
 
-      <p style={{ fontSize: '0.85rem', color: colors.textSecondary, marginBottom: '0.4rem' }}>
-        The built-in ten are fixed and cannot be edited or reordered. Your own questions are
-        asked <strong>after</strong> them, once the reveal has been shown.
-      </p>
-      {/* ⚠ ALWAYS POST-REVEAL, and not a choice offered here. Nothing asked BEFORE play may
-          hint that a target can become unreachable (spec §9.1) — noticing that is the
-          behaviour being measured, and an instructor writing a question has no way to know
-          the constraint. Placing additions after the reveal makes it impossible to
-          violate by accident. */}
-
-      {addedQuestions.length === 0 && (
-        <p style={{ fontSize: '0.85rem', fontStyle: 'italic', color: colors.textSecondary }}>
-          None yet.
+      {/* ⚠ THE SAVE-TIME §9.1 WARNING (spec §4.1). It WARNS; `save()` never reads it. */}
+      {preStageAdded.length > 0 && (
+        <p
+          data-testid="sc-kc-pre-stage-warning"
+          style={{
+            background: '#fff8e6', border: '1px solid #e6d3a3', borderRadius: 6,
+            padding: '0.6rem 0.9rem', fontSize: '0.85rem', margin: '1.25rem 0 0',
+          }}
+        >
+          ⚠ {KC_STAGE_WARNINGS.pre}
+          {preStageAdded.length > 1 && ` (${preStageAdded.length} questions.)`}
         </p>
       )}
-      <ul style={{ listStyle: 'none', margin: '0.5rem 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-        {addedQuestions.map(q => (
-          <li key={q.id} data-testid={`sc-set-added-${q.id}`}
-            style={{ border: `1px solid ${colors.borderMid}`, borderRadius: 6, padding: '0.6rem 0.8rem' }}>
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.3rem' }}>
-              <span style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: colors.textSecondary }}>
-                {q.type === 'mc' ? 'multiple choice' : 'free text (not graded)'}
-              </span>
-              <span style={{ flex: 1 }} />
-              <button
-                data-testid={`sc-set-delete-${q.id}`}
-                onClick={() => set('addedKcQuestions')(addedQuestions.filter(x => x.id !== q.id))}
-                style={{ fontSize: '0.8rem', padding: '0.15rem 0.5rem', color: '#c00' }}
-              >
-                Delete
-              </button>
-            </div>
-            <div style={{ fontSize: '0.9rem' }}>{q.prompt}</div>
-            {q.type === 'mc' && (
-              <div style={{ fontSize: '0.78rem', color: colors.textSecondary, marginTop: '0.2rem' }}>
-                {/* Bold marks the key. ⚠ Instructor-side only — the student payload drops
-                    `correct_value` entirely (api.ts ScorecardInstructorConfig). */}
-                {(q.options ?? []).map(o => (
-                  <span key={o.value} style={{ marginRight: '0.6rem', fontWeight: o.value === q.correct_value ? 700 : 400 }}>
-                    {o.label}
-                  </span>
-                ))}
-              </div>
-            )}
-          </li>
-        ))}
-      </ul>
-
-      <div style={{ border: `1px dashed ${colors.borderMid}`, borderRadius: 6, padding: '0.75rem', marginTop: '0.75rem' }}>
-        <div style={row}>
-          <label style={lbl}>New question</label>
-          <select style={inp} value={newType} data-testid="sc-set-new-type"
-            onChange={e => setNewType(e.target.value as 'mc' | 'text')}>
-            <option value="mc">Multiple choice</option>
-            <option value="text">Free text (not graded)</option>
-          </select>
-        </div>
-        <div style={row}>
-          <label style={lbl}>Prompt</label>
-          <input style={{ ...inp, width: '24rem' }} type="text" value={newPrompt}
-            data-testid="sc-set-new-prompt" onChange={e => setNewPrompt(e.target.value)} />
-        </div>
-        {newType === 'mc' && newOptions.map((o, i) => (
-          <div style={row} key={i}>
-            <label style={lbl}>
-              <input type="radio" name="sc-new-correct" checked={newCorrect === i}
-                data-testid={`sc-set-new-correct-${i}`}
-                onChange={() => setNewCorrect(i)} /> Option {i + 1}
-            </label>
-            <input style={{ ...inp, width: '20rem' }} type="text" value={o}
-              data-testid={`sc-set-new-option-${i}`}
-              onChange={e => setNewOptions(newOptions.map((x, j) => (j === i ? e.target.value : x)))} />
-          </div>
-        ))}
-        {newType === 'mc' && (
-          <button style={{ fontSize: '0.8rem', marginRight: '0.5rem' }}
-            data-testid="sc-set-new-option-add"
-            onClick={() => setNewOptions([...newOptions, ''])}>Add option</button>
-        )}
-        <button data-testid="sc-set-new-add" onClick={addQuestion}
-          style={{ fontSize: '0.9rem', padding: '0.3rem 0.9rem' }}>Add question</button>
-        {addError && <p style={{ color: '#c00', fontSize: '0.85rem' }}>{addError}</p>}
-        <p style={{ fontSize: '0.78rem', color: colors.textSecondary, margin: '0.5rem 0 0' }}>
-          ⚠ Added questions are saved with the rest of the page — the Save button below.
-          Options are shown to students in a different order for each student, so the
-          position of the right answer is never a hint.
-        </p>
-      </div>
 
       <div style={{ margin: '1.25rem 0' }}>
         <button onClick={save} disabled={saving} style={{ padding: '0.5rem 1.5rem', fontSize: '1rem' }}>

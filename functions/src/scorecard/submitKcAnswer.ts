@@ -1,12 +1,14 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
-import { extractStudentOnCallIds, calcKCScore } from '@mygames/game-server'
+import { extractStudentOnCallIds } from '@mygames/game-server'
 import {
   SCORECARD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION,
 } from './config'
 import { loadInstance } from './instance'
-import { scorecardKcQuestions, isGradedAdded } from './questions'
+import {
+  resolveKcQuestions, resolveAddedKcQuestions, kcScoringSet, kcScoreOrNull,
+} from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // scorecardSubmitKcAnswer (student) — one knowledge-check answer (spec §9).
@@ -49,14 +51,20 @@ export const scorecardSubmitKcAnswer = onCall({ cors: SCORECARD_CORS_ORIGINS }, 
     throw new HttpsError('failed-precondition', 'The knowledge check is not part of this game.')
   }
 
-  const questions = scorecardKcQuestions(config, truth)
+  // ⚠⚠ THE SAME RESOLVER THE SERVE PATH USES — hidden questions removed, overrides
+  // applied, in the instance's order. This is the line that keeps `forScoring` below
+  // honest: a question the instructor hid is not served AND is not graded AND is not in
+  // anybody's denominator, because there is exactly one function that decides which
+  // questions this instance has (spec §5).
+  const questions = resolveKcQuestions(config, truth)
+  const addedVisible = resolveAddedKcQuestions(config)
 
   // ── ROUTE THE ID TO ITS OWN SOURCE ────────────────────────────────────────
   // Built-in first, the same order the other four use. `parseAddedKcQuestion` plus the
   // instructorConfig collision check make an added id that shadows a built-in one
   // impossible, so this order can never grade a student against the wrong key.
   const q = questions.find(x => x.id === questionId)
-  const addedQ = q ? undefined : config.addedKcQuestions.find(x => x.id === questionId)
+  const addedQ = q ? undefined : addedVisible.find(x => x.id === questionId)
   if (!q && !addedQ) {
     throw new HttpsError('invalid-argument', `'${questionId}' is not a question in this game.`)
   }
@@ -85,15 +93,11 @@ export const scorecardSubmitKcAnswer = onCall({ cors: SCORECARD_CORS_ORIGINS }, 
     explanation = a.explanation ?? ''
   }
 
-  // The scoring set: the built-in ten PLUS every added question that carries a key.
-  // ⚠ An ungraded addition is in NEITHER the numerator nor the denominator, so adding one
-  // cannot silently lower every student's score — the same rule as the other four.
-  const forScoring = [
-    ...questions.map(x => ({ field: x.id, correct_value: x.correctOptionId })),
-    ...config.addedKcQuestions
-      .filter(isGradedAdded)
-      .map(x => ({ field: x.id, correct_value: x.correct_value! })),
-  ]
+  // ⚠⚠ THE SCORING SET IS NOT BUILT HERE. `kcScoringSet` is the single place that decides
+  // which questions this instance grades, and it derives from the same resolver the serve
+  // path uses — so a hidden question cannot be served-but-not-graded or graded-but-not-
+  // served. Building a second list here is exactly the bug spec §5 warns about.
+  const forScoring = kcScoringSet(config, truth)
 
   const participantRef = db
     .collection(INSTANCES_COLLECTION).doc(gameInstanceId)
@@ -128,8 +132,10 @@ export const scorecardSubmitKcAnswer = onCall({ cors: SCORECARD_CORS_ORIGINS }, 
     }
 
     // The score lands once, when the last question is answered.
+    // ⚠ `kcScoreOrNull`, not `calcKCScore` — an empty scoring set stores null rather than
+    // the shared helper's 1.0 identity. See its note.
     if (allAnswered && pData.knowledge_check_score == null) {
-      patch.knowledge_check_score = calcKCScore(allAnswers, forScoring).score
+      patch.knowledge_check_score = kcScoreOrNull(allAnswers, forScoring)
       patch.knowledge_check_completed_at = FieldValue.serverTimestamp()
     }
 

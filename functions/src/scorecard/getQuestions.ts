@@ -6,7 +6,8 @@ import {
 } from './config'
 import { loadInstance } from './instance'
 import {
-  scorecardKcQuestions, questionsForStage, toClientKcQuestions, addedToClientKcQuestions,
+  resolveKcQuestions, resolveAddedKcQuestions, questionsForStage,
+  toClientKcQuestions, addedToClientKcQuestions,
   kcDenominator, noticingQuestion, linkingQuestion,
 } from './questions'
 
@@ -48,7 +49,6 @@ export const scorecardGetQuestions = onCall({ cors: SCORECARD_CORS_ORIGINS }, as
     .get()
   const pData = snap.data() ?? {}
 
-  const all = scorecardKcQuestions(config, truth)
   const answered = (pData.kc_answers ?? {}) as Record<string, { answer?: unknown }>
   const freeText = (pData.free_text_answers ?? {}) as Record<string, unknown>
 
@@ -64,18 +64,28 @@ export const scorecardGetQuestions = onCall({ cors: SCORECARD_CORS_ORIGINS }, as
   // refused until `noticing` is stored, and the reveal is returned only by the noticing
   // submit. A `kcEnabled` branch in the client would be a second place that decides
   // sequence, and the two could disagree. There is no such branch.
-  const pre = config.kcEnabled ? questionsForStage(all, 'pre') : []
-  const post = config.kcEnabled ? questionsForStage(all, 'post') : []
-  const added = config.kcEnabled ? config.addedKcQuestions : []
+  //
+  // ⚠⚠ HIDDEN, ORDER AND OVERRIDES ARE APPLIED BY `resolveKcQuestions`, WHICH THE GRADER
+  // ALSO CALLS. Do not filter here as well — a second filter is a second answer to "which
+  // questions exist", and the two would eventually disagree (spec §5).
+  const resolved = config.kcEnabled ? resolveKcQuestions(config, truth) : []
+  const pre = questionsForStage(resolved, 'pre')
+  const post = questionsForStage(resolved, 'post')
+  const addedPre = config.kcEnabled ? resolveAddedKcQuestions(config, 'pre') : []
+  const addedPost = config.kcEnabled ? resolveAddedKcQuestions(config, 'post') : []
 
   const noticing = noticingQuestion(config)
   const linking = linkingQuestion(config)
 
-  // ⚠ APPENDED, so instructor questions come after the built-in four of §9.2 — "asked
-  // after the built-in ten", the same placement pd and pricing give theirs.
+  // ⚠ APPENDED WITHIN EACH STAGE, so instructor questions come after that stage's built-ins
+  // — "asked after the built-in ten", the same placement pd and pricing give theirs.
+  const preClient = [
+    ...toClientKcQuestions(pre, participantId),
+    ...addedToClientKcQuestions(addedPre, participantId),
+  ]
   const postClient = [
     ...toClientKcQuestions(post, participantId),
-    ...addedToClientKcQuestions(added, participantId),
+    ...addedToClientKcQuestions(addedPost, participantId),
   ]
 
   return {
@@ -83,13 +93,15 @@ export const scorecardGetQuestions = onCall({ cors: SCORECARD_CORS_ORIGINS }, as
     kc: {
       /** Whether this instance has a knowledge check at all. */
       enabled: config.kcEnabled,
-      /** Asked BEFORE the contracts begin. ⚠ Built-in only — §9.1 keeps this set closed. */
-      pre: toClientKcQuestions(pre, participantId),
+      /** Asked BEFORE the contracts begin. ⚠ May now include instructor additions —
+       *  §9.1's rule is the settings page's save-time warning, not a pin (spec D13). */
+      pre: preClient,
       /** ⚠ Asked only AFTER the §10 reveal. Never rendered before it. */
       post: postClient,
-      /** ⚠ DYNAMIC denominator over BOTH stages AND the graded additions. */
-      total: kcDenominator(config.kcEnabled ? all : [], added),
-      preTotal: pre.length,
+      /** ⚠ DYNAMIC denominator over BOTH stages AND the graded additions — and over the
+       *  VISIBLE set only, which is why it counts `resolved` rather than the authored ten. */
+      total: kcDenominator(resolved, [...addedPre, ...addedPost]),
+      preTotal: preClient.length,
       postTotal: postClient.length,
       answeredIds: Object.keys(answered),
       score: typeof pData.knowledge_check_score === 'number' ? pData.knowledge_check_score : null,

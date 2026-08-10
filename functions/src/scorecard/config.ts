@@ -40,6 +40,14 @@
 // which makes it exactly the number a student is entitled to see and reason about.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import {
+  parseAddedKcQuestion as parseSharedAddedKcQuestion,
+  parseKcHidden, parseKcOrder, parseKcOverrides,
+  type KcHiddenMap, type KcOrderMap, type KcOverrideMap, type KcIdGuard,
+} from '../shared/kcSurface'
+
+export type { KcHiddenMap, KcOrderMap, KcOverrideMap, KcOverride } from '../shared/kcSurface'
+
 /** game_id — lowercase, never displayed. Drives the collection prefix + fn names. */
 export const SCORECARD_GAME_ID = 'scorecard'
 
@@ -181,10 +189,35 @@ export interface ScorecardConfig extends ScorecardRules {
    * without touching the sequence that carries the measurement.
    */
   kcEnabled: boolean
-  /** Instructor-written questions, asked AFTER the built-in ten. See the note on
-   *  ScorecardAddedKcQuestion for why they are post-stage and not pre. */
+  /** Instructor-written questions, asked AFTER the built-in ten of their stage. */
   addedKcQuestions: ScorecardAddedKcQuestion[]
+  /**
+   * ⚠ THE THREE CONVERGENCE FIELDS (spec §5). All optional, all defaulting to exactly
+   * today's behaviour, all honoured in BOTH the serve path and the grader's scoring set.
+   * An instance written before they existed reads as {} for each — no hides, authored
+   * order, no rewrites.
+   */
+  kcHidden: KcHiddenMap
+  kcOrder: KcOrderMap
+  kcOverrides: KcOverrideMap
 }
+
+/** The stages scorecard's knowledge check can ask a question in.
+ *
+ * ⚠⚠ TWO, NOT THE SPEC'S THREE, AND THE THIRD IS BLOCKED RATHER THAN OMITTED.
+ * D11 names `pre_game`, `post_game` (after play, BEFORE the reveal) and `debrief` (after
+ * it). Scorecard's `'pre'` is `pre_game` and its `'post'` is served AFTER the §10 reveal,
+ * so `'post'` IS `debrief` — not `post_game`. Scorecard's post_game slot holds only the
+ * `noticing` free-text step, and NO render phase exists between the session summary and
+ * the reveal for a KC question to occupy. Adding one is a student-flow change that would
+ * put a question between play and `noticing` — the most valuable answer in the game — and
+ * that is a teaching decision, not a refactor. See BUILD_NOTES / the handoff.
+ */
+export const SCORECARD_KC_STAGES = ['pre', 'post'] as const
+export type KcStage = (typeof SCORECARD_KC_STAGES)[number]
+
+/** The stage an added question lands in when it does not name one — today's behaviour. */
+export const DEFAULT_ADDED_KC_STAGE: KcStage = 'post'
 
 /**
  * An instructor-written knowledge-check question. ⚠ SHAPE COPIED VERBATIM from
@@ -192,12 +225,15 @@ export interface ScorecardConfig extends ScorecardRules {
  * already have this agree exactly, and a scorecard-shaped variant would be a fifth
  * dialect of a settled model for no reason.
  *
- * ⚠⚠ ADDED QUESTIONS ARE ALWAYS POST-STAGE, and that is a scorecard-specific decision
- * the other four did not have to make because they have no stages. Spec §9.1 forbids the
- * PRE set from stating that a target can become unreachable — that inference IS the
- * behaviour under measurement, and handing it over before play destroys it. An instructor
- * writing a pre-play question cannot be expected to know that, so the pre set stays closed
- * and additions land after the built-in ten, where §9.2's questions already live.
+ * ⚠⚠ THE POST-STAGE PIN IS REVERSED (convergence spec D13, 08-10). Added questions used
+ * to be hard-pinned `stage: 'post'` because spec §9.1 forbids the PRE set from stating
+ * that a target can become unreachable — that inference IS the behaviour under
+ * measurement — and an instructor writing a question cannot be expected to know it.
+ *
+ * The constraint has not gone away; it has changed from a MECHANISM to a WARNING, which is
+ * the family's standing warn-never-block posture (D2, §4.1). The settings page shows §9.1's
+ * caution at save time when `pre` is chosen. `stage` is optional, and an absent one still
+ * means `post`, so every question stored before this change keeps the placement it had.
  */
 export interface ScorecardAddedKcQuestion {
   /** Stable id, also the answers-map key. Minted with an `akc_` prefix, so it can never
@@ -211,57 +247,35 @@ export interface ScorecardAddedKcQuestion {
   correct_value?: string
   /** Shown after answering, like the built-in ten. */
   explanation?: string
+  /** ⚠ Absent ⇒ `post`, so stored questions keep the placement the pin gave them. */
+  stage?: KcStage
 }
 
 /**
  * Parse one stored/incoming added question, or null if unusable.
  *
- * ⚠ PORTED FROM pd/pricing UNCHANGED except for the id-collision rule, which differs
- * because scorecard's built-in ids are not prefixed: pd rejects `kc_*`, and scorecard has
- * to reject any id that a built-in question actually uses. That check lives in
- * instructorConfig, which is the only place the built-in set is available.
+ * ⚠ THE BODY NOW LIVES IN `shared/kcSurface` (convergence spec §5 — five near-copies, no
+ * two byte-identical). This wrapper keeps scorecard's import surface unchanged and pins
+ * the two scorecard-specific choices:
+ *
+ *   • `stages` — an unrecognised stage is dropped, so it falls back to `post`.
+ *   • the id GUARD is NOT applied here, exactly as before. Scorecard's built-in ids are
+ *     unprefixed, so the guard needs the built-in SET, which is only available in
+ *     instructorConfig — the write path. This read path parses already-validated stored
+ *     data, and applying a guard here would silently drop a question an older build had
+ *     legitimately stored.
  */
-export function parseAddedKcQuestion(raw: unknown): ScorecardAddedKcQuestion | null {
-  if (typeof raw !== 'object' || raw === null) return null
-  const q = raw as Record<string, unknown>
-  const id = typeof q.id === 'string' ? q.id.trim() : ''
-  const prompt = typeof q.prompt === 'string' ? q.prompt.trim() : ''
-  if (!id || !prompt) return null
+export function parseAddedKcQuestion(
+  raw: unknown,
+  guard?: KcIdGuard,
+): ScorecardAddedKcQuestion | null {
+  const q = parseSharedAddedKcQuestion(raw, { guard, stages: SCORECARD_KC_STAGES })
+  return q === null ? null : (q as ScorecardAddedKcQuestion)
+}
 
-  // ⚠ OPTIONAL FIELDS ARE OMITTED, NEVER SET TO undefined. These objects are written
-  // straight into Firestore, which REJECTS an undefined value outright — so an
-  // explanation-less question would fail the whole save rather than store cleanly.
-  const explanation = typeof q.explanation === 'string' && q.explanation.trim()
-    ? q.explanation.trim() : null
-
-  const type: 'mc' | 'text' = q.type === 'mc' ? 'mc' : 'text'
-  if (type === 'text') {
-    // Free text cannot be auto-graded, so it is recorded and left UNGRADED — it never
-    // enters the KC score's numerator or denominator.
-    return { id, type, prompt, ...(explanation ? { explanation } : {}) }
-  }
-
-  const optionsRaw = Array.isArray(q.options) ? q.options : []
-  const options: { value: string; label: string }[] = []
-  for (const o of optionsRaw) {
-    if (typeof o !== 'object' || o === null) continue
-    const oo = o as Record<string, unknown>
-    const value = typeof oo.value === 'string' ? oo.value : ''
-    const label = typeof oo.label === 'string' ? oo.label : ''
-    if (value && label) options.push({ value, label })
-  }
-  if (options.length < 2) return null   // an mc question needs something to choose between
-
-  const key = typeof q.correct_value === 'string' ? q.correct_value : ''
-  // A key that names no offered option is dropped rather than kept: it would mark every
-  // student wrong, silently.
-  const hasKey = options.some(o => o.value === key)
-
-  return {
-    id, type, prompt, options,
-    ...(hasKey ? { correct_value: key } : {}),
-    ...(explanation ? { explanation } : {}),
-  }
+/** The stage a stored added question is asked in. ⚠ Absent ⇒ `post` (see the interface). */
+export function addedKcStage(q: ScorecardAddedKcQuestion): KcStage {
+  return q.stage ?? DEFAULT_ADDED_KC_STAGE
 }
 
 /**
@@ -304,6 +318,9 @@ export const DEFAULT_CONFIG: ScorecardConfig = {
   productName: DEFAULT_PRODUCT_NAME,
   kcEnabled: true,
   addedKcQuestions: [],
+  kcHidden: {},
+  kcOrder: {},
+  kcOverrides: {},
 }
 
 export const DEFAULT_TRUTH: ScorecardTruth = {
@@ -395,8 +412,13 @@ export function loadScorecardConfig(raw: unknown): ScorecardConfig {
     // to OFF would silently strip the knowledge check from every live game.
     kcEnabled: d.kc_enabled !== false,
     addedKcQuestions: (Array.isArray(d.added_kc_questions) ? d.added_kc_questions : [])
-      .map(parseAddedKcQuestion)
+      .map(q => parseAddedKcQuestion(q))
       .filter((q): q is ScorecardAddedKcQuestion => q !== null),
+    // ⚠ Total on absent — an instance written before these existed reads as "no hides,
+    // authored order, no rewrites", which is exactly the behaviour it already had.
+    kcHidden: parseKcHidden(d.kc_hidden),
+    kcOrder: parseKcOrder(d.kc_order),
+    kcOverrides: parseKcOverrides(d.kc_overrides),
   }
 }
 

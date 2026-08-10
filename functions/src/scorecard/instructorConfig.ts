@@ -5,10 +5,16 @@ import {
   SCORECARD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION,
   CONFIG_DOC, TRUTH_DOC,
   HARD_MIN_CONTRACTS, HARD_MAX_CONTRACTS, HARD_MIN_PERIODS, HARD_MAX_PERIODS,
-  loadScorecardConfig, loadScorecardTruth, parseAddedKcQuestion,
-  DEFAULT_CONFIG, DEFAULT_TRUTH, type ScorecardAddedKcQuestion,
+  loadScorecardConfig, loadScorecardTruth, parseAddedKcQuestion, addedKcStage,
+  SCORECARD_KC_STAGES,
+  type ScorecardAddedKcQuestion, type ScorecardConfig, type ScorecardTruth,
 } from './config'
-import { scorecardKcQuestions } from './questions'
+import {
+  scorecardKcQuestions, applyKcOverride, isGradedAdded, isKcOverridden,
+  BUILT_IN_KC_IDS as BUILT_IN_IDS, SCORECARD_KC_ID_GUARD as ID_GUARD,
+} from './questions'
+import { lockedKcQuestionIds, validateKcOverrides, KC_LOCK_REASON } from './kcLock'
+import { parseKcHidden, parseKcOrder, parseKcOverrides } from '../shared/kcSurface'
 import { inducedBehaviour } from './validate'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -84,6 +90,77 @@ function schedule(x: unknown): 'alternating' | 'blocked' | 'betweenSubject' {
     'reliabilitySchedule must be alternating, blocked or betweenSubject.')
 }
 
+/**
+ * The instructor-facing inventory of every question this instance COULD ask — the payload
+ * the shared settings block renders.
+ *
+ * ⚠ THE LIST ITSELF IS THE MOST VALUABLE PART OF THIS CHANGE (spec §2). Scorecard's page
+ * used to say the built-in ten could not be edited and then never showed them, so an
+ * instructor could not read their own knowledge check. Every question ships here, in both
+ * stages, with its answer, whether it is visible, whether it is locked and why.
+ *
+ * ⚠ THIS IS THE INSTRUCTOR CALLABLE — `correctOptionId` and the added questions' keys are
+ * meant to be here. `scorecardGetQuestions` (the STUDENT path) still strips them.
+ */
+function kcInventory(config: ScorecardConfig, truth: ScorecardTruth) {
+  const locked = lockedKcQuestionIds(config, truth)
+  const authored = scorecardKcQuestions(config, truth)
+
+  const builtIn = authored.map((raw) => {
+    const q = applyKcOverride(raw, config.kcOverrides)
+    return {
+      id: q.id,
+      kind: 'builtin' as const,
+      stage: q.stage,
+      prompt: q.prompt,
+      options: q.options.map(o => ({ value: o.id, label: o.text })),
+      correctValue: q.correctOptionId,
+      /** Always graded — every built-in carries a key. */
+      graded: true,
+      visible: config.kcHidden[q.id] !== true,
+      locked: locked.has(q.id),
+      /** ⚠ A disabled control with no explanation reads as a bug. Always populated when
+       *  `locked`, so no page has to invent its own wording. */
+      lockReason: locked.has(q.id) ? KC_LOCK_REASON : null,
+      overridden: isKcOverridden(q.id, config.kcOverrides),
+      /** ⚠ The GENERATED text, so the page can offer "revert to the original". */
+      originalPrompt: raw.prompt,
+      originalOptions: raw.options.map(o => ({ value: o.id, label: o.text })),
+      order: config.kcOrder[q.id] ?? null,
+    }
+  })
+
+  const added = config.addedKcQuestions.map(q => ({
+    id: q.id,
+    kind: 'added' as const,
+    stage: addedKcStage(q),
+    type: q.type,
+    prompt: q.prompt,
+    options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+    correctValue: q.correct_value ?? null,
+    graded: isGradedAdded(q),
+    visible: config.kcHidden[q.id] !== true,
+    /** ⚠ Added questions are stored DATA, so they are edited in place, never overridden —
+     *  and they interpolate nothing, so they are never locked. */
+    locked: false,
+    lockReason: null,
+    overridden: false,
+    order: config.kcOrder[q.id] ?? null,
+  }))
+
+  const pool = [...builtIn, ...added]
+  return {
+    stages: SCORECARD_KC_STAGES,
+    builtIn,
+    added,
+    /** ⚠ THE COUNT LINE'S THREE NUMBERS, derived exactly as the grader's denominator is —
+     *  visible AND graded. Never stored (D5). */
+    poolTotal: pool.length,
+    visibleCount: pool.filter(q => q.visible).length,
+    gradedCount: pool.filter(q => q.visible && q.graded).length,
+  }
+}
+
 async function readAll(db: admin.firestore.Firestore, instanceId: string) {
   const ref = db.collection(INSTANCES_COLLECTION).doc(instanceId)
   const [c, t, participants] = await Promise.all([
@@ -99,6 +176,8 @@ async function readAll(db: admin.firestore.Firestore, instanceId: string) {
     /** ⚠ The standing parameter lock's input (spec §3.1): has anyone STARTED? */
     started: participants.docs.some(d => d.data().starts_with != null),
     induced: inducedBehaviour(config, truth),
+    /** Everything the shared knowledge-check block renders. */
+    kc: kcInventory(config, truth),
   }
 }
 
@@ -162,32 +241,25 @@ export const scorecardUpdateConfig = onCall({ cors: SCORECARD_CORS_ORIGINS }, as
     if (!Array.isArray(data.addedKcQuestions)) {
       throw new HttpsError('invalid-argument', 'addedKcQuestions must be an array.')
     }
-    // ⚠⚠ THE COLLISION CHECK IS SCORECARD-SPECIFIC AND HAS TO BE. pd, pricing, forecast
-    // and newsvendor reject any added id starting with `kc_`, because their built-in
-    // questions own that namespace. Scorecard's built-in ids are NOT prefixed — they are
-    // `q1_negotiated_ppm`, `q5_earnings_arithmetic` and so on — so a prefix rule would
-    // protect nothing. The set itself is the authority, and it is available here.
-    //
-    // ⚠ Resolved against the DEFAULTS, deliberately, and it needs no Firestore read: a
-    // built-in question's ID is a literal ('q1_negotiated_ppm'), while only its prompt and
-    // options interpolate config. The id set is therefore the same for every instance.
-    const builtIn = new Set(
-      scorecardKcQuestions(DEFAULT_CONFIG, DEFAULT_TRUTH).map(q => q.id),
-    )
-
+    // ⚠⚠ THE COLLISION CHECK USES THE EXPLICIT BUILT-IN ID SET — see `BUILT_IN_IDS` above
+    // for why a `kc_` prefix rule would protect nothing here.
     const parsed: ScorecardAddedKcQuestion[] = []
     const seen = new Set<string>()
     for (const raw of data.addedKcQuestions) {
-      const q = parseAddedKcQuestion(raw)
-      if (!q) {
-        throw new HttpsError('invalid-argument',
-          'An added question is incomplete — every question needs a prompt, and a multiple-choice question needs at least two options and a correct answer among them.')
-      }
-      if (builtIn.has(q.id)) {
+      // The guard is applied INSIDE the shared parser, so an id in the built-in set comes
+      // back as null. The explicit re-check below turns that into a specific message
+      // rather than the generic "incomplete question" one.
+      if (typeof raw === 'object' && raw !== null
+        && BUILT_IN_IDS.has(String((raw as Record<string, unknown>).id ?? ''))) {
         // The grader looks built-in questions up FIRST, so a collision would silently
         // shadow the instructor's key and mark students against the built-in answer.
         throw new HttpsError('invalid-argument',
-          `'${q.id}' is the id of a built-in question and cannot be reused.`)
+          `'${String((raw as Record<string, unknown>).id)}' is the id of a built-in question and cannot be reused.`)
+      }
+      const q = parseAddedKcQuestion(raw, ID_GUARD)
+      if (!q) {
+        throw new HttpsError('invalid-argument',
+          'An added question is incomplete — every question needs a prompt, and a multiple-choice question needs at least two options and a correct answer among them.')
       }
       if (seen.has(q.id)) {
         throw new HttpsError('invalid-argument', `Duplicate question id '${q.id}'.`)
@@ -196,6 +268,71 @@ export const scorecardUpdateConfig = onCall({ cors: SCORECARD_CORS_ORIGINS }, as
       parsed.push(q)
     }
     configPatch.added_kc_questions = parsed
+  }
+
+  // ── The three convergence fields (spec §5) ────────────────────────────────
+  //
+  // ⚠ Every key is checked against the ids this instance actually has. A stale id — from a
+  // question deleted between page load and save — is REFUSED rather than stored, because a
+  // hidden map full of ids nothing serves is how "10 of 12 visible" starts lying.
+  //
+  // ⚠ ADDED-QUESTION IDS COUNT AS KNOWN. Hiding and reordering apply to them too; only
+  // `overrides` is built-in-only, because added questions are stored data and are edited
+  // in place.
+  const knownAdded = new Set(
+    (configPatch.added_kc_questions as ScorecardAddedKcQuestion[] | undefined)
+      ?.map(q => q.id)
+    // Not being changed in this save ⇒ validate against what is already stored.
+    ?? (await ref.collection('config').doc(CONFIG_DOC).get()
+      .then(s => loadScorecardConfig(s.data()).addedKcQuestions.map(q => q.id))),
+  )
+  const knownId = (id: string) => BUILT_IN_IDS.has(id) || knownAdded.has(id)
+
+  if (data.kcHidden !== undefined) {
+    const parsed = parseKcHidden(data.kcHidden)
+    for (const id of Object.keys(parsed)) {
+      if (!knownId(id)) {
+        throw new HttpsError('invalid-argument', `'${id}' is not a question in this game.`)
+      }
+    }
+    configPatch.kc_hidden = parsed
+  }
+
+  if (data.kcOrder !== undefined) {
+    const parsed = parseKcOrder(data.kcOrder)
+    for (const id of Object.keys(parsed)) {
+      if (!knownId(id)) {
+        throw new HttpsError('invalid-argument', `'${id}' is not a question in this game.`)
+      }
+    }
+    configPatch.kc_order = parsed
+  }
+
+  if (data.kcOverrides !== undefined) {
+    // ⚠⚠ THE LOCK IS ENFORCED HERE, NOT ONLY IN THE UI (spec §5). A settings page that
+    // greys out an Edit button stops an instructor; it does not stop a stale tab, a
+    // replayed payload or a hand-made call. A locked question is one whose text is
+    // RECOMPUTED from the instance's parameters, so an override on it would be silently
+    // discarded on the next parameter edit — or, worse, kept and left contradicting the
+    // numbers around it.
+    //
+    // ⚠ Classified against THIS instance's live config, not a hardcoded list — see
+    // kcLock.ts for why the classification is measured rather than listed.
+    const current = loadScorecardConfig((await ref.collection('config').doc(CONFIG_DOC).get()).data())
+    const currentTruth = loadScorecardTruth((await ref.collection('truth').doc(TRUTH_DOC).get()).data())
+    const locked = lockedKcQuestionIds(current, currentTruth)
+    const optionIds = new Map(
+      scorecardKcQuestions(current, currentTruth).map(q => [q.id, new Set(q.options.map(o => o.id))]),
+    )
+
+    const parsed = parseKcOverrides(data.kcOverrides)
+    const rejections = validateKcOverrides(parsed, {
+      builtInIds: BUILT_IN_IDS, locked, optionIds,
+    })
+    if (rejections.length > 0) {
+      throw new HttpsError('invalid-argument', rejections[0].message)
+    }
+    configPatch.kc_overrides = parsed
   }
 
   // ── truth/main — RULES-DENIED ─────────────────────────────────────────────
