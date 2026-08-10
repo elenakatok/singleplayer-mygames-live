@@ -6,7 +6,8 @@ import {
   loadForecastConfig,
 } from './config'
 import {
-  resolveForecastKcQuestions, toClientKcQuestions, shuffleClientOptions, debriefQuestion,
+  authoredToClient, addedToClientKcQuestions, debriefQuestion,
+  forecastPreStage, forecastPostStage, stageToClient,
 } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -49,23 +50,24 @@ export const forecastGetQuestions = onCall({ cors: FORECAST_CORS_ORIGINS }, asyn
   const config = loadForecastConfig(configSnap.data())
   const pData = participantSnap.data() ?? {}
 
-  const authored = config.kcEnabled
-    ? toClientKcQuestions(resolveForecastKcQuestions(participantId))
-    : []
+  // ⚠⚠ HIDDEN, ORDER, OVERRIDES AND THE `kcEnabled` GATE ARE ALL APPLIED BY
+  // `resolveForecastKc`, WHICH THE GRADER ALSO CALLS (through `forecastKcScoringSet`). Do
+  // NOT filter again here. The `config.kcEnabled ? … : []` ternaries that used to live on
+  // these two lines were the ONLY place the toggle was honoured, so every other caller —
+  // the grader's denominator included — still saw all nine while the student saw none.
+  // That is scorecard's latent bug, and forecast had the same shape (spec §5).
+  const authored = authoredToClient(config, participantId)
 
   // Added questions, whitelisted field by field — never spread, so a stored
   // `correct_value` cannot ride along.
   //
   // ⚠ SHUFFLED PER STUDENT, like the authored set. Without this, added questions were
   // the one door the always-answer-first tell could walk back in through.
-  const added = config.kcEnabled
-    ? config.addedKcQuestions.map(q => ({
-        field: q.id,
-        type: q.type,
-        prompt: q.prompt,
-        options: shuffleClientOptions(q.options ?? [], participantId, q.id),
-      }))
-    : []
+  // ⚠ PRE-STAGE ONLY. Added questions used to be stage-less and every one of them was
+  // appended here, before play — which is exactly why `pre` is this game's default stage
+  // for a stage-less stored addition. The `post` ones ride in `stages.post` below, so a
+  // question cannot appear twice.
+  const added = addedToClientKcQuestions(config, participantId, 'pre')
 
   const answers = (pData.kc_static_answers ?? {}) as Record<string, unknown>
   const answered = [...authored, ...added].filter(q => answers[q.field] != null).map(q => q.field)
@@ -85,5 +87,31 @@ export const forecastGetQuestions = onCall({ cors: FORECAST_CORS_ORIGINS }, asyn
       ? { field: debriefQuestion.field, prompt: config.debriefPrompt, placeholder: debriefQuestion.placeholder }
       : null,
     debriefSubmitted: freeText[debriefQuestion.field] != null,
+    /**
+     * ⚠⚠ THE TWO STAGES, IN ORDER, AS THE FLOW RENDERS THEM. `pre` is the authored nine and
+     * any pre-stage addition; `post` is the DEBRIEF paragraph and any post-stage addition.
+     * The debrief is a ROW here (spec D9) rather than a separate surface — the legacy
+     * `debrief` field above is kept only so nothing still reading it breaks, and the flow
+     * reads these.
+     *
+     * ⚠⚠ `stages.post` IS THE LIST THE REVEAL IS GATED ON. `revealGate` builds it from the
+     * same `forecastPostStage(config)`, so the screen and the gate cannot disagree about
+     * which questions are outstanding — and a row hidden here is absent from the gate too.
+     *
+     * ⚠ ANSWERED IS READ FROM TWO MAPS, because the kinds submit to two callables: a
+     * free-text row lands in `free_text_answers` (forecastSubmitDebrief) and an
+     * authored/added one in `kc_static_answers` (forecastSubmitKcAnswer). Presence of the
+     * key IS "answered", and the client resumes at the first row whose flag is false.
+     */
+    stages: {
+      pre: stageToClient(forecastPreStage(config), participantId).map(r => ({
+        ...r,
+        answered: r.kind === 'free-text' ? freeText[r.field] != null : answers[r.field] != null,
+      })),
+      post: stageToClient(forecastPostStage(config), participantId).map(r => ({
+        ...r,
+        answered: r.kind === 'free-text' ? freeText[r.field] != null : answers[r.field] != null,
+      })),
+    },
   }
 })

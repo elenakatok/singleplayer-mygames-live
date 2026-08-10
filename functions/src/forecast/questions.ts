@@ -1,5 +1,14 @@
-import type { PrepTextQuestion } from '@mygames/game-server'
+import { kcScoreOrNull, type PrepTextQuestion } from '@mygames/game-server'
 import { hash32 } from './demand'
+import {
+  DEBRIEF_ROW_ID, addedKcStage,
+  type ForecastAddedKcQuestion, type ForecastConfig, type ForecastKcStage,
+  type KcOverrideMap,
+} from './config'
+import { applyKcOrder } from '../shared/kcSurface'
+
+export { DEBRIEF_ROW_ID, DEFAULT_ADDED_KC_STAGE } from './config'
+export type { ForecastKcStage } from './config'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Forecasting — the KNOWLEDGE CHECK (spec §8) and the single debrief question
@@ -289,6 +298,137 @@ export function resolveForecastKcQuestions(participantId: string): ForecastKcQue
   }))
 }
 
+// ── The convergence surface (spec §5) ──────────────────────────────────────────
+
+/** Every id the authored set serves. The `kc_` prefix guard protects exactly these. */
+export const FORECAST_BUILT_IN_KC_IDS: ReadonlySet<string> = new Set(KC_SPECS.map(s => s.field))
+
+/**
+ * An instructor's rewrite of a built-in question, applied.
+ *
+ * ⚠⚠ TEXT ONLY — the prompt, and option LABELS looked up BY VALUE. There is no path from
+ * this function to `correct_value`, so an override provably cannot move a score; the grader
+ * compares values, which an override never touches. A test asserts that rather than
+ * trusting the shape.
+ *
+ * ⚠ The EXPLANATION is deliberately NOT overridable: it is the teaching text that justifies
+ * the authored answer, and a rewritten stem with an unrewritten explanation would at least
+ * be visibly inconsistent rather than silently wrong.
+ */
+export function applyKcOverride(
+  q: ForecastKcQuestion,
+  overrides: KcOverrideMap,
+): ForecastKcQuestion {
+  const o = overrides[q.field]
+  if (!o) return q
+  return {
+    ...q,
+    prompt: o.prompt ?? q.prompt,
+    options: o.options
+      ? q.options.map(opt => ({ value: opt.value, label: o.options![opt.value] ?? opt.label }))
+      : q.options,
+  }
+}
+
+/** Has an instructor rewritten this question? Drives the "edited" badge, nothing else. */
+export function isKcOverridden(id: string, overrides: KcOverrideMap): boolean {
+  return overrides[id] !== undefined
+}
+
+/**
+ * This instance's AUTHORED nine: overridden, hidden ones removed, in the instructor's order.
+ *
+ * ⚠⚠ THE `kcEnabled` GATE LIVES HERE, NOT IN THE CALLABLE. Before this pass the ternary sat
+ * in `forecastGetQuestions` alone, so the serve path returned nothing while every other
+ * caller — including the grader's own denominator — still saw all nine. That is scorecard's
+ * latent bug, and forecast had the identical shape. One resolver, one gate (spec §5).
+ *
+ * ⚠ Resolved WITHOUT a participant: the per-student option shuffle happens at the serve
+ * boundary (`authoredToClient` / `stageToClient`). Grading compares VALUES, so the grader
+ * can share this half and never shuffle at all.
+ */
+export function resolveForecastKc(config: ForecastConfig): ForecastKcQuestion[] {
+  return applyKcOrder(resolveForecastKcUnordered(config), q => q.field, config.kcOrder)
+}
+
+/**
+ * The same set WITHOUT the ordering pass.
+ *
+ * ⚠⚠ THE STAGE BUILDERS USE THIS. `order` must be applied EXACTLY ONCE, over the whole stage
+ * list. Applying it in the resolver AND again over the stage makes the second pass sort
+ * against positions the first produced — invisible under a COMPLETE map, and wrong under a
+ * partial one, because `applyKcOrder` falls back to an item's CURRENT index for any id the
+ * map does not mention (spec §6; the bug shipped in newsvendor and was fixed in pd and
+ * pricing in this pass's CP0).
+ */
+export function resolveForecastKcUnordered(config: ForecastConfig): ForecastKcQuestion[] {
+  if (!config.kcEnabled) return []
+  return KC_SPECS
+    .map((spec, i) => ({
+      ...kcBase,
+      field: spec.field,
+      order: i + 1,
+      prompt: spec.prompt,
+      options: [...spec.options],
+      correct_value: spec.correct_value,
+      explanation: spec.explanation,
+    } as ForecastKcQuestion))
+    .filter(q => config.kcHidden[q.field] !== true)
+    .map(q => applyKcOverride(q, config.kcOverrides))
+}
+
+/** An added question that carries a usable key, and therefore a mark. */
+export function isGradedAdded(q: ForecastAddedKcQuestion): boolean {
+  return q.type === 'mc' && typeof q.correct_value === 'string'
+}
+
+/**
+ * This instance's ADDED questions: hidden ones removed, in order.
+ *
+ * ⚠⚠ D12 — `kcEnabled` GATES GRADED QUESTIONS ONLY. A graded addition disappears with the
+ * toggle; an UNGRADED free-text one does not, and is governed by its own visibility — the
+ * same rule the debrief paragraph follows.
+ *
+ * ⚠ Omitted `stage` ⇒ EVERY stage. The grader calls it that way deliberately: gradedness is
+ * stage-independent (D3), so a post-stage mc question is graded exactly like a pre one.
+ */
+export function resolveAddedKcQuestions(
+  config: ForecastConfig,
+  stage?: ForecastKcStage,
+): ForecastAddedKcQuestion[] {
+  return applyKcOrder(resolveAddedKcQuestionsUnordered(config, stage), q => q.id, config.kcOrder)
+}
+
+/** The same, unordered — see `resolveForecastKcUnordered` for why the stages need it. */
+export function resolveAddedKcQuestionsUnordered(
+  config: ForecastConfig,
+  stage?: ForecastKcStage,
+): ForecastAddedKcQuestion[] {
+  const visible = config.addedKcQuestions.filter(q => config.kcHidden[q.id] !== true)
+  const gated = config.kcEnabled ? visible : visible.filter(q => !isGradedAdded(q))
+  return stage === undefined ? gated : gated.filter(q => addedKcStage(q) === stage)
+}
+
+/**
+ * ⚠⚠ THE GRADER'S SCORING SET — the whole of it, in one place.
+ *
+ * `forecastSubmitKcAnswer` calls exactly this and builds no list of its own. Before this
+ * pass it assembled `forScoring` inline from the UNFILTERED authored nine plus
+ * `config.addedKcQuestions`, so a hidden question still sat in the denominator and a
+ * `kcEnabled: false` instance still graded out of nine. Visible AND graded, or absent from
+ * numerator and denominator alike.
+ */
+export function forecastKcScoringSet(
+  config: ForecastConfig,
+): { field: string; correct_value: string }[] {
+  return [
+    ...resolveForecastKc(config).map(q => ({ field: q.field, correct_value: q.correct_value })),
+    ...resolveAddedKcQuestions(config)
+      .filter(isGradedAdded)
+      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
+  ]
+}
+
 /**
  * The same shuffle for an INSTRUCTOR-ADDED question's options.
  *
@@ -339,4 +479,154 @@ export const debriefQuestion: PrepTextQuestion = {
   deletable: false,
   role_target: 'all',
   prompt: '',
+}
+
+// ── The two stage lists (spec D9) ─────────────────────────────────────────────
+//
+// ⚠⚠ THE DEBRIEF PARAGRAPH IS A ROW IN THE `post` LIST, not a separate surface. Its prompt
+// and visibility stay STORED under the existing `debrief_prompt` / `debrief_enabled` keys —
+// NOT in the three convergence maps — which is what makes folding it in a change with NO
+// storage migration. The settings page translates at the boundary, and the callable REFUSES
+// an override or a hide aimed at `debrief_method`.
+//
+// ⚠ It is UNGRADED, EDITABLE, HIDEABLE and REORDERABLE, but NOT DELETABLE: it is the
+// question the reveal is earned by answering, and deleting it would leave the gate with
+// nothing to gate. Hiding it is the supported way to remove it, and `revealGate` handles
+// that case explicitly rather than blocking forever.
+//
+// ⚠ `kind` routes the SUBMIT, and the client must not infer it from `type`: a free-text
+// ADDED question is also `type: 'text'` but goes to `forecastSubmitKcAnswer`
+// (`kc_static_answers`), while the debrief row goes to `forecastSubmitDebrief`
+// (`free_text_answers`). Two maps, deliberately not unified (spec §6).
+
+export interface ForecastStageRow {
+  kind: 'authored' | 'added' | 'free-text'
+  field: string
+  type: 'mc' | 'text'
+  prompt: string
+  placeholder?: string
+  options: { value: string; label: string }[]
+}
+
+/** The PRE stage: the authored nine plus any pre-stage addition. Served before play. */
+export function forecastPreStage(config: ForecastConfig): ForecastStageRow[] {
+  // ⚠ UNORDERED — `applyKcOrder` runs ONCE at the bottom, over the whole stage.
+  const rows: ForecastStageRow[] = resolveForecastKcUnordered(config).map(q => ({
+    kind: 'authored' as const,
+    field: q.field,
+    type: 'mc' as const,
+    prompt: q.prompt,
+    options: q.options,
+  }))
+
+  for (const q of resolveAddedKcQuestionsUnordered(config, 'pre')) {
+    rows.push({ kind: 'added', field: q.id, type: q.type, prompt: q.prompt, options: q.options ?? [] })
+  }
+
+  return applyKcOrder(rows, r => r.field, config.kcOrder)
+}
+
+/**
+ * The POST stage: the debrief paragraph plus any post-stage addition.
+ *
+ * ⚠⚠ THIS IS THE LIST `revealGate` REQUIRES ANSWERED. Rows removed here — hidden, or gated
+ * off by `kcEnabled` — are removed from the gate too, by construction. That is the whole
+ * mechanism preventing a hidden question from blocking the reveal forever.
+ */
+export function forecastPostStage(config: ForecastConfig): ForecastStageRow[] {
+  const rows: ForecastStageRow[] = []
+
+  if (config.debriefEnabled) {
+    rows.push({
+      kind: 'free-text',
+      field: DEBRIEF_ROW_ID,
+      // ⚠ The instructor's prompt from `debrief_prompt`, never the literal on the data object.
+      prompt: config.debriefPrompt,
+      type: 'text',
+      placeholder: debriefQuestion.placeholder,
+      options: [],
+    })
+  }
+
+  for (const q of resolveAddedKcQuestionsUnordered(config, 'post')) {
+    rows.push({ kind: 'added', field: q.id, type: q.type, prompt: q.prompt, options: q.options ?? [] })
+  }
+
+  return applyKcOrder(rows, r => r.field, config.kcOrder)
+}
+
+/**
+ * The AUTHORED nine as the STUDENT receives them — resolved, SHUFFLED per student, key
+ * stripped.
+ *
+ * ⚠⚠ THE SHUFFLE LIVES AT THE SERVE BOUNDARY, so a test of this function tests the WIRING
+ * rather than the shuffle primitive. Every earlier pass in this programme lost a mutant to
+ * exactly that distinction (spec §7).
+ */
+export function authoredToClient(config: ForecastConfig, participantId: string) {
+  return toClientKcQuestions(
+    resolveForecastKc(config).map(q => ({
+      ...q,
+      options: shuffleFor(participantId, q.field, q.options),
+    })),
+  )
+}
+
+/**
+ * ⚠⚠ THE SCORE THIS ANSWER SET EARNS, or null if it does not earn one yet — the whole
+ * grading DECISION, in a pure function the suite can actually reach.
+ *
+ * `forecastSubmitKcAnswer` calls exactly this. It used to inline the three steps (build the
+ * set, check every field is answered, call the scorer), and that made the choice of scorer
+ * unreachable from any unit test: a mutant swapping `kcScoreOrNull` back for `calcKCScore`
+ * SURVIVED the whole suite, because the only test of it exercised the two primitives side
+ * by side rather than the code that picks one (spec §7 — "check you are testing the wiring,
+ * not the primitive").
+ *
+ * ⚠ `kcScoreOrNull`, NOT `calcKCScore`. The shared `calcKCScore` answers an EMPTY graded set
+ * with 1.0 — right for the negotiation family, where a role with no graded questions has
+ * completed its check, and wrong here: an instance with the graded check OFF and one
+ * ungraded addition would stamp a perfect score for answering a paragraph. calcKCScore
+ * itself is UNCHANGED; thirteen production negotiation games import it.
+ */
+export function forecastKcScoreFor(
+  allAnswers: Record<string, string>,
+  config: ForecastConfig,
+): number | null {
+  const forScoring = forecastKcScoringSet(config)
+  if (!forScoring.every(q => allAnswers[q.field] != null)) return null
+  return kcScoreOrNull(allAnswers, forScoring)
+}
+
+/**
+ * This instance's added questions IN THE CLIENT SHAPE — whitelisted field by field, shuffled.
+ *
+ * ⚠⚠ `stage` IS REQUIRED. In pd this argument was optional for an hour, and dropping it at
+ * the call site served every after-results question BEFORE play — a mutation no unit test
+ * caught, because every test passed the stage explicitly. Requiring it makes that a compile
+ * error (spec §7).
+ */
+export function addedToClientKcQuestions(
+  config: ForecastConfig,
+  participantId: string,
+  stage: ForecastKcStage,
+): { field: string; type: 'mc' | 'text'; prompt: string; options: { value: string; label: string }[] }[] {
+  return resolveAddedKcQuestions(config, stage).map(q => ({
+    field: q.id,
+    type: q.type,
+    prompt: q.prompt,
+    options: shuffleClientOptions(q.options ?? [], participantId, q.id),
+  }))
+}
+
+/** A stage as the STUDENT receives it — every mc row's options shuffled, keys absent. */
+export function stageToClient(
+  rows: ForecastStageRow[],
+  participantId: string,
+): ForecastStageRow[] {
+  return rows.map(r => (
+    r.options.length > 1
+      ? { ...r, options: shuffleClientOptions(r.options, participantId, r.field) }
+      : r
+  ))
 }

@@ -1,23 +1,30 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
-import { extractStudentOnCallIds, calcKCScore } from '@mygames/game-server'
+import { extractStudentOnCallIds } from '@mygames/game-server'
 import {
   FORECAST_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC,
   loadForecastConfig,
 } from './config'
-import { resolveForecastKcQuestions } from './questions'
+import { forecastKcScoreFor, resolveAddedKcQuestions, resolveForecastKc } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // forecastSubmitKcAnswer (student) — grades ONE knowledge-check question (spec §8).
 //
-// ⚠⚠ THE GRADER SHIPS WITH THE RENDER PATH. It grades against
-// resolveForecastKcQuestions(participantId) — the SAME call forecastGetQuestions made
-// to build the question the student answered, with the SAME per-student option order.
-// There is no second list of fields anywhere, so a question cannot exist on screen and
-// be unknown to the grader ("'x' is not a valid graded KC question" is the failure this
-// arrangement exists to make impossible). A later slice that adds a question adds it to
-// questions.ts, and both paths get it in the same commit.
+// ⚠⚠ THE GRADER SHIPS WITH THE RENDER PATH. It grades against `forecastKcScoringSet`,
+// which is built from `resolveForecastKc` and `resolveAddedKcQuestions` — the SAME
+// resolvers forecastGetQuestions serves from. There is no second list of fields anywhere,
+// so a question cannot exist on screen and be unknown to the grader ("'x' is not a valid
+// graded KC question" is the failure this arrangement exists to make impossible).
+//
+// ⚠⚠ THIS FILE USED TO BUILD ITS OWN `forScoring` from the UNFILTERED authored nine plus
+// `config.addedKcQuestions`, and that was the spec's named worst case (§5): a hidden
+// question stayed in the denominator, so a student who answered every question they were
+// SHOWN never reached `allAnswered` and never got a score at all. One resolver, one list.
+//
+// ⚠ Grading compares option VALUES, so the per-student shuffle is irrelevant here and the
+// grader deliberately does not shuffle. An instructor's override changes labels only —
+// there is no path from `kc_overrides` to `correct_value`.
 //
 // WHY THIS IS FORECAST-LOCAL AND NOT THE SHARED FACTORY: makeSubmitStaticKnowledge
 // CheckQuestion is written for the negotiation family — top-level `game_instances`, an
@@ -56,17 +63,27 @@ export const forecastSubmitKcAnswer = onCall({ cors: FORECAST_CORS_ORIGINS }, as
   const configSnap = await instanceRef.collection('config').doc(CONFIG_DOC).get()
   const config = loadForecastConfig(configSnap.data())
 
-  if (!config.kcEnabled) {
-    throw new HttpsError('failed-precondition', 'The knowledge check is not part of this game.')
-  }
+  // ⚠⚠ NO BLANKET `kcEnabled` REFUSAL HERE ANY MORE. D12 makes the toggle gate GRADED
+  // questions only, and this callable also carries UNGRADED additions — a free-text
+  // question an instructor added to either stage. Refusing the whole callable made those
+  // unanswerable whenever the graded check was off. The gate now lives in the resolvers,
+  // so a question that `kcEnabled` removes is simply absent from the lookup below and gets
+  // the ordinary "not a knowledge-check question in this game".
 
   // ── ROUTE THE FIELD TO ITS OWN SOURCE ─────────────────────────────────────
-  // Authored FIRST. Added questions are looked up in config with their own stored key.
-  // The two lists are never merged — an added question cannot even take a kc_ id
-  // (config.ts), so this lookup order can never shadow one with the other.
-  const authored = resolveForecastKcQuestions(participantId)
+  // Authored FIRST. Added questions are looked up with their own stored key. The two lists
+  // are never merged — an added question cannot take a kc_ id (config.ts), so this lookup
+  // order can never shadow one with the other.
+  //
+  // ⚠ RESOLVED, not raw: a hidden question is not answerable, and an override's rewritten
+  // labels are the ones validated against. `resolveAddedKcQuestions` is called with NO
+  // stage — gradedness and answerability are stage-independent (D3), and this callable
+  // serves both stages.
+  const authored = resolveForecastKc(config)
   const authoredQ = authored.find(q => q.field === field)
-  const addedQ = authoredQ ? undefined : config.addedKcQuestions.find(q => q.id === field)
+  const addedQ = authoredQ
+    ? undefined
+    : resolveAddedKcQuestions(config).find(q => q.id === field)
 
   if (!authoredQ && !addedQ) {
     throw new HttpsError('invalid-argument', `'${field}' is not a knowledge-check question in this game.`)
@@ -91,17 +108,6 @@ export const forecastSubmitKcAnswer = onCall({ cors: FORECAST_CORS_ORIGINS }, as
     explanation = q.explanation ?? ''
   }
 
-  /**
-   * The scoring set: every AUTHORED question, PLUS any added question that carries a
-   * key. Added free-text questions are absent from BOTH numerator and denominator, so
-   * adding one cannot silently lower everyone's score.
-   */
-  const forScoring = [
-    ...authored.map(q => ({ field: q.field, correct_value: q.correct_value })),
-    ...config.addedKcQuestions
-      .filter(q => q.type === 'mc' && typeof q.correct_value === 'string')
-      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
-  ]
   const participantRef = instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
 
   const result = await db.runTransaction(async (tx) => {
@@ -120,7 +126,6 @@ export const forecastSubmitKcAnswer = onCall({ cors: FORECAST_CORS_ORIGINS }, as
     const allAnswers: Record<string, string> = {}
     for (const [k, v] of Object.entries(existing)) allAnswers[k] = v.answer
     allAnswers[field] = answer
-    const allAnswered = forScoring.every(q => allAnswers[q.field] != null)
 
     const patch: Record<string, unknown> = {
       participant_id: participantId,
@@ -134,8 +139,13 @@ export const forecastSubmitKcAnswer = onCall({ cors: FORECAST_CORS_ORIGINS }, as
     // The score lands once, when the last question is answered — the shared rule:
     // correct / total over the graded static questions. Wrong answers stay in the
     // denominator; they simply do not count in the numerator.
-    if (allAnswered && pData.knowledge_check_score == null) {
-      patch.knowledge_check_score = calcKCScore(allAnswers, forScoring).score
+    //
+    // ⚠⚠ THE WHOLE DECISION IS `forecastKcScoreFor` — "is the set complete, and what does it
+    // score" in ONE pure function, so a unit test can reach it. Inlining the three steps
+    // here is what let a `calcKCScore` mutant survive the entire suite once (questions.ts).
+    const score = forecastKcScoreFor(allAnswers, config)
+    if (score !== null && pData.knowledge_check_score == null) {
+      patch.knowledge_check_score = score
       patch.knowledge_check_completed_at = FieldValue.serverTimestamp()
     }
 

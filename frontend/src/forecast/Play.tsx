@@ -5,7 +5,7 @@ import {
   STUDENT_CLASSROOM_URL,
   type ForecastHistoryPoint, type ForecastParams, type ForecastPlayedRow,
   type ForecastRoundResult, type ForecastRunning, type ForecastYears,
-  type ForecastKcQuestionClient, type ForecastDebriefQuestionClient, type ForecastReveal,
+  type ForecastDebriefQuestionClient, type ForecastReveal, type ForecastStageRowClient,
 } from './api'
 import { PageShell } from '../shared/PageShell'
 import { SequenceRunner, loopScreen, type SequenceScreen } from '../shared/sequence'
@@ -20,10 +20,18 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 // ═══════════════════════════════════════════════════════════════════════════════
 // Forecasting — student entry. The flow (spec §4):
 //
-//   KC  →  the month loop  →  final results  →  debrief  →  done
-//  (graded,  (forecast →       (spec §5)        (free text,
-//   no gate)  compute →                          reveals the
-//             results, ×N)                       process — §9)
+//   PRE stage  →  the month loop  →  final results  →  POST stage  →  the REVEAL
+//  (the nine +      (forecast →        (spec §5)        (the debrief    (spec §9)
+//   any pre-stage    compute →                           paragraph +
+//   addition;        results, ×N)                        any post-stage
+//   graded, no gate)                                     addition)
+//
+// ⚠⚠ THE AFTER-PLAY STAGE SITS BETWEEN THE STUDENT'S OWN RESULTS AND THE REVEAL, and the
+// server enforces that: `forecastGetReveal` refuses until every VISIBLE row of it is
+// answered (functions forecast/reveal.ts). The debrief is one ROW of that stage now rather
+// than a screen of its own, so an instructor can add questions beside it — and anything
+// they add inherits the same protection, which is the reason the gate was widened from the
+// one paragraph to the whole stage.
 //
 // ⚠ THE KC COMES FIRST, and that is spec §4's flow line (instructions → KC → loop).
 // Students arrive having had the forecasting lecture, so the KC checks the LECTURE
@@ -52,10 +60,11 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 type Loaded = {
   params: ForecastParams
   history: ForecastHistoryPoint[]
-  kc: ForecastKcQuestionClient[]
+  /** ⚠ SERVER-ORDERED, hidden rows already gone. The client re-derives nothing. */
+  preStage: ForecastStageRowClient[]
+  postStage: ForecastStageRowClient[]
   debrief: ForecastDebriefQuestionClient | null
-  debriefEnabled: boolean
-  /** Non-null only for a returning student who has ALREADY written their debrief —
+  /** Non-null only for a returning student who has ALREADY finished the after-play stage —
    *  fetched through the gated callable, never speculatively. */
   reveal: ForecastReveal | null
 }
@@ -104,15 +113,19 @@ export default function Play() {
     Promise.all([forecastGetState(), forecastGetQuestions()])
       .then(async ([state, questions]) => {
         if (cancelled) return
-        // Rendered order: the authored nine, THEN the instructor's additions. The
-        // server keeps the two sources apart and grades each on its own path (api.ts);
-        // this flattening is for rendering ORDER only.
-        const kc = [...questions.kc.authored, ...questions.kc.added]
+        // ⚠ THE TWO STAGES, SERVER-ORDERED, with `hidden` and the `kcEnabled` gate already
+        // applied. The legacy `kc.authored` / `kc.added` fields still ship, but flattening
+        // them here would re-derive an order the server has already decided — and would
+        // lose the debrief row, which is a member of the post stage rather than a field.
+        const preStage = questions.stages.pre
+        const postStage = questions.stages.post
 
-        // ⚠ ONLY when the server says the debrief is already answered. See the header:
-        // the reveal is never requested speculatively.
+        // ⚠ ONLY when the server says the whole after-play stage is behind them. See the
+        // header: the reveal is never requested speculatively. Asking early would simply be
+        // refused, but not asking for the answer key until it has been earned keeps the
+        // client honest about what it is entitled to.
         let reveal: ForecastReveal | null = null
-        if (questions.debriefSubmitted) {
+        if (state.gameOver && postStage.every(r => r.answered)) {
           try { reveal = (await forecastGetReveal()).reveal } catch { reveal = null }
         }
         if (cancelled) return
@@ -120,25 +133,21 @@ export default function Play() {
         setLoaded({
           params: state.params,
           history: state.history,
-          kc,
+          preStage,
+          postStage,
           debrief: questions.debrief,
-          debriefEnabled: questions.debriefEnabled,
           reveal,
         })
         setPlayed(state.played)
         setRunning(state.running)
         setYears(state.years)
 
-        const kcCount = kc.length
-        const debriefEnabled = questions.debriefEnabled
         const start = forecastResumeIndex({
           gameOver: state.gameOver,
-          kcCount,
-          kcAnswered: questions.kcAnswered.length,
-          debriefEnabled,
-          debriefSubmitted: questions.debriefSubmitted,
+          preAnswered: preStage.map(r => r.answered),
+          postAnswered: postStage.map(r => r.answered),
         })
-        if (start >= forecastScreenCount(kcCount, debriefEnabled)) {
+        if (start >= forecastScreenCount(preStage.length, postStage.length)) {
           setScreen({ name: 'done' })
         } else {
           setScreen({
@@ -203,18 +212,46 @@ export default function Play() {
   }
 
   if (screen.name === 'flow' && loaded !== null) {
-    const { params, history, kc, debrief } = loaded
+    const { params, history, preStage, postStage } = loaded
+
+    /**
+     * ONE row of a stage.
+     *
+     * ⚠ `kind` ROUTES THE SUBMIT, and it is read here rather than inferred from `type`: an
+     * ADDED free-text question is `type: 'text'` and goes to forecastSubmitKcAnswer, while
+     * the debrief row goes to forecastSubmitDebrief and is the one that returns the reveal.
+     */
+    const renderRow = (
+      row: ForecastStageRowClient, i: number, total: number, heading: string, lastLabel: string,
+    ) => ({
+      id: row.field,
+      render: ({ onDone }: { onDone: () => void }) => (
+        row.kind === 'free-text'
+          ? (
+            <DebriefScreen
+              question={{ field: row.field, prompt: row.prompt, placeholder: row.placeholder ?? '' }}
+              onDone={onDone}
+              initialReveal={loaded.reveal}
+            />
+          )
+          : (
+            <KcScreen
+              question={{ field: row.field, prompt: row.prompt, options: row.options, type: row.type }}
+              index={i}
+              total={total}
+              onDone={onDone}
+              heading={heading}
+              lastLabel={lastLabel}
+            />
+          )
+      ),
+    })
 
     const screens: SequenceScreen[] = [
-      // ── The knowledge check FIRST: one graded screen per question, no gate ───
+      // ── The PRE stage FIRST: one graded screen per question, no gate ─────────
       // Graded, and NOT a gate — a wrong answer is recorded, scored, and the student
       // continues regardless (spec §8).
-      ...kc.map((q, i) => ({
-        id: q.field,
-        render: ({ onDone }: { onDone: () => void }) => (
-          <KcScreen question={q} index={i} total={kc.length} onDone={onDone} />
-        ),
-      })),
+      ...preStage.map((row, i) => renderRow(row, i, preStage.length, 'Knowledge check', 'Start the game')),
 
       // ── The month loop: forecast → results, repeated to the configured N ─────
       loopScreen<ForecastRoundResult>({
@@ -259,13 +296,14 @@ export default function Play() {
         ),
       },
 
-      // ── The debrief paragraph, then the REVEAL (spec §9). ────────────────────
-      ...(debrief ? [{
-        id: debrief.field,
-        render: ({ onDone }: { onDone: () => void }) => (
-          <DebriefScreen question={debrief} onDone={onDone} initialReveal={loaded.reveal} />
-        ),
-      }] : []),
+      // ── The POST stage: the debrief paragraph and anything beside it (spec §9). ──
+      //
+      // ⚠ THE REVEAL IS EARNED BY THE WHOLE STAGE. When the debrief is the last outstanding
+      // row, forecastSubmitDebrief returns the reveal and DebriefScreen shows it inline —
+      // today's behaviour, unchanged for the shipped configuration. When it is NOT, that
+      // callable returns `reveal: null`, DebriefScreen advances, and the reveal is fetched
+      // once the stage completes (`onAllComplete` below).
+      ...postStage.map((row, i) => renderRow(row, i, postStage.length, 'One last thing', 'Finish')),
     ]
 
     return (
@@ -273,7 +311,16 @@ export default function Play() {
         <SequenceRunner
           screens={screens}
           startIndex={screen.startIndex}
-          onAllComplete={() => setScreen({ name: 'done' })}
+          onAllComplete={() => {
+            // ⚠ FETCH THE REVEAL ON COMPLETION, not before. The stage is finished, so the
+            // server-side gate now passes; a student who reached the end through a row
+            // OTHER than the debrief has no reveal in hand yet, and the terminal screen
+            // below would otherwise show them the results page they have already read.
+            void forecastGetReveal()
+              .then(r => setLoaded(prev => (prev ? { ...prev, reveal: r.reveal } : prev)))
+              .catch(() => { /* the terminal screen falls back to the results page */ })
+              .finally(() => setScreen({ name: 'done' }))
+          }}
         />
       </PageShell>
     )

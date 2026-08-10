@@ -345,10 +345,27 @@ export function resolveAddedKcQuestions(
    *  denominator exactly like a pre-play one. */
   stage?: PdKcStage,
 ): PdAddedKcQuestion[] {
+  return applyKcOrder(resolveAddedKcQuestionsUnordered(config, stage), q => q.id, config.kcOrder)
+}
+
+/**
+ * The same set WITHOUT the ordering pass.
+ *
+ * ⚠⚠ THE STAGE BUILDER USES THIS, AND THE REASON IS A LIVE DEFECT THIS FIXES (spec §6).
+ * `order` must be applied EXACTLY ONCE, over the whole stage list. Applying it here AND
+ * again over the stage means the second pass sorts against positions the first produced —
+ * and because `applyKcOrder` falls back to an item's CURRENT index for an id the map does
+ * not mention, a PARTIAL map then lands in an order neither pass intended. It is invisible
+ * with a complete map, because complete maps are idempotent, which is how it shipped and
+ * survived two passes.
+ */
+export function resolveAddedKcQuestionsUnordered(
+  config: PdConfig,
+  stage?: PdKcStage,
+): PdAddedKcQuestion[] {
   const visible = config.addedKcQuestions.filter(q => config.kcHidden[q.id] !== true)
   const gated = config.kcEnabled ? visible : visible.filter(q => !isGradedAdded(q))
-  const scoped = stage === undefined ? gated : gated.filter(q => addedKcStage(q) === stage)
-  return applyKcOrder(scoped, q => q.id, config.kcOrder)
+  return stage === undefined ? gated : gated.filter(q => addedKcStage(q) === stage)
 }
 
 /**
@@ -390,7 +407,7 @@ export function pdPostStageQuestions(config: PdConfig): PdPostStageQuestion[] {
     })
   }
 
-  for (const q of resolveAddedKcQuestions(config, 'post')) {
+  for (const q of resolveAddedKcQuestionsUnordered(config, 'post')) {
     rows.push({
       kind: 'added',
       field: q.id,

@@ -38,11 +38,18 @@ export function KcScreen({
   index,
   total,
   onDone,
+  /** ⚠ The stage's own heading and final-button label. Defaulted to the BEFORE-PLAY
+   *  wording this screen has always shown, so the pre stage is byte-identical; the
+   *  after-play stage passes its own, because "Start the game" is false there. */
+  heading,
+  lastLabel = 'Start the game',
 }: {
   question: ForecastKcQuestionClient
   index: number
   total: number
   onDone: () => void
+  heading?: string
+  lastLabel?: string
 }) {
   const [value, setValue] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -71,7 +78,7 @@ export function KcScreen({
   return (
     <div>
       <p style={{ color: colors.textSecondary, marginBottom: '0.3rem', fontSize: typography.sizeSm }}>
-        Knowledge check — question {index + 1} of {total}
+        {heading ?? 'Knowledge check'} — question {index + 1} of {total}
       </p>
       <h1 data-testid="fc-kc-prompt" style={{ marginTop: 0, marginBottom: '1.25rem', fontSize: '1.15rem', lineHeight: 1.45 }}>
         {question.prompt}
@@ -148,7 +155,7 @@ export function KcScreen({
 
       {answered ? (
         <button data-testid="fc-kc-continue" onClick={onDone} style={primaryButton(true)}>
-          {index + 1 === total ? 'Start the game' : 'Next question'}
+          {index + 1 === total ? lastLabel : 'Next question'}
         </button>
       ) : (
         <button

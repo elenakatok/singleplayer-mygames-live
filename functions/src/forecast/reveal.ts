@@ -6,7 +6,7 @@ import {
 } from './benchmarks'
 import { runningMetrics, yearComparison } from './metrics'
 import { toPoints, type StoredRound } from './rounds'
-import { debriefQuestion } from './questions'
+import { forecastPostStage, type ForecastStageRow } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Forecasting — THE DEBRIEF REVEAL (spec §9): "On submit, the debrief screen reveals
@@ -24,11 +24,34 @@ import { debriefQuestion } from './questions'
 // drift on when it is allowed, one of them would become a way to read the answer key
 // early. They call `revealGate` instead.
 //
-// THE GATE, stated once: the game must be OVER, and the debrief must be BEHIND them —
-// either answered, or switched off for this instance so there was never one to answer.
-// A student mid-play fails it; a student who has finished but not yet written their
-// paragraph fails it, which is what keeps the paragraph a description of what they
-// ACTUALLY did rather than of what they now know they should have done.
+// THE GATE, stated once: the game must be OVER, and THE WHOLE AFTER-PLAY STAGE must be
+// BEHIND them — every VISIBLE row answered, or switched off for this instance so there was
+// never one to answer. A student mid-play fails it; a student who has finished but not yet
+// written their paragraph fails it, which is what keeps the paragraph a description of what
+// they ACTUALLY did rather than of what they now know they should have done.
+//
+// ⚠⚠ THE RULE IS "EVERY VISIBLE POST-STAGE ROW", NOT "THE DEBRIEF ROW" — a decision, and
+// the reasoning is the paragraph above rather than a preference. The gate exists because an
+// answer written after the reveal describes the right answer instead of the student's own
+// method. That argument is about WHERE THE QUESTION SITS, not about which question it is: an
+// instructor who adds "what do you think drove the variation you saw?" to the after-play
+// stage has put it there for exactly the reason the debrief is there, and gating only the
+// debrief would let it be answered off the reveal screen. Gating the debrief alone would
+// also make the stage's whole placement decorative — everything in it would be answerable
+// after the answer key. So: the reveal is refused until every visible after-play row is
+// answered.
+//
+// ⚠⚠ AND THEREFORE: A HIDDEN ROW CANNOT BLOCK THE REVEAL, BY CONSTRUCTION. The gate reads
+// `forecastPostStage(config)`, the SAME list the student is served, which has already
+// dropped hidden rows, graded additions switched off by `kcEnabled`, and the debrief
+// paragraph when `debrief_enabled` is false. There is no second list that could contain a
+// row the student is never shown, which is the only way "answer a question you cannot see"
+// could arise. An empty stage passes the gate outright.
+//
+// ⚠ TWO ANSWER MAPS, deliberately not unified (spec §6): the debrief row is stored in
+// `free_text_answers` by forecastSubmitDebrief, and added rows in `kc_static_answers` by
+// forecastSubmitKcAnswer. The gate asks the map the row's OWN kind names, so a row cannot
+// be satisfied by an answer filed under the other one.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export type RevealGate =
@@ -49,17 +72,45 @@ export function revealGate(
   if (pData.finished_at == null) {
     return { allowed: false, reason: 'The process is revealed once you have forecast every month.' }
   }
-  if (config.debriefEnabled) {
-    const freeText = (pData.free_text_answers ?? {}) as Record<string, unknown>
-    if (freeText[debriefQuestion.field] == null) {
+  for (const row of forecastPostStage(config)) {
+    if (!isPostRowAnswered(row, pData)) {
       return {
         allowed: false,
         // Worded for a student who somehow reaches it early, not as an internal error.
+        // Singular/plural is not attempted: the client shows the unanswered rows themselves.
         reason: 'Please answer the last question first — then we will show you how demand was actually generated.',
       }
     }
   }
   return { allowed: true }
+}
+
+/**
+ * Is ONE after-play row answered, according to the stored doc?
+ *
+ * ⚠ The map is chosen by the row's `kind`, never by its `type`: an ADDED free-text question
+ * is also `type: 'text'` but is submitted through forecastSubmitKcAnswer and stored in
+ * `kc_static_answers`. Reading `type` here would let an added paragraph be permanently
+ * unsatisfiable, because nothing ever writes it to `free_text_answers`.
+ */
+export function isPostRowAnswered(
+  row: ForecastStageRow,
+  pData: Record<string, unknown>,
+): boolean {
+  const map = (row.kind === 'free-text' ? pData.free_text_answers : pData.kc_static_answers) ?? {}
+  return (map as Record<string, unknown>)[row.field] != null
+}
+
+/**
+ * The after-play rows this student has NOT answered — what the client renders, and what
+ * `revealGate` is refusing on. Derived from the same list, so the screen and the gate
+ * cannot disagree about which questions are outstanding.
+ */
+export function unansweredPostRows(
+  config: ForecastConfig,
+  pData: Record<string, unknown>,
+): ForecastStageRow[] {
+  return forecastPostStage(config).filter(row => !isPostRowAnswered(row, pData))
 }
 
 /** The reveal payload (spec §9). Built field by field, so what it carries is a list

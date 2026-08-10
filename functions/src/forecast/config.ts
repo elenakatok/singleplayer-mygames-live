@@ -30,6 +30,42 @@ import { DEFAULT_HIGH_SEASON_MONTHS, PUBLISHED_HISTORY_LENGTH } from './history'
 // wrong interface is a leak, and the type names are chosen so that reads oddly.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import {
+  parseAddedKcQuestion as parseSharedAddedKcQuestion,
+  parseKcHidden, parseKcOrder, parseKcOverrides,
+  type KcHiddenMap, type KcOrderMap, type KcOverrideMap, type KcIdGuard,
+} from '../shared/kcSurface'
+
+export type { KcHiddenMap, KcOrderMap, KcOverrideMap, KcOverride } from '../shared/kcSurface'
+export { parseKcHidden, parseKcOrder, parseKcOverrides } from '../shared/kcSurface'
+
+/**
+ * forecast's stages.
+ *
+ * ⚠⚠ `post` IS A GENUINE `post_game` (spec §4 — forecast is the ONLY game in that row).
+ * It sits AFTER the student's own results screen but BEFORE the model reveal, and
+ * `revealGate` refuses the reveal until the stage is satisfied. That server-side refusal is
+ * what makes the stage real: a reveal available first would turn every answer into a
+ * description of the right answer.
+ */
+export const FORECAST_KC_STAGES = ['pre', 'post'] as const
+export type ForecastKcStage = (typeof FORECAST_KC_STAGES)[number]
+
+/**
+ * ⚠⚠ THE STAGE A STAGE-LESS STORED ADDITION LANDS IN — `pre`.
+ *
+ * DETERMINED, NOT COPIED (spec D16). `forecastGetQuestions` returns added questions in
+ * `kc.added`, and Play.tsx builds its pre-play list as
+ * `[...questions.kc.authored, ...questions.kc.added]` — so every addition forecast has ever
+ * stored is served BEFORE play. Scorecard defaults to `post`; pd, pricing and newsvendor to
+ * `pre`. Each preserves its OWN history and none is transferable.
+ */
+export const DEFAULT_ADDED_KC_STAGE: ForecastKcStage = 'pre'
+
+/** ⚠ The debrief row's id IS its stored answer key. Nothing moves. */
+export const DEBRIEF_ROW_ID = 'debrief_method'
+
+
 /** game_id — lowercase, never displayed. Drives the collection prefix + fn names. */
 export const FORECAST_GAME_ID = 'forecast'
 
@@ -126,6 +162,8 @@ export interface ForecastAddedKcQuestion {
   /** mc only: the correct option value. Absent ⇒ recorded but UNGRADED. */
   correct_value?: string
   explanation?: string
+  /** ⚠ Absent ⇒ `pre`, where every question forecast has already stored is served. */
+  stage?: ForecastKcStage
 }
 
 /**
@@ -148,12 +186,26 @@ export interface ForecastConfig {
   unitLabel: string
   periodLabel: string
   /** Is the knowledge check part of this instance's flow? */
+  /**
+   * Is the GRADED knowledge check part of this instance's flow?
+   *
+   * ⚠ GRADED ONLY (convergence spec D12). Off removes the authored nine and any graded
+   * addition. The debrief paragraph, and any ungraded free-text addition, are governed by
+   * their own visibility.
+   */
   kcEnabled: boolean
   /** Instructor-added KC questions, rendered AFTER the authored nine. */
   addedKcQuestions: ForecastAddedKcQuestion[]
   /** Is the debrief paragraph part of this instance's flow? */
   debriefEnabled: boolean
   debriefPrompt: string
+  /**
+   * ⚠ THE THREE CONVERGENCE FIELDS (spec §5). All optional, all defaulting to exactly
+   * today's behaviour, all honoured in BOTH the serve path and the grader.
+   */
+  kcHidden: KcHiddenMap
+  kcOrder: KcOrderMap
+  kcOverrides: KcOverrideMap
 }
 
 export const DEFAULT_FORECAST_CONFIG: ForecastConfig = {
@@ -168,49 +220,46 @@ export const DEFAULT_FORECAST_CONFIG: ForecastConfig = {
   addedKcQuestions: [],
   debriefEnabled: true,
   debriefPrompt: DEFAULT_DEBRIEF_PROMPT,
+  kcHidden: {},
+  kcOrder: {},
+  kcOverrides: {},
 }
 
-/** Defensive parse of ONE instructor-added KC question. Returns null if unusable —
- *  loadForecastConfig drops those rather than throwing, so a half-written config can
- *  never make the game unplayable. Copied from newsvendor's, including its two traps. */
-export function parseAddedKcQuestion(raw: unknown): ForecastAddedKcQuestion | null {
-  if (typeof raw !== 'object' || raw === null) return null
-  const q = raw as Record<string, unknown>
-  const id = typeof q.id === 'string' ? q.id.trim() : ''
-  const prompt = typeof q.prompt === 'string' ? q.prompt.trim() : ''
-  if (!id || !prompt) return null
-  // The authored set owns the kc_ namespace; an added question that took one would be
-  // shadowed by the grader's authored-first lookup.
-  if (id.startsWith('kc_')) return null
+/**
+ * The `kc_` PREFIX is forecast's collision-guard strategy — the authored set owns that
+ * namespace, and the grader looks them up FIRST, so an added question taking one would be
+ * silently shadowed.
+ *
+ * ⚠ Scorecard passes an explicit id SET instead, because its built-in ids are unprefixed.
+ * The shared parser carries both strategies (spec §5); picking one unprotects the other.
+ *
+ * ⚠⚠ IT DOES NOT COVER `debrief_method`, forecast's one free-text id — exactly as
+ * newsvendor's rule does not cover `prep_strategy` / `debrief_regular`. An added question
+ * could legally take it. Harmless TODAY only because free-text answers live in
+ * `free_text_answers` and KC answers in `kc_static_answers`; spec §6's "do not unify the
+ * answer maps" is what keeps it harmless. NOT widened — a test pins the current behaviour
+ * as a tripwire, per newsvendor and spec §10.
+ */
+export const FORECAST_KC_ID_GUARD: KcIdGuard = { kind: 'prefix', prefix: 'kc_' }
 
-  // ⚠ OPTIONAL FIELDS ARE OMITTED, NEVER undefined — Firestore rejects undefined.
-  const explanation = typeof q.explanation === 'string' && q.explanation.trim()
-    ? q.explanation.trim() : null
+/**
+ * Defensive parse of ONE instructor-added KC question. Returns null if unusable —
+ * loadForecastConfig drops those rather than throwing.
+ *
+ * ⚠ THE BODY LIVES IN `shared/kcSurface` (spec §5). forecast passes its prefix guard and
+ * its two stages; an unrecognised stage is dropped, falling back to DEFAULT_ADDED_KC_STAGE.
+ */
+export function parseAddedKcQuestion(
+  raw: unknown,
+  guard: KcIdGuard | undefined = FORECAST_KC_ID_GUARD,
+): ForecastAddedKcQuestion | null {
+  const q = parseSharedAddedKcQuestion(raw, { guard, stages: FORECAST_KC_STAGES })
+  return q === null ? null : (q as ForecastAddedKcQuestion)
+}
 
-  const type: 'mc' | 'text' = q.type === 'mc' ? 'mc' : 'text'
-  if (type === 'text') {
-    return { id, type, prompt, ...(explanation ? { explanation } : {}) }
-  }
-
-  const optionsRaw = Array.isArray(q.options) ? q.options : []
-  const options: { value: string; label: string }[] = []
-  for (const o of optionsRaw) {
-    if (typeof o !== 'object' || o === null) continue
-    const oo = o as Record<string, unknown>
-    const value = typeof oo.value === 'string' ? oo.value : ''
-    const label = typeof oo.label === 'string' ? oo.label : ''
-    if (value && label) options.push({ value, label })
-  }
-  if (options.length < 2) return null
-
-  const key = typeof q.correct_value === 'string' ? q.correct_value : ''
-  const hasKey = options.some(o => o.value === key)
-
-  return {
-    id, type, prompt, options,
-    ...(hasKey ? { correct_value: key } : {}),
-    ...(explanation ? { explanation } : {}),
-  }
+/** The stage a stored added question is asked in. ⚠ Absent ⇒ `pre` — see the constant. */
+export function addedKcStage(q: ForecastAddedKcQuestion): ForecastKcStage {
+  return q.stage ?? DEFAULT_ADDED_KC_STAGE
 }
 
 /** A finite number from a stored field, or the shipped default. */
@@ -263,9 +312,14 @@ export function loadForecastConfig(configData: Record<string, unknown> | undefin
     // Absent ⇒ ON. An instance created before a toggle existed keeps the flow it had.
     kcEnabled: d.kc_enabled !== false,
     addedKcQuestions: (Array.isArray(d.added_kc_questions) ? d.added_kc_questions : [])
-      .map(parseAddedKcQuestion)
+      .map(q => parseAddedKcQuestion(q))
       .filter((q): q is ForecastAddedKcQuestion => q !== null),
     debriefEnabled: d.debrief_enabled !== false,
+    // ⚠ Total on absent — an instance written before these existed reads as "no hides,
+    // authored order, no rewrites", which is exactly the behaviour it already had.
+    kcHidden: parseKcHidden(d.kc_hidden),
+    kcOrder: parseKcOrder(d.kc_order),
+    kcOverrides: parseKcOverrides(d.kc_overrides),
     debriefPrompt: str(d.debrief_prompt, DEFAULT_DEBRIEF_PROMPT),
   }
 }

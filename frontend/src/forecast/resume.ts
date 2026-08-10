@@ -16,10 +16,11 @@
 /**
  * Screen layout, in order (spec §4):
  *
- *   [KC 0…n−1, IF ENABLED]        ← graded, first
+ *   [the PRE stage: the authored nine + any pre-stage addition]   ← graded, first
  *   [the month loop]
- *   [the final-results screen]    ← terminal content
- *   [the debrief paragraph, IF ENABLED]
+ *   [the final-results screen]                                     ← the student's own outcome
+ *   [the POST stage: the debrief paragraph + any post-stage addition]
+ *   → the REVEAL
  *
  * A return value past the last screen means everything is behind them.
  *
@@ -29,41 +30,59 @@
  * fit the game's own model (spec §8). Putting it after play would test what they had
  * already been forced to work out for themselves.
  *
- * ⚠ THERE IS NO PREP QUESTION IN THIS GAME. Newsvendor has one; spec §9 gives this game
- * exactly ONE free-text question, the debrief, and the Tier-2 contract follows from
- * that. Do not add a prep screen here without a spec change — the resume arithmetic and
- * the report tiles both count on there being one.
+ * ⚠⚠ BOTH STAGES ARE `boolean[]`, ONE FLAG PER SERVED ROW — never a COUNT. A count
+ * assumes the answered rows are a PREFIX of the list, and the moment an instructor
+ * reorders or hides a row that stops being true: a student who answered rows 1 and 3
+ * would resume at row 2 under a count and correctly at row 2 under `findIndex`, but one
+ * who answered only row 2 would resume at row 3 under a count and at row 1 here. The
+ * server sends `answered` per row for exactly this reason.
+ *
+ * ⚠ THE POST STAGE IS NOT JUST THE DEBRIEF ANY MORE. It was one paragraph and is now a
+ * stage an instructor can add to, which is why the argument is a list. The REVEAL is
+ * gated server-side on the whole of it (functions forecast/reveal.ts), so a student who
+ * stops part-way through resumes into the stage rather than onto a reveal they have not
+ * earned.
  */
 export function forecastResumeIndex(args: {
   gameOver: boolean
-  kcCount: number
-  kcAnswered: number
-  debriefEnabled: boolean
-  debriefSubmitted: boolean
+  /** One flag per PRE-stage row, in served order. */
+  preAnswered: readonly boolean[]
+  /** One flag per POST-stage row, in served order. */
+  postAnswered: readonly boolean[]
 }): number {
-  const { gameOver, kcCount, kcAnswered, debriefEnabled, debriefSubmitted } = args
+  const { gameOver, preAnswered, postAnswered } = args
 
-  // Still in the knowledge check — it is the first block.
-  if (kcAnswered < kcCount) return kcAnswered
+  // Still in the pre stage — the first row they have not done.
+  const firstPre = preAnswered.findIndex(a => !a)
+  if (firstPre !== -1) return firstPre
+
+  const preCount = preAnswered.length
   // The month loop.
-  if (!gameOver) return kcCount
-  // The game is over: the final-results screen, then the debrief.
-  //
-  // ⚠ A FINISHED STUDENT WITH NO DEBRIEF PENDING IS *PAST* THE END, not sitting on the
-  // final screen — Play.tsx renders the same component as the terminal state, so
-  // returning the final screen's index here would show it twice with a Continue button
-  // that leads nowhere.
-  if (!debriefEnabled) return kcCount + 2                     // past the end (== screenCount)
-  if (!debriefSubmitted) return kcCount + 1                   // the final screen, then the debrief
-  return kcCount + 3                                          // past the end (== screenCount)
+  if (!gameOver) return preCount
+
+  // The game is over: the final-results screen sits at preCount + 1, then the post stage.
+  const firstPost = postAnswered.findIndex(a => !a)
+
+  // ⚠ A FINISHED STUDENT WITH NOTHING LEFT IS *PAST* THE END, not sitting on the final
+  // screen — Play.tsx renders the same component as the terminal state, so returning the
+  // final screen's index here would show it twice with a Continue button leading nowhere.
+  if (firstPost === -1) return preCount + 2 + postAnswered.length
+
+  // ⚠ NOTHING ANSWERED YET ⇒ THE RESULTS SCREEN FIRST. Arriving from the last month, a
+  // student should read their own outcome before being asked to reflect on it; the runner
+  // then walks them into the post stage. Once they are PART-WAY through that stage the
+  // results screen is behind them, and re-showing it would be a step backwards.
+  if (firstPost === 0) return preCount + 1
+
+  return preCount + 2 + firstPost
 }
 
 /** How many screens the sequence has, given the same inputs. `forecastResumeIndex >=
  *  this` means the student is finished. Keeping the arithmetic in one place stops the
- *  caller re-deriving "kcCount + 2" and getting it wrong when a block is off. */
-export function forecastScreenCount(kcCount: number, debriefEnabled: boolean): number {
-  // the KC questions + the loop + the final screen + the debrief?
-  return kcCount + 1 + 1 + (debriefEnabled ? 1 : 0)
+ *  caller re-deriving "preCount + 2" and getting it wrong when a stage is empty. */
+export function forecastScreenCount(preCount: number, postCount: number): number {
+  // the pre stage + the loop + the final screen + the post stage
+  return preCount + 1 + 1 + postCount
 }
 
 /** The first month NOT yet played (0-based) — for a contiguous history, its length.

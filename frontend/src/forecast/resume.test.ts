@@ -13,77 +13,117 @@ import { forecastResumeIndex, forecastScreenCount, forecastStartIteration } from
 
 const KC = 9      // spec §8 ships nine authored questions
 
+/** `n` answered, then the rest outstanding — the ordinary prefix case. */
+const pre = (answered: number, total = KC) =>
+  Array.from({ length: total }, (_, i) => i < answered)
+
 describe('forecastResumeIndex', () => {
-  const base = {
-    gameOver: false, kcCount: KC, kcAnswered: 0,
-    debriefEnabled: true, debriefSubmitted: false,
-  }
+  const base = { gameOver: false, preAnswered: pre(0), postAnswered: [false] }
 
   it('starts a brand-new student at the first KC question', () => {
     expect(forecastResumeIndex(base)).toBe(0)
   })
 
   it('returns to the next unanswered KC question', () => {
-    expect(forecastResumeIndex({ ...base, kcAnswered: 4 })).toBe(4)
-    expect(forecastResumeIndex({ ...base, kcAnswered: KC - 1 })).toBe(KC - 1)
+    expect(forecastResumeIndex({ ...base, preAnswered: pre(4) })).toBe(4)
+    expect(forecastResumeIndex({ ...base, preAnswered: pre(KC - 1) })).toBe(KC - 1)
   })
 
-  it('moves to the month loop once every KC question is answered', () => {
-    expect(forecastResumeIndex({ ...base, kcAnswered: KC })).toBe(KC)
+  it('moves to the month loop once every pre-stage row is answered', () => {
+    expect(forecastResumeIndex({ ...base, preAnswered: pre(KC) })).toBe(KC)
   })
 
-  it('with the KC off, a fresh student starts in the loop', () => {
-    expect(forecastResumeIndex({ ...base, kcCount: 0, kcAnswered: 0 })).toBe(0)
+  it('with an empty pre stage, a fresh student starts in the loop', () => {
+    expect(forecastResumeIndex({ ...base, preAnswered: [] })).toBe(0)
   })
 
   it('a finished student with an unanswered debrief lands on the final screen', () => {
-    // The final screen, THEN the debrief — the student sees their results before being
+    // The final screen, THEN the post stage — the student sees their results before being
     // asked to describe how they got them.
-    expect(forecastResumeIndex({
-      ...base, kcAnswered: KC, gameOver: true, debriefSubmitted: false,
-    })).toBe(KC + 1)
+    expect(forecastResumeIndex({ preAnswered: pre(KC), gameOver: true, postAnswered: [false] }))
+      .toBe(KC + 1)
   })
 
   it('a finished student who has written the debrief is PAST the end', () => {
-    const idx = forecastResumeIndex({
-      ...base, kcAnswered: KC, gameOver: true, debriefSubmitted: true,
-    })
+    const idx = forecastResumeIndex({ preAnswered: pre(KC), gameOver: true, postAnswered: [true] })
     expect(idx).toBe(KC + 3)
-    expect(idx).toBeGreaterThanOrEqual(forecastScreenCount(KC, true))
+    expect(idx).toBeGreaterThanOrEqual(forecastScreenCount(KC, 1))
   })
 
-  it('a finished student on an instance with NO debrief is also past the end', () => {
+  it('a finished student on an instance with NO post stage is also past the end', () => {
     // ⚠ Not "sitting on the final screen": Play.tsx renders the same component as the
     // terminal state, so returning the final screen's index would show it twice with a
     // Continue button that leads nowhere.
-    const idx = forecastResumeIndex({
-      ...base, kcAnswered: KC, gameOver: true, debriefEnabled: false,
-    })
+    const idx = forecastResumeIndex({ preAnswered: pre(KC), gameOver: true, postAnswered: [] })
     expect(idx).toBe(KC + 2)
-    expect(idx).toBeGreaterThanOrEqual(forecastScreenCount(KC, false))
+    expect(idx).toBeGreaterThanOrEqual(forecastScreenCount(KC, 0))
   })
 
   it('the KC comes FIRST — an unfinished game does not skip it', () => {
     // Spec §4's flow line is instructions → KC → loop. A student who has played
     // nothing and answered nothing must land on the KC, not on month 1.
-    expect(forecastResumeIndex({ ...base, kcAnswered: 3, gameOver: false })).toBe(3)
+    expect(forecastResumeIndex({ ...base, preAnswered: pre(3), gameOver: false })).toBe(3)
+  })
+
+  // ── The multi-row post stage (this pass) ────────────────────────────────────
+
+  it('⚠ PART-WAY THROUGH THE POST STAGE, the results screen is BEHIND them', () => {
+    // MUTANT: return `preCount + 1` for any unanswered post row. → fails. Re-showing the
+    // results screen every time a student returns mid-stage is a step backwards, and with
+    // three rows it would be three steps backwards.
+    expect(forecastResumeIndex({
+      preAnswered: pre(KC), gameOver: true, postAnswered: [true, false, false],
+    })).toBe(KC + 3)
+    expect(forecastResumeIndex({
+      preAnswered: pre(KC), gameOver: true, postAnswered: [true, true, false],
+    })).toBe(KC + 4)
+  })
+
+  it('a finished multi-row post stage is past the end', () => {
+    const idx = forecastResumeIndex({
+      preAnswered: pre(KC), gameOver: true, postAnswered: [true, true, true],
+    })
+    expect(idx).toBe(forecastScreenCount(KC, 3))
+  })
+
+  it('⚠⚠ RESUMES ACROSS A GAP — a count would land on the wrong row', () => {
+    // MUTANT: `postAnswered.filter(Boolean).length` instead of `findIndex(a => !a)`.
+    // → fails on BOTH halves. The rows an instructor reorders are not answered in order,
+    // so "how many are done" is not "where they are". Same for the pre stage.
+    expect(forecastResumeIndex({
+      preAnswered: [true, false, true, false], gameOver: false, postAnswered: [false],
+    })).toBe(1)
+    expect(forecastResumeIndex({
+      preAnswered: pre(KC), gameOver: true, postAnswered: [false, true, true],
+    })).toBe(KC + 1)   // nothing before it is answered ⇒ the results screen first
+    expect(forecastResumeIndex({
+      preAnswered: pre(KC), gameOver: true, postAnswered: [true, false, true],
+    })).toBe(KC + 3)
+  })
+
+  it('⚠ an unfinished game keeps them out of the post stage entirely', () => {
+    expect(forecastResumeIndex({
+      preAnswered: pre(KC), gameOver: false, postAnswered: [false, false],
+    })).toBe(KC)
   })
 })
 
 describe('forecastScreenCount', () => {
-  it('counts the KC, the loop, the final screen and the debrief', () => {
-    expect(forecastScreenCount(KC, true)).toBe(KC + 3)
-    expect(forecastScreenCount(KC, false)).toBe(KC + 2)
-    expect(forecastScreenCount(0, false)).toBe(2)
+  it('counts the pre stage, the loop, the final screen and the post stage', () => {
+    expect(forecastScreenCount(KC, 1)).toBe(KC + 3)
+    expect(forecastScreenCount(KC, 0)).toBe(KC + 2)
+    expect(forecastScreenCount(0, 0)).toBe(2)
+    expect(forecastScreenCount(KC, 3)).toBe(KC + 5)
   })
 
   it('agrees with every "past the end" value forecastResumeIndex can return', () => {
-    for (const debriefEnabled of [true, false]) {
+    for (const postCount of [0, 1, 2, 3]) {
       const done = forecastResumeIndex({
-        gameOver: true, kcCount: KC, kcAnswered: KC,
-        debriefEnabled, debriefSubmitted: true,
+        gameOver: true,
+        preAnswered: pre(KC),
+        postAnswered: Array.from({ length: postCount }, () => true),
       })
-      expect(done).toBe(forecastScreenCount(KC, debriefEnabled))
+      expect(done).toBe(forecastScreenCount(KC, postCount))
     }
   })
 })

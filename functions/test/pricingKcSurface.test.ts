@@ -750,3 +750,41 @@ describe('the three fields are total on absent, and default to current behaviour
     expect(parseKcHidden({ a: true, b: false, c: 'yes' })).toEqual({ a: true })
   })
 })
+
+
+describe('⚠⚠ CP0 — `order` is applied EXACTLY ONCE per stage', () => {
+  it('a DISCRIMINATING partial map proves it — most partial maps do NOT', () => {
+    // MUTANT CAUGHT: applying `order` inside `resolveAddedKcQuestions` AND again over the
+    // post stage. This SHIPPED and survived two passes.
+    //
+    // ⚠⚠ NOT EVERY PARTIAL MAP SEPARATES ONE PASS FROM TWO, and my first attempt at this
+    // test used one that did not — both mutants survived calibration. `applyKcOrder` sorts
+    // by (key, index) with an unmentioned id's key being its OWN index, so pass 1 permutes
+    // only MENTIONED items and the additions keep their relative order either way. The
+    // divergence needs an unmentioned addition to be SHIFTED across a MENTIONED debrief
+    // row: pass 1 moves `akc_a` to the end, which pulls `akc_b`'s index down from 2 to 1,
+    // and 1 sorts BEFORE the debrief's explicit key of 2 where 2 tied with it and lost.
+    //
+    //   one pass : [debrief, akc_b, akc_c, akc_a]
+    //   two passes: [akc_b, debrief, akc_c, akc_a]   ← the debrief loses its place
+    //
+    // Reachable trigger: an instructor reorders (writing keys for the rows that existed),
+    // then ADDS questions the stored map does not mention.
+    const c = cfg({
+      addedKcQuestions: [postMc('akc_a'), postMc('akc_b'), postMc('akc_c')],
+      kcOrder: { debrief_reflection: 2, akc_a: 9 },
+    })
+    expect(pricingPostStageQuestions(c).map(r => r.field))
+      .toEqual(['debrief_reflection', 'akc_b', 'akc_c', 'akc_a'])
+  })
+
+  it('ordering a stage by the order it is already in is a no-op', () => {
+    const c0 = cfg({ addedKcQuestions: [postMc('akc_a'), postMc('akc_b')] })
+    const once = pricingPostStageQuestions(c0).map(r => r.field)
+    const c1 = cfg({
+      addedKcQuestions: [postMc('akc_a'), postMc('akc_b')],
+      kcOrder: Object.fromEntries(once.map((id, i) => [id, i])),
+    })
+    expect(pricingPostStageQuestions(c1).map(r => r.field)).toEqual(once)
+  })
+})

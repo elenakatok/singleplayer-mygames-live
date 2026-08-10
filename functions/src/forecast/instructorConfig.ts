@@ -5,13 +5,21 @@ import {
   FORECAST_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC, TRUTH_DOC,
   HARD_MIN_ROUNDS, HARD_MAX_ROUNDS, HARD_MIN_HISTORY, HARD_MAX_HISTORY, MAPE_STABILITY_FLOOR,
   loadForecastConfig, loadForecastModel, loadForecastSeed, parseAddedKcQuestion,
+  addedKcStage, parseKcHidden, parseKcOrder, parseKcOverrides,
+  DEBRIEF_ROW_ID, FORECAST_KC_STAGES,
   type ForecastConfig, type ForecastAddedKcQuestion,
 } from './config'
 import {
   DEFAULT_MODEL, systematic, usesPublishedHistory, resolveHistory, seasonMargin,
   HISTORY_SEARCH_CAP, type ForecastModel,
 } from './demand'
-import { resolveForecastKcQuestions, AUTHORED_KC_COUNT } from './questions'
+import {
+  resolveForecastKcQuestions, AUTHORED_KC_COUNT, FORECAST_BUILT_IN_KC_IDS,
+  applyKcOverride, debriefQuestion, isGradedAdded, isKcOverridden, resolveForecastKc,
+} from './questions'
+import {
+  forecastOverrideContext, lockedKcQuestionIds, validateKcOverrides, KC_LOCK_REASON,
+} from './kcLock'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // forecastGetConfig / forecastUpdateConfig (instructor) — the settings page's server
@@ -238,6 +246,109 @@ async function readConfigView(db: admin.firestore.Firestore, gameInstanceId: str
     authoredKcCount: AUTHORED_KC_COUNT,
     /** Has any student actually played a month? Drives the edit warning. */
     anyRoundsPlayed,
+    /** ⚠ The three convergence fields (spec §5). */
+    kcHidden: config.kcHidden,
+    kcOrder: config.kcOrder,
+    kcOverrides: config.kcOverrides,
+    /** Everything the shared knowledge-check block renders. */
+    kc: kcInventory(config),
+  }
+}
+
+/**
+ * The instructor-facing inventory of every question this instance could ask — the payload
+ * the shared settings block renders.
+ *
+ * ⚠ THIS IS THE INSTRUCTOR CALLABLE, so `correctValue` belongs here. `forecastGetQuestions`
+ * (the STUDENT path) still strips every key.
+ *
+ * ⚠⚠ THE DEBRIEF PARAGRAPH IS A ROW (spec D9), in `post`. It is reported as a `builtin` row
+ * but is STORED under the existing `debrief_prompt` / `debrief_enabled` keys, NOT in the
+ * three convergence maps. The page translates at the boundary and the callable REFUSES an
+ * override aimed at its id. No storage migration; no stored answer moves.
+ *
+ * ⚠⚠ NOTHING IS LOCKED HERE, and that is a MEASURED finding rather than an omission or a
+ * default — every authored stem is a literal string, deliberately, because this game's model
+ * parameters are the answer and the KC runs before play (questions.ts, kcLock.ts). The
+ * `locked`/`lockReason` fields still ship because the detector is live: the day a stem gains
+ * a config value they start populating without another line of code.
+ */
+function kcInventory(config: ForecastConfig) {
+  const locked = lockedKcQuestionIds(config)
+  // ⚠ Resolved BARE — the page must show every built-in, including ones this instance
+  // currently hides or has switched off, with its own visibility reported separately.
+  const authored = resolveForecastKc({
+    ...config, kcEnabled: true, kcHidden: {}, kcOverrides: {}, kcOrder: {},
+  })
+
+  const builtIn = authored.map((raw) => {
+    const q = applyKcOverride(raw, config.kcOverrides)
+    return {
+      id: q.field,
+      kind: 'builtin' as const,
+      stage: 'pre' as const,
+      type: 'mc' as const,
+      prompt: q.prompt,
+      options: q.options.map(o => ({ value: o.value, label: o.label })),
+      correctValue: q.correct_value,
+      /** Always graded — every authored question carries a key. */
+      graded: true,
+      visible: config.kcHidden[q.field] !== true,
+      locked: locked.has(q.field),
+      lockReason: locked.has(q.field) ? KC_LOCK_REASON : null,
+      overridden: isKcOverridden(q.field, config.kcOverrides),
+      /** The AUTHORED text, so the page can offer "revert to the original". */
+      originalPrompt: raw.prompt,
+      originalOptions: raw.options.map(o => ({ value: o.value, label: o.label })),
+      order: config.kcOrder[q.field] ?? null,
+    }
+  })
+
+  const added = config.addedKcQuestions.map(q => ({
+    id: q.id,
+    kind: 'added' as const,
+    stage: addedKcStage(q),
+    type: q.type,
+    prompt: q.prompt,
+    options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+    correctValue: q.correct_value ?? null,
+    graded: isGradedAdded(q),
+    visible: config.kcHidden[q.id] !== true,
+    locked: false,
+    lockReason: null,
+    overridden: false,
+    order: config.kcOrder[q.id] ?? null,
+  }))
+
+  /** ⚠ The debrief paragraph, as a row. See the note on `kcInventory`. */
+  const debriefRow = {
+    id: DEBRIEF_ROW_ID,
+    kind: 'builtin' as const,
+    stage: 'post' as const,
+    type: 'text' as const,
+    prompt: config.debriefPrompt,
+    placeholder: debriefQuestion.placeholder,
+    options: [] as { value: string; label: string }[],
+    correctValue: null,
+    /** ⚠ NEVER GRADED, and by ABSENCE OF A KEY rather than by its stage or its type. */
+    graded: false,
+    visible: config.debriefEnabled,
+    locked: false,
+    lockReason: null,
+    overridden: false,
+    order: config.kcOrder[DEBRIEF_ROW_ID] ?? null,
+  }
+
+  const pool = [...builtIn, ...added, debriefRow]
+  return {
+    stages: FORECAST_KC_STAGES,
+    builtIn,
+    added,
+    debrief: debriefRow,
+    /** ⚠ THE COUNT LINE'S THREE NUMBERS — visible AND graded. Never stored (D5). */
+    poolTotal: pool.length,
+    visibleCount: pool.filter(q => q.visible).length,
+    gradedCount: pool.filter(q => q.visible && q.graded).length,
   }
 }
 
@@ -349,6 +460,15 @@ export const forecastUpdateConfig = onCall({ cors: FORECAST_CORS_ORIGINS }, asyn
         throw new HttpsError('invalid-argument',
           'An added question is incomplete — every question needs a prompt, and a multiple-choice question needs at least two options and a correct answer among them.')
       }
+      // ⚠⚠ THE COLLISION GUARD, KEPT VERBATIM. The shared parser already refuses a `kc_`
+      // id (config.ts's FORECAST_KC_ID_GUARD), so this is the SECOND of two; both stay,
+      // because this one produces the instructor-facing sentence and the parser's refusal
+      // would otherwise surface as the generic "incomplete question" message.
+      //
+      // ⚠ IT DOES NOT COVER `debrief_method`, and that is deliberate and pinned by a test.
+      // See FORECAST_KC_ID_GUARD's note: the two answer maps are what keeps a collision
+      // harmless, and widening the guard would refuse ids that existing instances may
+      // already hold.
       if (q.id.startsWith('kc_')) {
         throw new HttpsError('invalid-argument', 'An added question cannot use a reserved kc_ id.')
       }
@@ -357,6 +477,55 @@ export const forecastUpdateConfig = onCall({ cors: FORECAST_CORS_ORIGINS }, asyn
       parsed.push(q)
     }
     configPatch.added_kc_questions = parsed
+  }
+
+  // ── The three convergence fields (spec §5) ──────────────────────────────────
+  //
+  // ⚠ Validated against the questions this instance ACTUALLY has — including any addition
+  // being saved in the SAME call, which is why `knownAdded` prefers the incoming list.
+  // Without that, adding a question and reordering it in one save would refuse itself.
+  {
+    const storedSnap = await instanceRef.collection('config').doc(CONFIG_DOC).get()
+    const stored = loadForecastConfig(storedSnap.data())
+    const knownAdded = new Set(
+      (configPatch.added_kc_questions as ForecastAddedKcQuestion[] | undefined)?.map(q => q.id)
+      ?? stored.addedKcQuestions.map(q => q.id),
+    )
+    const knownId = (id: string) =>
+      FORECAST_BUILT_IN_KC_IDS.has(id) || knownAdded.has(id) || id === DEBRIEF_ROW_ID
+
+    if (has(data, 'kcHidden')) {
+      const p = parseKcHidden(data.kcHidden)
+      for (const id of Object.keys(p)) {
+        if (!knownId(id)) throw new HttpsError('invalid-argument', `'${id}' is not a question in this game.`)
+      }
+      configPatch.kc_hidden = p
+    }
+
+    if (has(data, 'kcOrder')) {
+      const p = parseKcOrder(data.kcOrder)
+      for (const id of Object.keys(p)) {
+        if (!knownId(id)) throw new HttpsError('invalid-argument', `'${id}' is not a question in this game.`)
+      }
+      configPatch.kc_order = p
+    }
+
+    if (has(data, 'kcOverrides')) {
+      // ⚠⚠ THE LOCK IS ENFORCED HERE, NOT ONLY IN THE UI (spec §5) — even though forecast
+      // locks nothing today. A greyed-out Edit button stops an instructor; it does not stop
+      // a stale tab or a hand-made call. The detector is live, so the day a stem gains a
+      // config value this starts refusing without another line of code.
+      //
+      // ⚠ AN UNKNOWN OPTION ID IS REFUSED, not dropped: `applyKcOverride` looks options up
+      // BY VALUE, so a typo'd key would simply never apply and the instructor would see
+      // their edit silently vanish on the next load.
+      const rejections = validateKcOverrides(
+        parseKcOverrides(data.kcOverrides),
+        forecastOverrideContext(stored),
+      )
+      if (rejections.length > 0) throw new HttpsError('invalid-argument', rejections[0].message)
+      configPatch.kc_overrides = parseKcOverrides(data.kcOverrides)
+    }
   }
 
   // ── truth/main: the model and the seed ──────────────────────────────────────

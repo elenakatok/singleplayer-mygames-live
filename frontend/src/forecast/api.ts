@@ -262,6 +262,57 @@ export type ForecastDebriefQuestionClient = {
   placeholder: string
 }
 
+export type ForecastKcStage = 'pre' | 'post'
+
+/**
+ * ONE row of a stage, as the student receives it.
+ *
+ * ⚠ `kind` ROUTES THE SUBMIT and must not be inferred from `type`: an ADDED free-text
+ * question is `type: 'text'` and goes to forecastSubmitKcAnswer, while the debrief row is
+ * `kind: 'free-text'` and goes to forecastSubmitDebrief. Two stored maps, two callables.
+ */
+export type ForecastStageRowClient = {
+  kind: 'authored' | 'added' | 'free-text'
+  field: string
+  type: 'mc' | 'text'
+  prompt: string
+  placeholder?: string
+  /** Empty for free text. Shuffled per student for an mc row. */
+  options: { value: string; label: string }[]
+  /** Presence of the stored answer. Drives resume — the first false is where they land. */
+  answered: boolean
+}
+
+export type ForecastKcInventoryQuestion = {
+  id: string
+  kind: 'builtin' | 'added'
+  stage: ForecastKcStage
+  prompt: string
+  options: { value: string; label: string }[]
+  correctValue: string | null
+  graded: boolean
+  visible: boolean
+  locked: boolean
+  lockReason: string | null
+  overridden: boolean
+  originalPrompt?: string
+  originalOptions?: { value: string; label: string }[]
+  type?: 'mc' | 'text'
+  placeholder?: string
+  order: number | null
+}
+
+export type ForecastKcInventory = {
+  stages: readonly ForecastKcStage[]
+  builtIn: ForecastKcInventoryQuestion[]
+  added: ForecastKcInventoryQuestion[]
+  /** ⚠ The debrief paragraph, AS A ROW. Backed by its own config keys, not the maps. */
+  debrief: ForecastKcInventoryQuestion
+  poolTotal: number
+  visibleCount: number
+  gradedCount: number
+}
+
 export type ForecastQuestionsResult = {
   ok: boolean
   kcEnabled: boolean
@@ -273,6 +324,19 @@ export type ForecastQuestionsResult = {
   debriefEnabled: boolean
   debrief: ForecastDebriefQuestionClient | null
   debriefSubmitted: boolean
+  /**
+   * ⚠⚠ THE TWO STAGES, AS THE FLOW RENDERS THEM. `pre` runs before play; `post` runs after
+   * the student's own results screen and BEFORE the model reveal. The legacy `kc` and
+   * `debrief` fields above are kept only so nothing still reading them breaks.
+   *
+   * ⚠ `stages.post` IS WHAT THE REVEAL IS GATED ON, server-side (functions
+   * forecast/reveal.ts). Every visible row here must be answered before the process is
+   * handed over — which is also why a row hidden by the instructor is absent from BOTH.
+   */
+  stages: {
+    pre: ForecastStageRowClient[]
+    post: ForecastStageRowClient[]
+  }
 }
 
 export const forecastGetQuestions = () => callFn<ForecastQuestionsResult>('forecastGetQuestions')
@@ -338,7 +402,17 @@ export type ForecastDebriefResult = {
   field: string
   stored: boolean
   answer: string
-  reveal: ForecastReveal
+  /**
+   * ⚠ NULL WHILE THE AFTER-PLAY STAGE IS OUTSTANDING. The debrief paragraph is one ROW of
+   * that stage now, and the reveal is refused until EVERY visible row is answered — so an
+   * instructor who added a question beside it gets the answer stored and the process
+   * withheld, rather than an error on a write that succeeded.
+   */
+  reveal: ForecastReveal | null
+  /** Why the reveal is withheld, in the words to show. Null when it was handed over. */
+  revealPending: string | null
+  /** Which after-play rows are still unanswered — the same list the gate refused on. */
+  pendingFields: string[]
 }
 
 /** Submit the debrief paragraph. The paragraph is stored BEFORE the reveal is built,
@@ -496,6 +570,11 @@ export type ForecastEditableConfig = {
   addedKcQuestions: unknown[]
   debriefEnabled: boolean
   debriefPrompt: string
+  /** ⚠ The three convergence fields (spec §5). Optional on the wire: a save that omits
+   *  one leaves the stored value alone. */
+  kcHidden?: Record<string, boolean>
+  kcOrder?: Record<string, number>
+  kcOverrides?: Record<string, { prompt?: string; options?: Record<string, string> }>
 }
 
 export type ForecastEditableModel = {
@@ -522,6 +601,12 @@ export type ForecastConfigResult = {
   authoredKcPreview: { field: string; prompt: string; options: { value: string; label: string }[]; correct_value: string }[]
   authoredKcCount: number
   anyRoundsPlayed: boolean
+  /** ⚠ The three convergence fields as STORED — what the page seeds its draft from. */
+  kcHidden: Record<string, boolean>
+  kcOrder: Record<string, number>
+  kcOverrides: Record<string, { prompt?: string; options?: Record<string, string> }>
+  /** Everything the shared knowledge-check block renders. */
+  kc: ForecastKcInventory
 }
 
 export const forecastGetConfig = () => callFn<ForecastConfigResult>('forecastGetConfig')

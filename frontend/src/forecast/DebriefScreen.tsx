@@ -200,6 +200,13 @@ export function DebriefScreen({
     setError(null)
     try {
       const res = await forecastSubmitDebrief(text.trim())
+      // ⚠⚠ NULL MEANS THE ANSWER WAS STORED AND THE REVEAL IS STILL OUTSTANDING — another
+      // visible after-play row has not been answered yet. The paragraph is one ROW of that
+      // stage now, and the server gates the reveal on ALL of it, so advancing here is
+      // correct: the runner walks them through the rest and fetches the reveal at the end.
+      // (In the shipped configuration the debrief is the only row and `reveal` is non-null,
+      // so this screen behaves exactly as it always has.)
+      if (res.reveal === null) { onDone(); return }
       setReveal(res.reveal)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.')

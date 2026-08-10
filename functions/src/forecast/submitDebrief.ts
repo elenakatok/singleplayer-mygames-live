@@ -6,7 +6,7 @@ import { FORECAST_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION
 import { loadInstance } from './instance'
 import { parseStoredRounds } from './rounds'
 import { debriefQuestion } from './questions'
-import { revealGate, buildReveal } from './reveal'
+import { revealGate, buildReveal, unansweredPostRows } from './reveal'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // forecastSubmitDebrief (student) — the single open-ended paragraph (spec §9),
@@ -21,6 +21,13 @@ import { revealGate, buildReveal } from './reveal'
 // The game must also already be OVER. That is not checked here in its own words — it
 // is `revealGate` (reveal.ts), the same function forecastGetReveal calls, so the two
 // paths cannot drift on when the model may be handed over.
+//
+// ⚠⚠ THE DEBRIEF IS NO LONGER NECESSARILY THE LAST QUESTION. It is now one ROW in the
+// after-play stage, and an instructor may add others beside it. The gate is on the WHOLE
+// stage, so answering the paragraph while another after-play question is outstanding
+// stores the answer and returns `reveal: null` — it does NOT throw. Throwing would report a
+// write that actually succeeded as a failure, and a retry would hit the one-shot branch and
+// throw again. The client renders the remaining rows and asks for the reveal afterwards.
 //
 // Ungraded BY CONSTRUCTION: the question carries no `grading` and no `correct_value`
 // (questions.ts), so it cannot enter calcKCScore's denominator, and this callable never
@@ -98,11 +105,10 @@ export const forecastSubmitDebrief = onCall({ cors: FORECAST_CORS_ORIGINS }, asy
     }
   })
 
-  // ⚠ THE GATE, AFTER THE WRITE. Belt and braces: the transaction already refused an
-  // unfinished game, and this re-asks the shared question so that any future change to
-  // what "the debrief has been reached" means applies to this path automatically.
+  // ⚠ THE GATE, AFTER THE WRITE. The transaction already refused an unfinished game; this
+  // re-asks the SHARED question, so any future change to what "the after-play stage has
+  // been completed" means applies to this path automatically.
   const gate = revealGate(stored.pData, config)
-  if (!gate.allowed) throw new HttpsError('failed-precondition', gate.reason)
 
   return {
     ok: true as const,
@@ -110,7 +116,12 @@ export const forecastSubmitDebrief = onCall({ cors: FORECAST_CORS_ORIGINS }, asy
     stored: stored.wasStored,
     answer: stored.answer,
     /** ⚠ THE PROCESS (spec §9). The only student payload in this build that carries the
-     *  model, and it is reachable only past the gate above. */
-    reveal: buildReveal(model, config, history, stored.rounds),
+     *  model, and it is built ONLY past the gate — null while the stage is outstanding.
+     *  There is no branch here that produces it any other way. */
+    reveal: gate.allowed ? buildReveal(model, config, history, stored.rounds) : null,
+    /** Why the reveal is withheld, and which rows are still outstanding — so the client
+     *  renders the same list the gate is refusing on rather than guessing. */
+    revealPending: gate.allowed ? null : gate.reason,
+    pendingFields: gate.allowed ? [] : unansweredPostRows(config, stored.pData).map(r => r.field),
   }
 })
