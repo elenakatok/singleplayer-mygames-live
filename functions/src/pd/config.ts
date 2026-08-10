@@ -1,4 +1,13 @@
 import { DEFAULT_PAYOFFS, parsePayoffs, type PayoffConfig } from './payoff'
+import {
+  parseAddedKcQuestion as parseSharedAddedKcQuestion,
+  parseKcHidden, parseKcOrder, parseKcOverrides,
+  type KcHiddenMap, type KcOrderMap, type KcOverrideMap, type KcIdGuard,
+} from '../shared/kcSurface'
+
+export type { KcHiddenMap, KcOrderMap, KcOverrideMap, KcOverride } from '../shared/kcSurface'
+/** Re-exported so the callables import every KC-config concern from one place. */
+export { parseKcHidden, parseKcOrder, parseKcOverrides } from '../shared/kcSurface'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Repeated Prisoner's Dilemma — per-game constants. Kept as DATA (not scattered
@@ -128,7 +137,13 @@ export interface PdConfig {
   /** Inclusive round-count range the actual count is drawn from. */
   minRounds: number
   maxRounds: number
-  /** Is the knowledge check part of this instance's flow? */
+  /**
+   * Is the GRADED knowledge check part of this instance's flow?
+   *
+   * ⚠ GRADED ONLY (convergence spec D12). Off removes the derived four and any graded
+   * addition. An UNGRADED free-text addition is governed by its own visibility, exactly as
+   * the debrief paragraph is — see `resolveAddedKcQuestions`.
+   */
   kcEnabled: boolean
   /** Instructor-added KC questions, rendered AFTER the derived four. */
   addedKcQuestions: PdAddedKcQuestion[]
@@ -136,6 +151,14 @@ export interface PdConfig {
   debriefEnabled: boolean
   /** The debrief prompt shown to students. */
   debriefPrompt: string
+  /**
+   * ⚠ THE THREE CONVERGENCE FIELDS (spec §5). All optional, all defaulting to exactly
+   * today's behaviour, all honoured in BOTH the serve path and the grader. An instance
+   * written before they existed reads as {} for each.
+   */
+  kcHidden: KcHiddenMap
+  kcOrder: KcOrderMap
+  kcOverrides: KcOverrideMap
   /**
    * Optional determinism seed (architecture §8, Newsvendor notes). Blank/absent =
    * real randomness. Set = both draws are derived from (seed, participant_id), so a
@@ -165,56 +188,40 @@ export const DEFAULT_PD_CONFIG: PdConfig = {
   debriefEnabled: true,
   debriefPrompt: DEFAULT_DEBRIEF_PROMPT,
   seed: null,
+  kcHidden: {},
+  kcOrder: {},
+  kcOverrides: {},
 }
 
-/** Defensive parse of ONE instructor-added KC question. Returns null if unusable —
- *  loadPdConfig drops those rather than throwing, so a half-written config can never
- *  make the game unplayable (the same posture as parsePayoffs). */
-export function parseAddedKcQuestion(raw: unknown): PdAddedKcQuestion | null {
-  if (typeof raw !== 'object' || raw === null) return null
-  const q = raw as Record<string, unknown>
-  const id = typeof q.id === 'string' ? q.id.trim() : ''
-  const prompt = typeof q.prompt === 'string' ? q.prompt.trim() : ''
-  if (!id || !prompt) return null
-  // An added question may NEVER take a derived field's id, or the grader's
-  // derived-first lookup would shadow it (and the student would be graded against
-  // the matrix instead of the instructor's key).
-  if (id.startsWith('kc_')) return null
+/**
+ * The `kc_` PREFIX is pd's collision-guard strategy — the derived four own that
+ * namespace, and the grader looks them up FIRST, so an added question taking one would be
+ * silently shadowed and the student graded against the matrix instead of the instructor's
+ * key.
+ *
+ * ⚠ THE OTHER STRATEGY IS SCORECARD'S. Its built-in ids are unprefixed
+ * (`q1_negotiated_ppm`), so a prefix rule protects nothing there and it passes an explicit
+ * id SET instead. The shared parser carries both (spec §5); picking one silently
+ * unprotects the other family.
+ */
+export const PD_KC_ID_GUARD: KcIdGuard = { kind: 'prefix', prefix: 'kc_' }
 
-  // ⚠ OPTIONAL FIELDS ARE OMITTED, NEVER SET TO undefined. These objects are written
-  // straight into Firestore, which REJECTS an undefined value outright — so an
-  // explanation-less question would fail the whole save rather than store cleanly.
-  const explanation = typeof q.explanation === 'string' && q.explanation.trim()
-    ? q.explanation.trim() : null
-
-  const type: 'mc' | 'text' = q.type === 'mc' ? 'mc' : 'text'
-  if (type === 'text') {
-    // Free text cannot be auto-graded, so it is recorded and left UNGRADED — it
-    // never enters the KC score's numerator or denominator.
-    return { id, type, prompt, ...(explanation ? { explanation } : {}) }
-  }
-
-  const optionsRaw = Array.isArray(q.options) ? q.options : []
-  const options: { value: string; label: string }[] = []
-  for (const o of optionsRaw) {
-    if (typeof o !== 'object' || o === null) continue
-    const oo = o as Record<string, unknown>
-    const value = typeof oo.value === 'string' ? oo.value : ''
-    const label = typeof oo.label === 'string' ? oo.label : ''
-    if (value && label) options.push({ value, label })
-  }
-  if (options.length < 2) return null   // an mc question needs something to choose between
-
-  const key = typeof q.correct_value === 'string' ? q.correct_value : ''
-  // A key that names no offered option is dropped rather than kept: it would mark
-  // every student wrong, silently.
-  const hasKey = options.some(o => o.value === key)
-
-  return {
-    id, type, prompt, options,
-    ...(hasKey ? { correct_value: key } : {}),
-    ...(explanation ? { explanation } : {}),
-  }
+/**
+ * Defensive parse of ONE instructor-added KC question. Returns null if unusable —
+ * loadPdConfig drops those rather than throwing, so a half-written config can never make
+ * the game unplayable (the same posture as parsePayoffs).
+ *
+ * ⚠ THE BODY NOW LIVES IN `shared/kcSurface` (convergence spec §5 — five near-copies, no
+ * two byte-identical). Behaviour is unchanged: pd passes its prefix guard, and pd declares
+ * no stages, so a `stage` field on an incoming question is DROPPED rather than stored.
+ * That last point is deliberate — see PD_KC_STAGES in questions.ts.
+ */
+export function parseAddedKcQuestion(
+  raw: unknown,
+  guard: KcIdGuard | undefined = PD_KC_ID_GUARD,
+): PdAddedKcQuestion | null {
+  const q = parseSharedAddedKcQuestion(raw, { guard })
+  return q === null ? null : (q as PdAddedKcQuestion)
 }
 
 /** Clamp + sanity-check a stored round range. Returns the shipped defaults when the
@@ -254,8 +261,13 @@ export function loadPdConfig(configData: Record<string, unknown> | undefined): P
     // had, rather than silently losing its knowledge check.
     kcEnabled: configData?.kc_enabled !== false,
     addedKcQuestions: addedRaw
-      .map(parseAddedKcQuestion)
+      .map(q => parseAddedKcQuestion(q))
       .filter((q): q is PdAddedKcQuestion => q !== null),
+    // ⚠ Total on absent — an instance written before these existed reads as "no hides,
+    // authored order, no rewrites", which is exactly the behaviour it already had.
+    kcHidden: parseKcHidden(configData?.kc_hidden),
+    kcOrder: parseKcOrder(configData?.kc_order),
+    kcOverrides: parseKcOverrides(configData?.kc_overrides),
     debriefEnabled: configData?.debrief_enabled !== false,
     debriefPrompt: typeof promptRaw === 'string' && promptRaw.trim() ? promptRaw.trim() : DEFAULT_DEBRIEF_PROMPT,
     // A number seed is accepted and normalized to its string form, so

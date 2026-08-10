@@ -1,6 +1,10 @@
 import type { PrepTextQuestion } from '@mygames/game-server'
 import { yearsFor, type PayoffConfig } from './payoff'
-import { DEFAULT_MOVE_LABELS, DEFAULT_UNIT, type PdMoveLabels } from './config'
+import {
+  DEFAULT_MOVE_LABELS, DEFAULT_UNIT,
+  type PdMoveLabels, type PdConfig, type PdAddedKcQuestion, type KcOverrideMap,
+} from './config'
+import { applyKcOrder } from '../shared/kcSurface'
 import type { Move } from './strategy'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -242,4 +246,139 @@ export function toClientKcQuestions(resolved: PdKcQuestion[]) {
     prompt: q.prompt,
     options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
   }))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// THE THREE CONVERGENCE FIELDS, APPLIED (spec §5).
+//
+// ⚠⚠ `pdResolveKc` AND `pdKcScoringSet` ARE THE ONE ANSWER TO "WHICH QUESTIONS DOES THIS
+// INSTANCE ASK?", and the serve path and the grader BOTH call them. That is not tidiness:
+// a question hidden from the display but left in the grader's scoring set is graded against
+// an answer the student never saw and inflates every denominator. Spec §5 names it as the
+// most plausible bug this change introduces. One function, two callers, no second list.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * PD's stages, for the shared settings block.
+ *
+ * ⚠⚠ `post` MEANS **AFTER PLAY**, NOT "AFTER THE REVEAL" — pd has NO reveal. The bot's
+ * assigned strategy is never shown to the student; inferring it from play IS the exercise
+ * (spec §5). Shipping scorecard's "After the reveal" wording here would name a screen this
+ * game does not have.
+ *
+ * ⚠ Only the DEBRIEF lives in `post` today. pd's Play.tsx renders KC screens, then the
+ * round loop, then the debrief — there is no post-play KC screen for an added question to
+ * occupy, so `parseAddedKcQuestion` deliberately drops a `stage` field and the settings
+ * block is told that `post` accepts no additions. See the handoff.
+ */
+export const PD_KC_STAGES = ['pre', 'post'] as const
+export type PdKcStage = (typeof PD_KC_STAGES)[number]
+
+/** The derived four's ids — pd's built-in set. */
+export const PD_BUILT_IN_KC_IDS: ReadonlySet<string> = new Set(kcQuestions.map(q => q.field))
+
+/**
+ * Apply an instructor's wording to one derived question.
+ *
+ * ⚠⚠ TEXT ONLY, BY CONSTRUCTION. `options` is a map from an EXISTING option value to a
+ * replacement LABEL, so this cannot add an option, drop one, reorder them, change a value,
+ * or touch `correct_value`. Grading compares option VALUES, so an override provably cannot
+ * move a score. An unknown option value in the map is ignored here and REFUSED at the
+ * callable, so the instructor is told rather than silently having no effect.
+ *
+ * ⚠ The EXPLANATION is deliberately NOT overridable. It is generated prose citing the
+ * question's own payoff numbers, and only non-interpolating questions can be overridden at
+ * all — so nothing reachable here has an explanation worth rewriting.
+ */
+export function applyKcOverride(q: PdKcQuestion, overrides: KcOverrideMap): PdKcQuestion {
+  const o = overrides[q.field]
+  if (!o) return q
+  return {
+    ...q,
+    prompt: o.prompt ?? q.prompt,
+    options: o.options
+      ? (q.options ?? []).map(opt => ({ value: opt.value, label: o.options![opt.value] ?? opt.label }))
+      : q.options,
+  }
+}
+
+/** Has an instructor rewritten this question? Drives the "edited" badge, nothing else. */
+export function isKcOverridden(id: string, overrides: KcOverrideMap): boolean {
+  return overrides[id] !== undefined
+}
+
+/**
+ * This instance's DERIVED four: overridden, hidden ones removed, in the instance's order.
+ *
+ * ⚠ `kcEnabled: false` empties this entirely — the derived four are all graded, and D12
+ * says the toggle gates graded questions.
+ */
+export function pdResolveKc(config: PdConfig): PdKcQuestion[] {
+  if (!config.kcEnabled) return []
+  const all = resolveKcQuestions(config.payoffs, config.unit, config.labels)
+    .filter(q => config.kcHidden[q.field] !== true)
+    .map(q => applyKcOverride(q, config.kcOverrides))
+  return applyKcOrder(all, q => q.field, config.kcOrder)
+}
+
+/** An added question that carries a usable key, and therefore a mark. */
+export function isGradedAdded(q: PdAddedKcQuestion): boolean {
+  return q.type === 'mc' && typeof q.correct_value === 'string'
+}
+
+/**
+ * This instance's ADDED questions: hidden ones removed, in order.
+ *
+ * ⚠⚠ D12 — `kcEnabled` GATES GRADED QUESTIONS ONLY. A graded addition disappears with the
+ * toggle, exactly as the derived four do. An UNGRADED free-text addition does NOT: it is
+ * governed by its own visibility checkbox, the same rule the debrief paragraph follows.
+ * That is a deliberate behaviour change from the pre-convergence build, where the toggle
+ * removed every addition regardless — recorded in the handoff.
+ */
+export function resolveAddedKcQuestions(config: PdConfig): PdAddedKcQuestion[] {
+  const visible = config.addedKcQuestions.filter(q => config.kcHidden[q.id] !== true)
+  const gated = config.kcEnabled ? visible : visible.filter(q => !isGradedAdded(q))
+  return applyKcOrder(gated, q => q.id, config.kcOrder)
+}
+
+/**
+ * This instance's added questions IN THE CLIENT SHAPE — whitelisted field by field, and
+ * SHUFFLED.
+ *
+ * ⚠⚠ THIS EXISTS SO THE SHUFFLE IS TESTABLE WHERE IT IS ACTUALLY WIRED. A mutation that
+ * deleted the `shuffleClientOptions` call from `pdGetQuestions` survived a suite that
+ * tested the shuffle helper directly — the helper was perfect and nothing called it. The
+ * serve path now composes this, so a test of this function tests the real path.
+ *
+ * ⚠ NEVER SPREAD — every field is named, so a stored `correct_value` cannot ride out to a
+ * student. A free-text question keeps `options: []`, which is the signal the client renders
+ * a textarea on.
+ */
+export function addedToClientKcQuestions(
+  config: PdConfig,
+  participantId: string,
+): { field: string; type: 'mc' | 'text'; prompt: string; options: { value: string; label: string }[] }[] {
+  return resolveAddedKcQuestions(config).map(q => ({
+    field: q.id,
+    type: q.type,
+    prompt: q.prompt,
+    options: shuffleClientOptions(q.options ?? [], participantId, q.id),
+  }))
+}
+
+/**
+ * ⚠⚠ THE GRADER'S SCORING SET — the whole of it, in one place.
+ *
+ * `pdSubmitKcAnswer` calls exactly this and builds no list of its own. Visible AND graded:
+ * a hidden question is absent (it was never asked), and an ungraded one — free text, or an
+ * mc whose key named no offered option and was dropped at parse time — is absent from the
+ * numerator AND the denominator, so adding one cannot lower anybody's score.
+ */
+export function pdKcScoringSet(config: PdConfig): { field: string; correct_value: string }[] {
+  return [
+    ...pdResolveKc(config).map(q => ({ field: q.field, correct_value: q.correct_value! })),
+    ...resolveAddedKcQuestions(config)
+      .filter(isGradedAdded)
+      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
+  ]
 }

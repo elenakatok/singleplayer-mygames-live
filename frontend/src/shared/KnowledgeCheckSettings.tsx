@@ -63,6 +63,21 @@ export interface KcSettingsStage {
   label: string
   /** Optional caution shown under the heading — e.g. scorecard's §9.1 rule. */
   note?: string
+  /**
+   * May the instructor put a NEW question in this stage? Default true.
+   *
+   * ⚠⚠ ADDED FOR PD, AND IT EXISTS TO STOP A SILENT LIE. A stage only belongs in the
+   * picker if the game's student flow actually RENDERS an added question there. pd's
+   * `post` stage holds only the debrief paragraph — its Play.tsx runs KC screens, then the
+   * round loop, then the debrief, with no post-play KC screen — so an added question
+   * assigned to `post` would be served before play instead, silently contradicting the
+   * instructor's choice. Marking the stage `acceptsAdded: false` removes it from the
+   * picker while it still renders as a heading with its existing rows.
+   *
+   * When only one stage accepts additions the picker is not rendered at all, exactly as
+   * when a game has a single stage.
+   */
+  acceptsAdded?: boolean
 }
 
 export interface KcSettingsDraft {
@@ -351,7 +366,9 @@ export function KnowledgeCheckSettings({
   const [newPrompt, setNewPrompt] = useState('')
   const [newOptions, setNewOptions] = useState<string[]>(['', ''])
   const [newCorrect, setNewCorrect] = useState(0)
-  const [newStage, setNewStage] = useState(stages[0]?.id ?? '')
+  /** ⚠ Only stages whose flow actually renders an addition — see `acceptsAdded`. */
+  const addableStages = stages.filter(s => s.acceptsAdded !== false)
+  const [newStage, setNewStage] = useState(addableStages[0]?.id ?? stages[0]?.id ?? '')
   const [addError, setAddError] = useState<string | null>(null)
 
   /**
@@ -535,9 +552,10 @@ export function KnowledgeCheckSettings({
                 </select>
               </label>
 
-              {/* ⚠ The stage picker only appears where the game HAS more than one stage
-                  (spec §2.4) — today that is scorecard alone. */}
-              {stages.length > 1 && (
+              {/* ⚠ The stage picker only appears where the game has more than one stage
+                  that can actually RENDER a new question (spec §2.4, and `acceptsAdded`).
+                  Today that is scorecard alone; pd's `post` stage holds only its debrief. */}
+              {addableStages.length > 1 && (
                 <label style={{ fontSize: '0.82rem' }}>
                   Asked{' '}
                   <select
@@ -545,7 +563,7 @@ export function KnowledgeCheckSettings({
                     onChange={e => setNewStage(e.target.value)}
                     data-testid={`${testIdPrefix}-new-stage`}
                   >
-                    {stages.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                    {addableStages.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                   </select>
                 </label>
               )}

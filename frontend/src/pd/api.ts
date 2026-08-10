@@ -282,6 +282,55 @@ export type PdConfigResult = {
    *  anyone has launched. A BOOLEAN — never a number, even here. Drives the "range
    *  edits will not reach students already playing" notice. */
   anyRoundsDrawn: boolean
+  /** ⚠ The three convergence fields (spec §5). */
+  kcHidden: Record<string, boolean>
+  kcOrder: Record<string, number>
+  kcOverrides: Record<string, PdKcOverride>
+  /** Everything the shared knowledge-check block renders. */
+  kc: PdKcInventory
+}
+
+/** One question's instructor wording. ⚠ `options` maps an EXISTING option value to a
+ *  replacement LABEL — it cannot add, drop, reorder or re-key an option, and therefore
+ *  cannot move a score. */
+export type PdKcOverride = {
+  prompt?: string
+  options?: Record<string, string>
+}
+
+/** ⚠ `post` means AFTER PLAY. pd has NO reveal — the bot's strategy is never shown. */
+export type PdKcStage = 'pre' | 'post'
+
+export type PdKcInventoryQuestion = {
+  id: string
+  kind: 'builtin' | 'added'
+  stage: PdKcStage
+  prompt: string
+  options: { value: string; label: string }[]
+  correctValue: string | null
+  graded: boolean
+  visible: boolean
+  locked: boolean
+  /** ⚠ Populated whenever `locked` — a disabled control with no reason reads as a bug. */
+  lockReason: string | null
+  overridden: boolean
+  originalPrompt?: string
+  originalOptions?: { value: string; label: string }[]
+  type?: 'mc' | 'text'
+  order: number | null
+}
+
+export type PdKcInventory = {
+  stages: readonly PdKcStage[]
+  builtIn: PdKcInventoryQuestion[]
+  added: PdKcInventoryQuestion[]
+  /** ⚠ The debrief paragraph, AS A ROW (spec D9) — an ungraded question in a later stage,
+   *  not a separate surface. Backed by `debriefPrompt` / `debriefEnabled`, NOT by the
+   *  three convergence maps, so no stored answer moves. */
+  debrief: PdKcInventoryQuestion
+  poolTotal: number
+  visibleCount: number
+  gradedCount: number
 }
 
 /** Every editable setting for the instance. */
@@ -299,4 +348,7 @@ export const pdUpdateConfig = (patch: Partial<{
   addedKcQuestions: PdAddedKcQuestion[]
   debriefEnabled: boolean
   debriefPrompt: string
+  kcHidden: Record<string, boolean>
+  kcOrder: Record<string, number>
+  kcOverrides: Record<string, PdKcOverride>
 }>) => callFn<PdConfigResult>('pdUpdateConfig', patch)

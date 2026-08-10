@@ -6,9 +6,13 @@ import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   pdGetConfig, pdUpdateConfig, pdInstructorSession, CLASSROOM_URL,
-  type PdConfigResult, type PdAddedKcQuestion, type PdPayoffs, type PdMoveLabels,
+  type PdConfigResult, type PdPayoffs, type PdMoveLabels,
 } from './api'
 import { PayoffMatrix } from './PayoffMatrix'
+import {
+  KnowledgeCheckSettings,
+  type KcSettingsDraft, type KcSettingsQuestion, type KcSettingsStage,
+} from '../shared/KnowledgeCheckSettings'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PD settings (Slice 5) — the instructor's real work, in poll's Settings shape:
@@ -25,31 +29,57 @@ import { PayoffMatrix } from './PayoffMatrix'
 //     been drawn, so it can warn that a range edit will not move an instance already
 //     in play.
 //
-//   • The knowledge check: on/off, plus the instructor's OWN extra questions.
-//     ⚠ THE FOUR MATRIX QUESTIONS ARE NOT EDITABLE, ON PURPOSE. They are derived from
-//     the payoff matrix every time they are served AND every time they are graded, so
-//     they cannot drift from the matrix on the student's screen. Editing the matrix
-//     rewrites them; that is the feature, not a missing one. They are shown read-only
-//     so the instructor can see what their matrix produced. Added questions are a
-//     SEPARATE list with their own answer keys and never merge with the derived four.
+//   • The knowledge check — now the SHARED block (convergence spec §2). Every question
+//     this instance can ask is listed there with the same four controls: show/hide,
+//     move up/down, edit (or a reason it cannot be edited), and delete on added
+//     questions only.
+//     ⚠ THE FOUR MATRIX QUESTIONS ARE NOT EDITABLE, ON PURPOSE — and the block now says
+//     so on each row rather than in prose. They are derived from the payoff matrix every
+//     time they are served AND every time they are graded, so they cannot drift from the
+//     matrix on the student's screen. Editing the matrix rewrites them; that is the
+//     feature, not a missing one. The classification is MEASURED server-side, not listed
+//     (functions pd/kcLock.ts), so it cannot rot.
 //
-//   • The debrief: on/off and the prompt text.
+//   • The debrief is A ROW IN THAT LIST (spec D9) — "debrief is not a separate surface,
+//     it is an ungraded question in a later stage". Its standalone textarea is gone.
+//     ⚠ Its prompt and visibility still store to `debrief_prompt` / `debrief_enabled`;
+//     the translation lives in seedKc/kcPatch below. No stored answer moved.
 //
 //   • The bot strategies (tit-for-tat / GRIM) are NOT configurable — by decision.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const shortId = () =>
-  (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).slice(2, 10))
+/**
+ * PD's two stages, for the shared block.
+ *
+ * ⚠⚠ `post` READS "AFTER PLAY", NOT "AFTER THE REVEAL". PD HAS NO REVEAL — the bot's
+ * assigned strategy is never shown to the student, because inferring it from play IS the
+ * exercise (spec §5). Scorecard's wording names a screen this game does not have, which is
+ * exactly why these labels are props and not baked into the shared block.
+ *
+ * ⚠ `acceptsAdded: false` on `post`. Only the debrief lives there: pd's Play.tsx runs the
+ * KC screens, then the round loop, then the debrief, with NO post-play KC screen. An added
+ * question assigned to `post` would be served before play instead — so the picker does not
+ * offer it rather than silently contradicting the instructor. Flagged in the handoff.
+ */
+const KC_STAGES: KcSettingsStage[] = [
+  { id: 'pre', label: 'Before play', note: 'Asked before the first round.' },
+  {
+    id: 'post',
+    label: 'After play',
+    note: 'Asked once the last round is over. There is no reveal in this game — the other '
+      + 'player’s strategy is never shown.',
+    acceptsAdded: false,
+  },
+]
+
+/** ⚠ The debrief row's id IS its stored answer key. Nothing moves. */
+const DEBRIEF_ROW_ID = 'debrief_reflection'
 
 const field: CSSProperties = {
   width: '100%', fontSize: '0.95rem', padding: '0.45rem 0.55rem',
   borderRadius: 4, border: `1px solid ${colors.inputBorder}`, boxSizing: 'border-box',
 }
 const numField: CSSProperties = { ...field, width: '6rem' }
-const smallBtn: CSSProperties = {
-  padding: '0.25rem 0.55rem', fontSize: '0.85rem', cursor: 'pointer',
-  borderRadius: 4, border: `1px solid ${colors.inputBorder}`, background: '#fff',
-}
 const sectionStyle: CSSProperties = {
   border: `1px solid ${colors.sectionBorder}`, borderRadius: 8,
   padding: '1rem 1.25rem', marginBottom: '1.25rem',
@@ -85,16 +115,19 @@ export default function Settings() {
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
-  // Add-question form.
-  const [newType, setNewType] = useState<'mc' | 'text'>('mc')
-  const [newPrompt, setNewPrompt] = useState('')
-  const [newOptions, setNewOptions] = useState<string[]>(['', ''])
-  const [newCorrect, setNewCorrect] = useState(0)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // THE KNOWLEDGE CHECK — the SHARED block (convergence spec §2, §8.2).
+  //
+  // ⚠ The composer, the added-question list, the id minting and the standalone debrief
+  // textarea all moved into `shared/KnowledgeCheckSettings`. pd supplies only what is its
+  // own: the stage labels, the toggle copy, and the debrief↔row translation below.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const [kcDraft, setKcDraft] = useState<KcSettingsDraft | null>(null)
 
   useEffect(() => {
     if (session.kind !== 'ready') return
     pdGetConfig()
-      .then(setCfg)
+      .then(r => { setCfg(r); setKcDraft(seedKc(r)) })
       .catch(e => setErr(e instanceof Error ? e.message : 'Failed to load settings.'))
   }, [session.kind])
 
@@ -104,29 +137,48 @@ export default function Settings() {
   const setLabel = (k: keyof PdMoveLabels, v: string) =>
     setCfg(c => (c ? { ...c, labels: { ...c.labels, [k]: v } } : c))
 
-  const addQuestion = () => {
-    if (!cfg) return
-    if (!newPrompt.trim()) { setErr('Enter a prompt for the new question.'); return }
-    let options: { value: string; label: string }[] | undefined
-    let correct_value: string | undefined
-    if (newType === 'mc') {
-      const labels = newOptions.map(o => o.trim()).filter(Boolean)
-      if (labels.length < 2) { setErr('A multiple-choice question needs at least two options.'); return }
-      options = labels.map(label => ({ value: `o_${shortId()}`, label }))
-      correct_value = options[Math.min(newCorrect, options.length - 1)].value
+  /** The server's inventory in the shared block's shape — the debrief row included. */
+  function kcQuestions(r: PdConfigResult): KcSettingsQuestion[] {
+    return [...r.kc.builtIn, ...r.kc.added, r.kc.debrief]
+  }
+
+  /**
+   * ⚠⚠ THE DEBRIEF ROW IS BACKED BY `debriefPrompt` / `debriefEnabled`, NOT BY THE THREE
+   * CONVERGENCE MAPS — that is what makes folding it into the list a UI change with NO
+   * STORAGE MIGRATION (spec D9). Inside the block it behaves like any other row, so its
+   * edits land in `overrides[debrief_reflection]` and `hidden[debrief_reflection]`; this
+   * pair of functions translates those to and from the real config keys at the boundary.
+   * The server never sees an override or a hide for the debrief id.
+   */
+  function seedKc(r: PdConfigResult): KcSettingsDraft {
+    return {
+      enabled: r.kcEnabled,
+      hidden: {
+        ...r.kcHidden,
+        // debriefEnabled === false IS "hidden" for this row.
+        ...(r.debriefEnabled ? {} : { [DEBRIEF_ROW_ID]: true }),
+      },
+      order: { ...r.kcOrder },
+      overrides: { ...r.kcOverrides },
+      added: r.addedKcQuestions.map(q => ({ ...q })),
     }
-    const q: PdAddedKcQuestion = {
-      // `akc_` — never `kc_`, which the derived four own. The server refuses that
-      // prefix outright, because the grader looks up derived questions FIRST and a
-      // collision would grade the student against the matrix, not this key.
-      id: `akc_${shortId()}`,
-      type: newType,
-      prompt: newPrompt.trim(),
-      options,
-      correct_value,
+  }
+
+  /** The draft, split back into the callable's real field names. */
+  function kcPatch(d: KcSettingsDraft) {
+    const { [DEBRIEF_ROW_ID]: debriefHidden, ...hidden } = d.hidden
+    const { [DEBRIEF_ROW_ID]: debriefOverride, ...overrides } = d.overrides
+    return {
+      kcEnabled: d.enabled,
+      kcHidden: hidden,
+      kcOrder: d.order,
+      kcOverrides: overrides,
+      addedKcQuestions: d.added,
+      debriefEnabled: debriefHidden !== true,
+      // ⚠ Falls back to what is stored, so a save that never touched the debrief sends the
+      // prompt unchanged rather than blanking it — the callable rejects an empty prompt.
+      debriefPrompt: debriefOverride?.prompt ?? cfg?.debriefPrompt ?? '',
     }
-    patch({ addedKcQuestions: [...cfg.addedKcQuestions, q] })
-    setNewPrompt(''); setNewOptions(['', '']); setNewCorrect(0); setErr(null)
   }
 
   const save = async () => {
@@ -139,14 +191,12 @@ export default function Settings() {
         unit: cfg.unit,
         minRounds: cfg.minRounds,
         maxRounds: cfg.maxRounds,
-        kcEnabled: cfg.kcEnabled,
-        addedKcQuestions: cfg.addedKcQuestions,
-        debriefEnabled: cfg.debriefEnabled,
-        debriefPrompt: cfg.debriefPrompt,
+        ...(kcDraft ? kcPatch(kcDraft) : {}),
       })
       // Show what was STORED (server-normalized), not what we hoped we sent — and the
       // re-derived KC preview that the new matrix produces.
       setCfg(res)
+      setKcDraft(seedKc(res))
       setMsg('Saved.')
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Save failed.')
@@ -287,145 +337,32 @@ export default function Settings() {
         )}
       </Section>
 
-      {/* ── Knowledge check ─────────────────────────────────────────────────── */}
-      <Section title="Knowledge check">
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', fontSize: '0.9rem' }}>
-          <input
-            data-testid="pd-set-kc-enabled" type="checkbox"
-            checked={cfg.kcEnabled} onChange={e => patch({ kcEnabled: e.target.checked })}
-          />
-          Include the knowledge check
-        </label>
-
-        {cfg.kcEnabled && (
-          <>
-            <div style={{ marginTop: '1rem' }}>
-              <p style={{ ...hint, marginTop: 0 }}>
-                <strong>These four are generated from your payoff matrix</strong> and update
-                automatically when you change it, so they can never disagree with the matrix
-                students are looking at. They are not editable — edit the matrix instead.
-              </p>
-              <ul data-testid="pd-set-derived-kc" style={{ listStyle: 'none', margin: '0.5rem 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                {cfg.derivedKcPreview.map(q => (
-                  <li key={q.field} style={{ border: `1px solid ${colors.borderMid}`, borderRadius: 6, padding: '0.5rem 0.7rem', background: colors.surfaceSubtle }}>
-                    <div style={{ fontSize: '0.9rem', color: colors.text }}>{q.prompt}</div>
-                    <div style={{ fontSize: '0.78rem', color: colors.textSecondary, marginTop: '0.2rem' }}>
-                      Answer: <strong>{q.correct_value}</strong> · options {q.options.map(o => o.label).join(' / ')}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            <div style={{ marginTop: '1.25rem' }}>
-              <p style={{ ...hint, marginTop: 0 }}>Your own extra questions, asked after those four:</p>
-              {cfg.addedKcQuestions.length === 0 && (
-                <p style={{ ...hint, fontStyle: 'italic' }}>None yet.</p>
-              )}
-              <ul style={{ listStyle: 'none', margin: '0.5rem 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                {cfg.addedKcQuestions.map(q => (
-                  <li key={q.id} data-testid={`pd-set-added-${q.id}`} style={{ border: `1px solid ${colors.borderMid}`, borderRadius: 6, padding: '0.6rem 0.8rem' }}>
-                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.3rem' }}>
-                      <span style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.03em', color: colors.badgeText, background: colors.badgeBg, borderRadius: 4, padding: '0.1rem 0.4rem' }}>
-                        {q.type === 'mc' ? 'multiple choice' : 'free text (not graded)'}
-                      </span>
-                      <span style={{ flex: 1 }} />
-                      <button
-                        data-testid={`pd-set-delete-${q.id}`}
-                        onClick={() => patch({ addedKcQuestions: cfg.addedKcQuestions.filter(x => x.id !== q.id) })}
-                        style={{ ...smallBtn, color: colors.errorLink, borderColor: colors.errorBorder }}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                    <div style={{ fontSize: '0.9rem', color: colors.text }}>{q.prompt}</div>
-                    {q.type === 'mc' && (
-                      <div style={{ fontSize: '0.78rem', color: colors.textSecondary, marginTop: '0.2rem' }}>
-                        {(q.options ?? []).map(o => (
-                          <span key={o.value} style={{ marginRight: '0.6rem', fontWeight: o.value === q.correct_value ? 700 : 400 }}>
-                            {o.label}{o.value === q.correct_value ? ' ✓' : ''}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-
-              {/* Add-question form */}
-              <div style={{ marginTop: '1rem', border: `1px dashed ${colors.inputBorder}`, borderRadius: 8, padding: '0.9rem' }}>
-                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
-                  <label style={{ fontSize: '0.85rem' }}>
-                    Type:{' '}
-                    <select data-testid="pd-set-new-type" value={newType} onChange={e => setNewType(e.target.value as 'mc' | 'text')}>
-                      <option value="mc">Multiple choice (graded)</option>
-                      <option value="text">Free text (not graded)</option>
-                    </select>
-                  </label>
-                </div>
-                <input
-                  data-testid="pd-set-new-prompt" style={field} value={newPrompt}
-                  onChange={e => setNewPrompt(e.target.value)} placeholder="Question prompt"
-                />
-                {newType === 'mc' && (
-                  <div style={{ marginTop: '0.6rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                    {newOptions.map((o, oi) => (
-                      <div key={oi} style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                        <input
-                          type="radio" name="pd-new-correct" checked={newCorrect === oi}
-                          onChange={() => setNewCorrect(oi)} title="Correct answer"
-                          data-testid={`pd-set-new-correct-${oi}`}
-                        />
-                        <input
-                          data-testid={`pd-set-new-option-${oi}`}
-                          value={o} style={{ ...field, flex: 1 }} placeholder={`Option ${oi + 1}`}
-                          onChange={e => setNewOptions(opts => opts.map((x, k) => (k === oi ? e.target.value : x)))}
-                        />
-                        {newOptions.length > 2 && (
-                          <button onClick={() => setNewOptions(opts => opts.filter((_, k) => k !== oi))} style={smallBtn}>✕</button>
-                        )}
-                      </div>
-                    ))}
-                    <button onClick={() => setNewOptions(opts => [...opts, ''])} style={{ ...smallBtn, alignSelf: 'flex-start' }}>
-                      + Add option
-                    </button>
-                    <p style={{ ...hint, marginTop: 0 }}>Select the radio beside the correct answer.</p>
-                  </div>
-                )}
-                <div style={{ marginTop: '0.75rem' }}>
-                  <button data-testid="pd-set-add-question" onClick={addQuestion} style={{ ...smallBtn, fontWeight: 600 }}>
-                    Add question
-                  </button>
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-      </Section>
-
-      {/* ── Debrief ─────────────────────────────────────────────────────────── */}
-      <Section title="Debrief">
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', fontSize: '0.9rem' }}>
-          <input
-            data-testid="pd-set-debrief-enabled" type="checkbox"
-            checked={cfg.debriefEnabled} onChange={e => patch({ debriefEnabled: e.target.checked })}
-          />
-          Ask a debrief question after the last round
-        </label>
-        {cfg.debriefEnabled && (
-          <div style={{ marginTop: '0.75rem' }}>
-            <Labelled label="Prompt">
-              <textarea
-                data-testid="pd-set-debrief-prompt" rows={3}
-                style={{ ...field, resize: 'vertical', fontFamily: 'inherit' }}
-                value={cfg.debriefPrompt}
-                onChange={e => patch({ debriefPrompt: e.target.value })}
-              />
-            </Labelled>
-            <p style={hint}>Free text, never graded. The answers feed the debrief report.</p>
-          </div>
-        )}
-      </Section>
+      {/* ═══ THE KNOWLEDGE CHECK — the SHARED block (convergence spec §2) ════ */}
+      {kcDraft && (
+        <KnowledgeCheckSettings
+          testIdPrefix="pd-kc"
+          questions={kcQuestions(cfg)}
+          stages={KC_STAGES}
+          draft={kcDraft}
+          onChange={setKcDraft}
+          // ⚠ D12 — THE TOGGLE GATES GRADED QUESTIONS ONLY, and the copy says exactly that.
+          // The debrief paragraph has its own visibility checkbox in the list below, so
+          // switching the check off must not be read as switching the reflection off too.
+          enableNote={(
+            <>
+              Off removes the four matrix questions and any graded question you have added.
+              ⚠ It does <em>not</em> remove the debrief paragraph, or any free-text question
+              you have added — those are ungraded, and each has its own visibility checkbox
+              in the list below.
+            </>
+          )}
+          // ⚠ NO STARTED-BANNER IS PASSED, DELIBERATELY. pd has an `anyRoundsDrawn` signal
+          // and one warning that uses it, but that warning lives in the round-range section
+          // and its copy is entirely about round ranges — it is not a page-level banner
+          // like scorecard's. Writing new KC-specific banner copy here would be inventing a
+          // mechanism this page does not have. Raised in the handoff for Elena's call.
+        />
+      )}
 
       {err && <p data-testid="pd-set-error" style={{ color: '#c00' }}>{err}</p>}
       {msg && <p data-testid="pd-set-saved" style={{ color: colors.successText }}>{msg}</p>}

@@ -4,9 +4,14 @@ import { extractInstructorGameId } from '@mygames/game-server'
 import {
   PD_CORS_ORIGINS, INSTANCES_COLLECTION, CONFIG_DOC,
   HARD_MIN_ROUNDS, HARD_MAX_ROUNDS, loadPdConfig, parseAddedKcQuestion,
-  type PdAddedKcQuestion,
+  parseKcHidden, parseKcOrder, parseKcOverrides,
+  type PdAddedKcQuestion, type PdConfig,
 } from './config'
-import { resolveKcQuestions } from './questions'
+import {
+  resolveKcQuestions, applyKcOverride, isKcOverridden, isGradedAdded,
+  PD_BUILT_IN_KC_IDS, PD_KC_STAGES,
+} from './questions'
+import { lockedKcQuestionIds, validateKcOverrides, KC_LOCK_REASON } from './kcLock'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PD settings callables (Slice 5). pdGetConfig returns the whole editable config for
@@ -48,34 +53,7 @@ export const pdGetConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) => 
 
   const config = loadPdConfig(configSnap.data())
 
-  return {
-    ok: true as const,
-    payoffs: config.payoffs,
-    labels: config.labels,
-    unit: config.unit,
-    minRounds: config.minRounds,
-    maxRounds: config.maxRounds,
-    kcEnabled: config.kcEnabled,
-    addedKcQuestions: config.addedKcQuestions,
-    debriefEnabled: config.debriefEnabled,
-    debriefPrompt: config.debriefPrompt,
-    /**
-     * Read-only preview of what the CURRENT matrix derives, so the settings page can
-     * show the instructor the four questions their payoff edits just produced.
-     * Instructor-side, so the answer key may be included here.
-     */
-    derivedKcPreview: resolveKcQuestions(config.payoffs, config.unit, config.labels).map(q => ({
-      field: q.field,
-      prompt: q.prompt,
-      options: q.options ?? [],
-      correct_value: q.correct_value,
-    })),
-    /** Has ANY student drawn their hidden round count yet — i.e. has anyone
-     *  launched? A BOOLEAN — never a number, and never a count of students, even for
-     *  the instructor's settings page. Drives the "range edits will not reach
-     *  students already playing" warning. */
-    anyRoundsDrawn: !drawnSnap.empty,
-  }
+  return configView(config, !drawnSnap.empty)
 })
 
 /** Reads one optional field; `undefined` means "not being changed". */
@@ -170,6 +148,65 @@ export const pdUpdateConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
     patch.added_kc_questions = parsed
   }
 
+  // ── The three convergence fields (spec §5) ────────────────────────────────
+  //
+  // ⚠ Every key is checked against the ids this instance actually has. A stale id — from a
+  // question deleted between page load and save — is REFUSED rather than stored, because a
+  // hidden map full of ids nothing serves is how "10 of 12 visible" starts lying.
+  //
+  // ⚠ ADDED IDS AND THE DEBRIEF ROW COUNT AS KNOWN for `hidden` and `order`. Only
+  // `overrides` is derived-question-only: added questions are stored data edited in place,
+  // and the debrief row is backed by `debrief_prompt`.
+  const db0 = admin.firestore()
+  const stored = has(data, 'kcHidden') || has(data, 'kcOrder') || has(data, 'kcOverrides')
+    ? loadPdConfig((await db0.collection(INSTANCES_COLLECTION).doc(gameInstanceId)
+      .collection('config').doc(CONFIG_DOC).get()).data())
+    : null
+
+  if (stored !== null) {
+    const knownAdded = new Set(
+      (patch.added_kc_questions as PdAddedKcQuestion[] | undefined)?.map(q => q.id)
+      ?? stored.addedKcQuestions.map(q => q.id),
+    )
+    const knownId = (id: string) =>
+      PD_BUILT_IN_KC_IDS.has(id) || knownAdded.has(id) || id === DEBRIEF_ROW_ID
+
+    if (has(data, 'kcHidden')) {
+      const p = parseKcHidden(data.kcHidden)
+      for (const id of Object.keys(p)) {
+        if (!knownId(id)) throw new HttpsError('invalid-argument', `'${id}' is not a question in this game.`)
+      }
+      patch.kc_hidden = p
+    }
+
+    if (has(data, 'kcOrder')) {
+      const p = parseKcOrder(data.kcOrder)
+      for (const id of Object.keys(p)) {
+        if (!knownId(id)) throw new HttpsError('invalid-argument', `'${id}' is not a question in this game.`)
+      }
+      patch.kc_order = p
+    }
+
+    if (has(data, 'kcOverrides')) {
+      // ⚠⚠ THE LOCK IS ENFORCED HERE, NOT ONLY IN THE UI (spec §5). A greyed-out Edit
+      // button stops an instructor; it does not stop a stale tab, a replayed payload or a
+      // hand-made call. A locked question's text is RECOMPUTED from the payoff matrix, so
+      // an override on it would be discarded on the next matrix edit — or, worse, kept and
+      // left contradicting the numbers beside it.
+      //
+      // ⚠ Classified against THIS instance's live config, not a hardcoded list — see
+      // kcLock.ts for why the classification is measured rather than listed.
+      const derived = resolveKcQuestions(stored.payoffs, stored.unit, stored.labels)
+      const rejections = validateKcOverrides(parseKcOverrides(data.kcOverrides), {
+        builtInIds: PD_BUILT_IN_KC_IDS,
+        locked: lockedKcQuestionIds(stored),
+        optionIds: new Map(derived.map(q => [q.field, new Set((q.options ?? []).map(o => o.value))])),
+      })
+      if (rejections.length > 0) throw new HttpsError('invalid-argument', rejections[0].message)
+      patch.kc_overrides = parseKcOverrides(data.kcOverrides)
+    }
+  }
+
   // ── Debrief ───────────────────────────────────────────────────────────────
   if (has(data, 'debriefEnabled')) {
     if (typeof data.debriefEnabled !== 'boolean') throw new HttpsError('invalid-argument', 'debriefEnabled must be true or false.')
@@ -204,6 +241,18 @@ export const pdUpdateConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
   ])
   const config = loadPdConfig(configSnap.data())
 
+  return configView(config, !drawnSnap.empty)
+})
+
+/**
+ * The settings page's whole picture of ONE instance.
+ *
+ * ⚠⚠ BOTH CALLABLES RETURN THIS, AND THAT IS THE POINT. `pdGetConfig` and `pdUpdateConfig`
+ * used to build the object separately, so this pass's new `kc` field landed in one of them
+ * and not the other — the page loaded fine and then crashed on save. One builder, two
+ * callers: the same discipline the serve path and the grader now share.
+ */
+function configView(config: PdConfig, anyRoundsDrawn: boolean) {
   return {
     ok: true as const,
     payoffs: config.payoffs,
@@ -215,12 +264,132 @@ export const pdUpdateConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
     addedKcQuestions: config.addedKcQuestions,
     debriefEnabled: config.debriefEnabled,
     debriefPrompt: config.debriefPrompt,
+    /**
+     * Read-only preview of what the CURRENT matrix derives, so the settings page can show
+     * the instructor the four questions their payoff edits just produced. Instructor-side,
+     * so the answer key may be included here.
+     */
     derivedKcPreview: resolveKcQuestions(config.payoffs, config.unit, config.labels).map(q => ({
       field: q.field,
       prompt: q.prompt,
       options: q.options ?? [],
       correct_value: q.correct_value,
     })),
-    anyRoundsDrawn: !drawnSnap.empty,
+    /** Has ANY student drawn their hidden round count yet — i.e. has anyone launched? A
+     *  BOOLEAN — never a number, and never a count of students, even for the instructor's
+     *  settings page. Drives the "range edits will not reach students already playing"
+     *  warning. */
+    anyRoundsDrawn,
+    /** ⚠ The three convergence fields (spec §5). */
+    kcHidden: config.kcHidden,
+    kcOrder: config.kcOrder,
+    kcOverrides: config.kcOverrides,
+    /** Everything the shared knowledge-check block renders. */
+    kc: kcInventory(config),
   }
-})
+}
+
+/**
+ * The instructor-facing inventory of every question this instance could ask — the payload
+ * the shared settings block renders.
+ *
+ * ⚠ THIS IS THE INSTRUCTOR CALLABLE, so `correctValue` belongs here. `pdGetQuestions` (the
+ * STUDENT path) still strips every key.
+ *
+ * ⚠⚠ THE DEBRIEF IS A ROW IN THIS LIST (spec D9). It is not a separate surface: "debrief is
+ * an ungraded question in a later stage". It is reported as a `builtin` row in the `post`
+ * stage — editable, hideable, reorderable, never graded and never deletable — but its
+ * prompt and its visibility are STORED under the existing `debrief_prompt` /
+ * `debrief_enabled` keys, NOT in the three convergence maps. The settings page translates
+ * between the two. No storage migration; stored answers do not move.
+ *
+ * ⚠ Unlike scorecard's `noticing`/`linking`, pd's debrief has NO server-enforced ordering to
+ * protect — nothing is refused until it is stored — which is precisely why it can be folded
+ * into the list and they cannot.
+ */
+function kcInventory(config: PdConfig) {
+  const locked = lockedKcQuestionIds(config)
+  const authored = resolveKcQuestions(config.payoffs, config.unit, config.labels)
+
+  const builtIn = authored.map((raw) => {
+    const q = applyKcOverride(raw, config.kcOverrides)
+    return {
+      id: q.field,
+      kind: 'builtin' as const,
+      stage: 'pre' as const,
+      prompt: q.prompt,
+      options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+      correctValue: q.correct_value ?? null,
+      /** Always graded — every derived question carries a key. */
+      graded: true,
+      visible: config.kcHidden[q.field] !== true,
+      locked: locked.has(q.field),
+      /** ⚠ Always populated when `locked` — a disabled control with no reason is a bug. */
+      lockReason: locked.has(q.field) ? KC_LOCK_REASON : null,
+      overridden: isKcOverridden(q.field, config.kcOverrides),
+      /** The GENERATED text, so the page can offer "revert to the original". */
+      originalPrompt: raw.prompt,
+      originalOptions: (raw.options ?? []).map(o => ({ value: o.value, label: o.label })),
+      order: config.kcOrder[q.field] ?? null,
+    }
+  })
+
+  const added = config.addedKcQuestions.map(q => ({
+    id: q.id,
+    kind: 'added' as const,
+    stage: 'pre' as const,
+    type: q.type,
+    prompt: q.prompt,
+    options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+    correctValue: q.correct_value ?? null,
+    graded: isGradedAdded(q),
+    visible: config.kcHidden[q.id] !== true,
+    /** Added questions are stored DATA — edited in place, never overridden, never locked. */
+    locked: false,
+    lockReason: null,
+    overridden: false,
+    order: config.kcOrder[q.id] ?? null,
+  }))
+
+  /** ⚠ The debrief, as a row. See the note on `kcInventory`. */
+  const debriefRow = {
+    id: DEBRIEF_ROW_ID,
+    kind: 'builtin' as const,
+    stage: 'post' as const,
+    type: 'text' as const,
+    prompt: config.debriefPrompt,
+    options: [] as { value: string; label: string }[],
+    correctValue: null,
+    /** ⚠ NEVER GRADED, and by ABSENCE OF A KEY rather than by being in the post stage —
+     *  the same rule every other ungraded question in the family follows. */
+    graded: false,
+    visible: config.debriefEnabled,
+    locked: false,
+    lockReason: null,
+    /** No revert affordance — its "original" is the shipped default, and the row is backed
+     *  by `debrief_prompt` rather than by an override entry. */
+    overridden: false,
+    order: config.kcOrder[DEBRIEF_ROW_ID] ?? null,
+  }
+
+  const pool = [...builtIn, ...added, debriefRow]
+  return {
+    stages: PD_KC_STAGES,
+    builtIn,
+    added,
+    debrief: debriefRow,
+    /** ⚠ THE COUNT LINE'S THREE NUMBERS, derived exactly as the grader's denominator is —
+     *  visible AND graded. Never stored (D5). */
+    poolTotal: pool.length,
+    visibleCount: pool.filter(q => q.visible).length,
+    gradedCount: pool.filter(q => q.visible && q.graded).length,
+  }
+}
+
+/**
+ * The id the debrief row uses in the settings block.
+ *
+ * ⚠ It is the question's real `field` (`debrief_reflection`), so the row's id matches the
+ * key its answers are already stored under and the reports already read. Nothing moves.
+ */
+export const DEBRIEF_ROW_ID = 'debrief_reflection'

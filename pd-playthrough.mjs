@@ -1006,6 +1006,135 @@ async function main() {
     check(!/round\s*\{?\s*\w*\s*\}?\s*of\s*\{/i.test(js), 'the bundle has no "round N of M" template')
   }
 
+  // ⚠ BLOCK-SCOPED. This file is one long function and section 15 introduces a dozen
+  // locals; braces keep them off the shared scope rather than renaming each one.
+  {
+  // ── 15. ⚠⚠ The shared KC surface — hidden / order / overrides, AT THE CALLABLES ──
+  //
+  // ⚠⚠ THESE RUN AGAINST THE DEPLOYED CALLABLES, not the compiled modules. The unit suite
+  // (functions/test/pdKcSurface.test.ts) pins the pure logic and kills 14 mutants; this
+  // pins that pdUpdateConfig, pdGetQuestions and pdSubmitKcAnswer are actually WIRED to
+  // it. A guard that exists only in a module nothing calls is the exact failure spec §5
+  // warns about — and it is the failure that let one mutant survive this pass's first
+  // calibration run.
+  console.log('\n[15] The shared KC surface, at the callables')
+  const GIDK = `pd-kcsurface-${stamp}`
+
+  const inv0 = await callFn('pdGetConfig', asDev(GIDK))
+  check(inv0.ok && inv0.result.kc != null, 'pdGetConfig returns the kc inventory')
+  const kc0 = inv0.result.kc
+  check(kc0.builtIn.length === 4, `⚠ ALL FOUR derived questions are listed for the instructor (${kc0.builtIn.length})`)
+  check(kc0.builtIn.every(q => q.prompt.length > 0 && q.options.length >= 2 && q.correctValue),
+    '…each with its prompt, its options and its answer')
+  check(kc0.builtIn.every(q => q.locked), '⚠ ALL FOUR are LOCKED — every one is built from the payoff matrix')
+  check(kc0.builtIn.every(q => (q.lockReason ?? '').length > 0),
+    '⚠ …and every locked row carries a REASON — a disabled control with no explanation is a bug')
+  check(kc0.debrief != null && kc0.debrief.id === 'debrief_reflection',
+    '⚠⚠ THE DEBRIEF IS A ROW IN THE LIST (spec D9), not a separate surface')
+  check(kc0.debrief.stage === 'post' && kc0.debrief.graded === false,
+    '…in the post stage, and never graded')
+  check(kc0.poolTotal === 5 && kc0.visibleCount === 5 && kc0.gradedCount === 4,
+    `the count line reads 5 of 5 visible, 4 graded (${kc0.visibleCount}/${kc0.poolTotal}, ${kc0.gradedCount})`)
+
+  // ── Overrides: refused on a locked question, AT THE CALLABLE ─────────────
+  const ovLocked = await callFn('pdUpdateConfig',
+    { ...asDev(GIDK), kcOverrides: { kc_cc: { prompt: 'my own stem' } } })
+  check(!ovLocked.ok, '⚠⚠ an override on a LOCKED question is REFUSED by the callable')
+  check((ovLocked.error ?? '').includes('cannot be edited'), '…with a reason the page can show')
+
+  const ovDebrief = await callFn('pdUpdateConfig',
+    { ...asDev(GIDK), kcOverrides: { debrief_reflection: { prompt: 'x' } } })
+  check(!ovDebrief.ok, '⚠ an override aimed at the DEBRIEF row is refused — it is backed by debriefPrompt')
+
+  const ovUnknown = await callFn('pdUpdateConfig',
+    { ...asDev(GIDK), kcHidden: { not_a_question: true } })
+  check(!ovUnknown.ok, 'a hide naming a question this game does not have is refused')
+
+  // ── Hidden: gone from the serve path AND the denominator ─────────────────
+  const hid = await callFn('pdUpdateConfig', { ...asDev(GIDK), kcHidden: { kc_cd: true } })
+  check(hid.ok, 'hiding one derived question is accepted')
+  check(hid.result.kc.visibleCount === 4 && hid.result.kc.gradedCount === 3,
+    `⚠ the count line follows: 4 of 5 visible, 3 graded (${hid.result.kc.visibleCount}/${hid.result.kc.gradedCount})`)
+
+  const KCPID = 'pd-kc-stu'
+  await callFn('pdBootstrap', asStudent(GIDK, KCPID))
+  const kQs = await callFn('pdGetQuestions', asStudent(GIDK, KCPID))
+  check(!kQs.result.kc.derived.some(q => q.field === 'kc_cd'),
+    '⚠⚠ a hidden question is NOT SERVED to the student')
+  check(kQs.result.kc.derived.length === 3, `…three derived questions remain (${kQs.result.kc.derived.length})`)
+  const hidSubmit = await callFn('pdSubmitKcAnswer', asStudent(GIDK, KCPID, { field: 'kc_cd', answer: '15' }))
+  check(!hidSubmit.ok, '⚠⚠ …and SUBMITTING it is refused — it is not a question in this game')
+
+  // ── …and the denominator followed: answering the THREE visible ones completes it ──
+  for (const q of kQs.result.kc.derived) {
+    await callFn('pdSubmitKcAnswer', asStudent(GIDK, KCPID, { field: q.field, answer: q.options[0].value }))
+  }
+  const kDoc = await getDoc(`pd_game_instances/${GIDK}/participants/${KCPID}`)
+  check(kDoc?.knowledge_check_score != null,
+    '⚠⚠ the score LANDS after only the THREE visible questions — the denominator dropped the hidden one')
+
+  // ── Reorder survives a save/reload round trip ────────────────────────────
+  const wanted = ['kc_dd', 'kc_dc', 'kc_cc']
+  const ord = await callFn('pdUpdateConfig',
+    { ...asDev(GIDK), kcOrder: Object.fromEntries(wanted.map((id, i) => [id, i])) })
+  check(ord.ok, 'a reorder is accepted')
+  const reread = await callFn('pdGetConfig', asDev(GIDK))
+  const sortedEntries = o => Object.entries(o ?? {}).sort(([a], [b]) => a.localeCompare(b))
+  check(JSON.stringify(sortedEntries(reread.result.kcOrder))
+    === JSON.stringify(sortedEntries(Object.fromEntries(wanted.map((id, i) => [id, i])))),
+  '⚠ the order SURVIVES a save/reload round trip')
+  const ordQs = await callFn('pdGetQuestions', asStudent(GIDK, 'pd-kc-ord'))
+  check(JSON.stringify(ordQs.result.kc.derived.map(q => q.field)) === JSON.stringify(wanted),
+    '⚠ …and the STUDENT is served that order')
+
+  // ── The debrief row still writes to the EXISTING key ─────────────────────
+  const dbSave = await callFn('pdUpdateConfig', { ...asDev(GIDK), debriefPrompt: 'Rewritten by the row.' })
+  check(dbSave.ok, 'the debrief row\'s prompt saves')
+  const dbDoc = await getDoc(`pd_game_instances/${GIDK}/config/main`)
+  check(dbDoc?.debrief_prompt?.stringValue === 'Rewritten by the row.',
+    '⚠⚠ …to the EXISTING `debrief_prompt` key — NO storage migration')
+  check(dbDoc?.kc_overrides == null || !JSON.stringify(dbDoc.kc_overrides).includes('debrief_reflection'),
+    '⚠ …and NOT into kc_overrides — the row is backed by its own key')
+  check(dbSave.result.kc.debrief.prompt === 'Rewritten by the row.', 'the row reads back the new prompt')
+
+  const dbHide = await callFn('pdUpdateConfig', { ...asDev(GIDK), debriefEnabled: false })
+  check(dbHide.ok && dbHide.result.kc.debrief.visible === false,
+    '⚠ unticking the debrief row stores debrief_enabled:false')
+  const dbQs = await callFn('pdGetQuestions', asStudent(GIDK, 'pd-kc-db'))
+  check(dbQs.result.debrief === null, '…and the student is served no debrief')
+  await callFn('pdUpdateConfig', { ...asDev(GIDK), debriefEnabled: true })
+
+  // ── D12: the toggle gates GRADED questions only ──────────────────────────
+  const GIDD = `pd-kcd12-${stamp}`
+  const d12 = await callFn('pdUpdateConfig', {
+    ...asDev(GIDD),
+    kcEnabled: false,
+    addedKcQuestions: [
+      { id: 'akc_free', type: 'text', prompt: 'A free-text addition.' },
+      { id: 'akc_graded', type: 'mc', prompt: 'A graded addition?',
+        options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }], correct_value: 'a' },
+    ],
+  })
+  check(d12.ok, 'kcEnabled:false with two additions saves')
+  const d12Qs = await callFn('pdGetQuestions', asStudent(GIDD, 'pd-d12-stu'))
+  check(d12Qs.result.kc.derived.length === 0, '⚠ D12: the toggle removed the derived four')
+  check(!d12Qs.result.kc.added.some(q => q.field === 'akc_graded'), '…and the GRADED addition')
+  check(d12Qs.result.kc.added.some(q => q.field === 'akc_free'),
+    '⚠⚠ …but LEFT the ungraded free-text one — it has its own visibility (D12)')
+  check(d12Qs.result.debrief !== null, '⚠ …and left the debrief paragraph alone')
+
+  // ── Zero visible graded ⇒ null, not 1.0 ─────────────────────────────────
+  const zDoc0 = await callFn('pdSubmitKcAnswer',
+    asStudent(GIDD, 'pd-d12-stu', { field: 'akc_free', answer: 'here you go' }))
+  check(zDoc0.ok, 'the one ungraded question is still answerable')
+  const zDoc = await getDoc(`pd_game_instances/${GIDD}/participants/pd-d12-stu`)
+  const zScore = zDoc?.knowledge_check_score
+  check(zScore != null && zScore.nullValue !== undefined,
+    `⚠⚠ ZERO VISIBLE GRADED ⇒ the stored score is NULL, not 1.0 (${JSON.stringify(zScore)})`)
+  check(!(zScore?.doubleValue === 1 || zScore?.integerValue === '1'),
+    '⚠ …calcKCScore would have answered the empty set with 1.0 and pushed a perfect score to the gradebook')
+  }
+
   console.log(`\n${failed === 0 ? '✅' : '❌'} pd harness: ${passed} passed, ${failed} failed`)
   process.exit(failed === 0 ? 0 : 1)
 }

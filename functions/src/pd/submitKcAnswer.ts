@@ -1,11 +1,11 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
-import { extractStudentOnCallIds, calcKCScore } from '@mygames/game-server'
+import { extractStudentOnCallIds, kcScoreOrNull } from '@mygames/game-server'
 import {
   PD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC, loadPdConfig,
 } from './config'
-import { resolveKcQuestions } from './questions'
+import { pdResolveKc, resolveAddedKcQuestions, pdKcScoringSet } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // pdSubmitKcAnswer (student) — grades ONE knowledge-check question (spec §7).
@@ -50,9 +50,19 @@ export const pdSubmitKcAnswer = onCall({ cors: PD_CORS_ORIGINS }, async (request
   const configSnap = await instanceRef.collection('config').doc(CONFIG_DOC).get()
   const config = loadPdConfig(configSnap.data())
 
-  if (!config.kcEnabled) {
-    throw new HttpsError('failed-precondition', 'The knowledge check is not part of this game.')
-  }
+  // ⚠⚠ THE BLANKET `if (!config.kcEnabled) throw` GATE IS GONE, AND IT HAD TO GO.
+  //
+  // Under D12 the toggle gates GRADED questions only, so an instance with the check OFF
+  // still SERVES an ungraded free-text addition — and the blanket gate refused to accept an
+  // answer to a question the same instance had just handed the student. Serving a question
+  // that cannot be answered is worse than either extreme.
+  //
+  // ⚠ NOTHING IS WEAKENED. The gate's job was "a client holding a stale payload must not
+  // write an answer to a check this instance does not have", and the routing below does
+  // exactly that, PER QUESTION rather than wholesale: with `kcEnabled: false` the derived
+  // four resolve to an empty list and every graded addition is filtered out, so any attempt
+  // to answer one falls through to the "not a knowledge-check question in this game" error.
+  // A hidden question is refused by the same path — which the blanket gate never covered.
 
   // ── ROUTE THE FIELD TO ITS OWN SOURCE ─────────────────────────────────────
   // Derived first: resolved against this instance's matrix, the same call the serve
@@ -60,9 +70,14 @@ export const pdSubmitKcAnswer = onCall({ cors: PD_CORS_ORIGINS }, async (request
   // questions are looked up in config with their own stored key. The two lists are
   // never merged — an added question cannot even take a kc_ id (config.ts), so this
   // lookup order can never shadow one with the other.
-  const derived = resolveKcQuestions(config.payoffs, config.unit, config.labels)
+  // ⚠⚠ THE SAME RESOLVERS THE SERVE PATH USES — hidden questions removed, overrides
+  // applied, in the instance's order. This is what keeps `forScoring` below honest: a
+  // question the instructor hid is not served AND is not gradeable AND is in nobody's
+  // denominator, because one pair of functions decides which questions this instance has.
+  const derived = pdResolveKc(config)
+  const addedVisible = resolveAddedKcQuestions(config)
   const derivedQ = derived.find(q => q.field === field)
-  const addedQ = derivedQ ? undefined : config.addedKcQuestions.find(q => q.id === field)
+  const addedQ = derivedQ ? undefined : addedVisible.find(q => q.id === field)
 
   if (!derivedQ && !addedQ) {
     throw new HttpsError('invalid-argument', `'${field}' is not a knowledge-check question in this game.`)
@@ -87,15 +102,12 @@ export const pdSubmitKcAnswer = onCall({ cors: PD_CORS_ORIGINS }, async (request
     explanation = q.explanation ?? ''
   }
 
-  // The scoring set: the derived four PLUS any added question that carries a key.
-  // Added free-text questions are absent from BOTH numerator and denominator, so
-  // adding one cannot silently lower everyone's score.
-  const forScoring = [
-    ...derived.map(q => ({ field: q.field, correct_value: q.correct_value! })),
-    ...config.addedKcQuestions
-      .filter(q => q.type === 'mc' && typeof q.correct_value === 'string')
-      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
-  ]
+  // ⚠⚠ THE SCORING SET IS NOT BUILT HERE. `pdKcScoringSet` is the single place that
+  // decides which questions this instance grades, and it derives from the same resolvers
+  // the serve path uses — so a hidden question cannot be served-but-not-graded or
+  // graded-but-not-served. Building a second list here is exactly the bug spec §5 warns
+  // about. Added free-text questions are absent from BOTH numerator and denominator.
+  const forScoring = pdKcScoringSet(config)
   const participantRef = instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
 
   const result = await db.runTransaction(async (tx) => {
@@ -131,8 +143,14 @@ export const pdSubmitKcAnswer = onCall({ cors: PD_CORS_ORIGINS }, async (request
     // The score lands once, when the last question is answered — the shared rule:
     // correct / total over the graded static questions. Wrong answers stay in the
     // denominator; they simply do not count in the numerator.
+    // ⚠⚠ `kcScoreOrNull`, NOT `calcKCScore(...).score`. The shared helper answers the EMPTY
+    // graded set with 1.0 — right for a negotiation game's gate-only role, catastrophic
+    // here. An instructor who hides every graded question, or whose check is one free-text
+    // addition, would otherwise record a PERFECT knowledge-check score for a student who
+    // was never asked a graded question, and `scoreAndRecord` pushes it to the gradebook.
+    // That became reachable the moment `kc_hidden` landed. See kcScoreOrNull's note.
     if (allAnswered && pData.knowledge_check_score == null) {
-      patch.knowledge_check_score = calcKCScore(allAnswers, forScoring).score
+      patch.knowledge_check_score = kcScoreOrNull(allAnswers, forScoring)
       patch.knowledge_check_completed_at = FieldValue.serverTimestamp()
     }
 

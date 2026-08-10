@@ -5,7 +5,7 @@ import {
   PD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC, loadPdConfig,
 } from './config'
 import {
-  resolveKcQuestions, toClientKcQuestions, shuffleClientOptions, debriefQuestion,
+  pdResolveKc, addedToClientKcQuestions, toClientKcQuestions, debriefQuestion,
 } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -51,9 +51,12 @@ export const pdGetQuestions = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
 
   // Derived against THIS instance's matrix/labels/unit, so the options match the
   // matrix rendered beside them on the KC screen.
-  const derived = config.kcEnabled
-    ? toClientKcQuestions(resolveKcQuestions(config.payoffs, config.unit, config.labels))
-    : []
+  //
+  // ⚠⚠ HIDDEN, ORDER AND OVERRIDES ARE APPLIED BY `pdResolveKc`, WHICH THE GRADER ALSO
+  // CALLS (through `pdKcScoringSet`). Do not filter again here — a second filter is a
+  // second answer to "which questions exist", and the two would eventually disagree
+  // (spec §5).
+  const derived = toClientKcQuestions(pdResolveKc(config))
 
   // Added questions, whitelisted field by field — never spread, so a stored
   // `correct_value` cannot ride along.
@@ -62,14 +65,7 @@ export const pdGetQuestions = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
   // offer the SAME sorted ladder of payoff values and their answers are 1/15/0/10, so
   // position says nothing. An instructor typing a question into Settings has no such
   // protection, and most people type the right answer first.
-  const added = config.kcEnabled
-    ? config.addedKcQuestions.map(q => ({
-        field: q.id,
-        type: q.type,
-        prompt: q.prompt,
-        options: shuffleClientOptions(q.options ?? [], participantId, q.id),
-      }))
-    : []
+  const added = addedToClientKcQuestions(config, participantId)
 
   const answers = (pData.kc_static_answers ?? {}) as Record<string, unknown>
   const answered = [...derived, ...added].filter(q => answers[q.field] != null).map(q => q.field)

@@ -1,4 +1,3 @@
-import { calcKCScore } from '@mygames/game-server'
 import type { ScorecardAddedKcQuestion, ScorecardConfig, ScorecardTruth, KcStage } from './config'
 import { addedKcStage, DEFAULT_CONFIG, DEFAULT_TRUTH } from './config'
 import { hash32 } from './rng'
@@ -558,20 +557,16 @@ export function kcScoringSet(
 /**
  * The knowledge-check score to STORE, or null when there is nothing to score.
  *
- * ⚠⚠ AN EMPTY SCORING SET IS `null`, NEVER A NUMBER. The shared `calcKCScore` answers the
- * empty set with 1.0 — a sensible identity for a fraction and a disastrous thing to store.
- * An instance whose graded questions are all hidden, or which carries only free-text
- * additions, would record a PERFECT knowledge-check score for a student who was never asked
- * a graded question, and `scoreAndRecord` would push it to the gradebook. `null` is the
- * honest value and is what every consumer downstream already handles.
+ * ⚠ PROMOTED TO `@mygames/game-server` (v0.29.0) and re-exported here. It shipped local to
+ * scorecard in fb4a33d; pd needed the identical rule, so rather than let each game
+ * re-derive it — and get it subtly different — the body now lives beside `calcKCScore`,
+ * which is the function whose empty-set answer (1.0) it exists to correct. See its note
+ * there for why `calcKCScore` itself must not change.
+ *
+ * Kept as a named re-export rather than deleted outright so scorecard's own call sites and
+ * tests keep importing from one place.
  */
-export function kcScoreOrNull(
-  answers: Record<string, string>,
-  forScoring: ReadonlyArray<{ field: string; correct_value: string }>,
-): number | null {
-  if (forScoring.length === 0) return null
-  return calcKCScore(answers, [...forScoring]).score
-}
+export { kcScoreOrNull } from '@mygames/game-server'
 
 /**
  * The BUILT-IN ids — the collision guard's authority, and scorecard's strategy for it.
