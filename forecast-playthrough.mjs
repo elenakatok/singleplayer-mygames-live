@@ -620,6 +620,35 @@ async function main() {
       'kc.added', 'kcAnswered',
       'debriefEnabled', 'debrief', 'debrief.field', 'debrief.prompt', 'debrief.placeholder',
       'debriefSubmitted',
+      // ⚠⚠ THE TWO STAGES, added by the KC-convergence adoption on 2026-08-10 and NOT
+      // added here at the time — this pin had been red from that day until 2026-08-11.
+      // The legacy `kc.*` / `debrief.*` fields above still ship beside them.
+      //
+      // ⚠ EVERY PATH IS LISTED EXPLICITLY. Do NOT collapse these to a `stages.*` wildcard:
+      // the whole value of this pin is that a NEW field under a student-facing key has to
+      // be justified by a human before it is allowed through, and `correct_value` would
+      // arrive under exactly this subtree if anything ever spread a resolved question
+      // instead of whitelisting it. A wildcard here would permit the one thing the pin
+      // exists to catch.
+      //
+      // Each row is `{kind, field, type, prompt, options[]}` plus a server-computed
+      // `answered`, built field-by-field by `rowOf`/`addedRow` in questions.ts — never a
+      // spread of the resolved question, which is what keeps the key and the explanation
+      // out. `options` entries are `{value, label}` only (`type Option`, questions.ts:43).
+      'stages',
+      'stages.pre', 'stages.pre[].kind', 'stages.pre[].field', 'stages.pre[].type',
+      'stages.pre[].prompt', 'stages.pre[].answered',
+      'stages.pre[].options', 'stages.pre[].options[].value', 'stages.pre[].options[].label',
+      // ⚠ THE ASYMMETRY IS A PROPERTY OF THIS SCENARIO, NOT OF THE CONTRACT. In this
+      // instance the post stage is the debrief row alone — free text, so `options` is empty
+      // and has no `[].value`/`[].label` children, and `placeholder` is present where the
+      // authored mc rows in `pre` do not set one. An instance with an instructor-added mc
+      // question in the post stage would legitimately produce the mirrored paths, and this
+      // pin would then need them. It is pinned to the scenario deliberately: a looser pin
+      // that accepted either shape would accept a payload nobody had looked at.
+      'stages.post', 'stages.post[].kind', 'stages.post[].field', 'stages.post[].type',
+      'stages.post[].prompt', 'stages.post[].placeholder', 'stages.post[].answered',
+      'stages.post[].options',
     ])
     check(!/correct_value|explanation/.test(JSON.stringify(qs.result)),
       '⚠ the KC answer key and explanations never ship with the questions')
@@ -1050,6 +1079,24 @@ async function main() {
     ]
     pinShape('forecastSubmitDebrief', sub.result, [
       'ok', 'field', 'stored', 'answer', ...REVEAL('reveal'),
+      // ⚠⚠ THE REVEAL GATE'S TWO REPORTING FIELDS (D17), added 2026-08-10 and not pinned
+      // at the time — red here from that day until 2026-08-11.
+      //
+      //   revealPending  the gate's own refusal SENTENCE, or null when the reveal was
+      //                  handed over. A student-facing string, already shown on screen.
+      //   pendingFields  the ids of the after-play rows still unanswered — `[]` here,
+      //                  because this scenario's post stage is the debrief alone and it
+      //                  has just been answered. Question IDS ONLY, never prompts,
+      //                  answers or keys, and only for questions the student is being
+      //                  asked anyway.
+      //
+      // ⚠ NEITHER CAN CARRY MODEL DATA. `revealPending` is one of two literal strings in
+      // reveal.ts; `pendingFields` is `unansweredPostRows(...).map(r => r.field)`. The
+      // model reaches a student through `reveal` and nowhere else, and `reveal` is built
+      // ONLY on the allowed branch — which is why this pin still lists the full REVEAL
+      // tree: it covers the reveal-GRANTED path, where `reveal` is non-null and these two
+      // are null/empty.
+      'revealPending', 'pendingFields',
     ])
 
     // (f) Now allowed, and idempotent.
