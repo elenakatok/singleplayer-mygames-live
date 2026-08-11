@@ -349,6 +349,56 @@ export type ProcurementKcQuestionClient = {
   placeholder: string | null
 }
 
+export type ProcurementKcStage = 'kc' | 'debrief'
+
+/**
+ * ONE row of a stage, as the student receives it.
+ *
+ * ⚠ `kind` ROUTES THE SUBMIT and must not be inferred from `type`:
+ *   'authored'  built-in mc           → procurementSubmitKcAnswer
+ *   'free-text' built-in prep/debrief → procurementSubmitFreeText
+ *   'added'     any addition          → procurementSubmitKcAnswer
+ * An ADDED free-text question is `type: 'text'` and still goes to the KC callable.
+ */
+export type ProcurementStageRowClient = {
+  kind: 'authored' | 'added' | 'free-text'
+  field: string
+  type: 'mc' | 'text'
+  prompt: string
+  placeholder?: string
+  options: { value: string; label: string }[]
+  /** Presence of the stored answer. Drives resume — the first false is where they land. */
+  answered: boolean
+}
+
+export type ProcurementKcInventoryQuestion = {
+  id: string
+  kind: 'builtin' | 'added'
+  stage: ProcurementKcStage
+  type?: 'mc' | 'text'
+  prompt: string
+  placeholder?: string
+  options: { value: string; label: string }[]
+  correctValue: string | null
+  graded: boolean
+  visible: boolean
+  locked: boolean
+  lockReason: string | null
+  overridden: boolean
+  originalPrompt?: string
+  originalOptions?: { value: string; label: string }[]
+  order: number | null
+}
+
+export type ProcurementKcInventory = {
+  stages: readonly ProcurementKcStage[]
+  builtIn: ProcurementKcInventoryQuestion[]
+  added: ProcurementKcInventoryQuestion[]
+  poolTotal: number
+  visibleCount: number
+  gradedCount: number
+}
+
 export type ProcurementQuestions = {
   ok: boolean
   kcEnabled: boolean
@@ -361,6 +411,16 @@ export type ProcurementQuestions = {
   prepAnswered: string[]
   debrief: ProcurementKcQuestionClient[]
   debriefAnswered: string[]
+  /**
+   * ⚠⚠ THE TWO STAGES, AS THE FLOW RENDERS THEM. `pre` is the graded built-ins, the prep
+   * paragraph and any pre-play addition; `debrief` is the debrief paragraph and anything
+   * assigned beside it. The legacy `kc` / `prep` / `debrief` fields above are kept only so
+   * nothing still reading them breaks — the flow reads these.
+   */
+  stages: {
+    pre: ProcurementStageRowClient[]
+    debrief: ProcurementStageRowClient[]
+  }
 }
 
 export const procurementGetQuestions = () =>
@@ -411,6 +471,16 @@ export type ProcurementConfig = {
    *  with a `stage` tag, toggled here like every graded question. There is deliberately
    *  no separate debriefEnabled/debriefPrompt pair. */
   kcVisible: string[]
+  /**
+   * ⚠⚠ D18 — `kcHidden` REPLACES `kcVisible`, AND THE POLARITY IS INVERTED: this map holds
+   * the ids switched OFF, matching the other five games. `kcVisible` above is legacy, read
+   * only by the server's migration, never sent by this page and deleted from the document on
+   * the first save.
+   */
+  kcHidden?: Record<string, boolean>
+  kcOrder?: Record<string, number>
+  kcOverrides?: Record<string, { prompt?: string; options?: Record<string, string> }>
+  addedKcQuestions?: unknown[]
 }
 
 export type QuestionStage = 'kc' | 'prep' | 'debrief'
@@ -433,6 +503,13 @@ export type ProcurementConfigResult = {
   kcPoolTotal: number
   kcVisibleCount: number
   kcGradedCount: number
+  /** ⚠ The three convergence fields as STORED — what the page seeds its draft from. */
+  kcHidden: Record<string, boolean>
+  kcOrder: Record<string, number>
+  kcOverrides: Record<string, { prompt?: string; options?: Record<string, string> }>
+  addedKcQuestions: unknown[]
+  /** Everything the shared knowledge-check block renders. */
+  kc: ProcurementKcInventory
 }
 
 export const procurementGetConfig = () =>

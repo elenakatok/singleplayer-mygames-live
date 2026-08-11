@@ -33,6 +33,12 @@
 // instance exists, which is cheap now and expensive after 11/01.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import {
+  parseAddedKcQuestion as parseSharedAddedKcQuestion,
+  parseKcHidden, parseKcOrder, parseKcOverrides,
+  type KcHiddenMap, type KcOrderMap, type KcOverrideMap, type KcIdGuard,
+} from '../shared/kcSurface'
+
 import type { DecrementBand, DelayBand } from './auction/schedule'
 
 /** game_id — lowercase, never displayed. Drives the collection prefix + fn names. */
@@ -171,6 +177,168 @@ export const DEFAULT_KC_ENABLED = true
 // source of truth for questions the pool already owns — and the version that shipped at
 // spawn carried placeholder wording that would have gone out over the authored text.
 
+// ── The KC surface (convergence spec §5) ──────────────────────────────────────
+
+export type { KcHiddenMap, KcOrderMap, KcOverrideMap, KcOverride } from '../shared/kcSurface'
+export { parseKcHidden, parseKcOrder, parseKcOverrides } from '../shared/kcSurface'
+
+/**
+ * Every BUILT-IN id — the collision guard's authority, injected rather than imported so
+ * this module stays free of the question pool (the pool imports nothing from here, and the
+ * cycle never forms — the same reason `knownKcIds` is a parameter of `loadProcurementConfig`).
+ * `questions.ts` calls `setProcurementBuiltInIds(KC_POOL_IDS)` at module load.
+ */
+let PROCUREMENT_BUILT_IN_IDS: ReadonlySet<string> = new Set()
+
+export function setProcurementBuiltInIds(ids: readonly string[]): void {
+  PROCUREMENT_BUILT_IN_IDS = new Set(ids)
+}
+
+export function procurementBuiltInIds(): ReadonlySet<string> {
+  return PROCUREMENT_BUILT_IN_IDS
+}
+
+/**
+ * ⚠⚠ D18 — PROCUREMENT'S `kcVisible` IS MIGRATED TO `kc_hidden`, NOT PRESERVED.
+ *
+ * This game shipped the OPPOSITE polarity from the other five: a WHITELIST ARRAY of the ids
+ * an instructor has switched ON, where the family stores a map of the ids switched OFF.
+ * One game of six holding the inverse is a trap for whoever reads this code next, and this
+ * is the last moment it can be fixed cheaply (Elena, 08-10).
+ *
+ * ⚠ THE DANGER IS NOT MIGRATING — IT IS MIGRATING CARELESSLY. A conversion that carries the
+ * ids across without inverting them flips every live instance: every question deliberately
+ * hidden becomes visible and every visible one hides.
+ *
+ * READ-BOTH / WRITE-NEW, no batch script:
+ *   READ  — `kc_hidden` if present; else convert `kcVisible`; else nothing is hidden.
+ *   WRITE — every save writes `kc_hidden` and DELETES `kcVisible`. Instances heal on the
+ *           first save an instructor makes.
+ *   BOTH  — `kc_hidden` wins and `kcVisible` is ignored. Should not happen; pinned anyway.
+ *
+ * ⚠ THE LEGACY BRANCH IS LIVE CODE WITH A TEST, NOT DEAD WEIGHT. Deleting it strands every
+ * instance not yet re-saved. It goes only once no live instance holds `kcVisible`, and that
+ * is not this pass.
+ */
+export function migrateKcHidden(
+  raw: { kcHidden: unknown; kcVisible: unknown },
+  /**
+   * ⚠⚠ THE IDS THE WHITELIST COULD HAVE SPOKEN ABOUT — the CURRENT FORMAT'S pool, not the
+   * whole pool, and this is the single most consequential line in the migration.
+   *
+   * `kcVisible` was written by a Settings page listing `poolForFormat(format)`, so it is a
+   * whitelist over ONE format's questions. Converting against the WHOLE pool would mark every
+   * other-format id hidden even while the instance stays in its own format — questions that
+   * were never switched off because they were never offered.
+   *
+   * ⚠⚠ THIS DOES NOT "FIX" THE FORMAT FLIP, AND MUST NOT. A sealed-era whitelist read under
+   * the OPEN format still hides the open-only ids, because that is what the legacy reader
+   * did: `resolveQuestions` filtered on `on.has(id)`, so flipping format kept the choices
+   * that still applied and lost the ones that did not (see `parseKcVisible`'s note). A
+   * MIGRATION MUST NOT CHANGE BEHAVIOUR — the point is to change the FIELD, and any
+   * behavioural improvement smuggled in with it would be indistinguishable from a bug in the
+   * conversion. The instructor's escape hatch is that the settings page now LISTS those
+   * questions with their boxes unticked, so an empty check is visible instead of unexplained.
+   */
+  formatPoolIds: readonly string[],
+): KcHiddenMap {
+  // ⚠ `kc_hidden` WINS when both are present. The new field is the one a save wrote.
+  if (raw.kcHidden !== undefined && raw.kcHidden !== null) return parseKcHidden(raw.kcHidden)
+
+  // ⚠ ABSENT `kcVisible` IS NOT AN EMPTY ONE. A doc with no key has never been configured,
+  // and nothing is hidden — the format filter alone decides what is asked, which is exactly
+  // what the old `defaultVisibleFor(format)` fallback produced. An EMPTY ARRAY is an
+  // instructor who deliberately switched everything off, and every id must convert to
+  // hidden: true, or the next load silently turns the knowledge check back on.
+  if (!Array.isArray(raw.kcVisible)) return {}
+
+  const visible = new Set(raw.kcVisible.filter((v): v is string => typeof v === 'string'))
+  const out: KcHiddenMap = {}
+  for (const id of formatPoolIds) {
+    // ⚠ ONLY THE HIDDEN ENTRIES ARE WRITTEN. `kcVisible` was FULL — the shipped default is
+    // every id for the format — so carrying it across whole would leave procurement holding
+    // a map with an entry per question while the other five hold a short one. That is the
+    // same inconsistency under a new name, which is the thing D18 exists to end.
+    if (!visible.has(id)) out[id] = true
+  }
+  return out
+}
+
+/**
+ * procurement's stages, AS THE INSTRUCTOR SEES THEM.
+ *
+ * ⚠⚠ THE POOL HAS THREE STAGE TAGS AND THE PICKER OFFERS TWO. `kc` and `prep` are both
+ * asked BEFORE the first round — the graded questions then the written plan — so they are
+ * ONE stage to configure and two tags to serve. `debrief` is asked after the final results
+ * screen. A built-in's own `stage` tag is NEVER rewritten; only the display grouping merges
+ * `prep` into `kc`.
+ */
+export const PROCUREMENT_KC_STAGES = ['kc', 'debrief'] as const
+export type ProcurementKcStage = (typeof PROCUREMENT_KC_STAGES)[number]
+
+/**
+ * ⚠⚠ THE STAGE A STAGE-LESS STORED ADDITION LANDS IN — `kc`, the pre-play stage.
+ *
+ * ⚠ CHOSEN, NOT MEASURED, AND PROCUREMENT IS THE ONLY GAME WHERE THAT IS TRUE (D16). The
+ * other five each measured where their existing additions were already being served and
+ * pinned that, because a different value would have relocated live questions. Procurement
+ * has never had an `addedKcQuestions` field at all, so there is no history to preserve and
+ * nothing to measure. `kc` matches the other four prefixed games and is the stage an
+ * instructor adding a question is most likely to mean.
+ */
+export const DEFAULT_ADDED_KC_STAGE: ProcurementKcStage = 'kc'
+
+/**
+ * ⚠⚠ PROCUREMENT NEEDS THE EXPLICIT ID SET, NOT THE `kc_` PREFIX RULE.
+ *
+ * Its built-in ids are `S1`…`S9` and `O1`…`O10` — none carries a `kc_` prefix, so the
+ * prefix rule would protect NOTHING here: an added question could take `S3` and silently
+ * shadow a built-in in the grader's lookup. Scorecard is in the same position for the same
+ * reason (`q1_negotiated_ppm`). pd, pricing, newsvendor and forecast use the prefix rule.
+ * The shared parser carries both strategies precisely so neither game has to fork it.
+ *
+ * ⚠ AND HERE THE GUARD COVERS THE FREE-TEXT QUESTIONS TOO, unlike every other game. S8/S9
+ * and O9/O10 are ordinary pool entries, so they are in this set and an added question
+ * cannot take one of their ids. Elsewhere the free-text ids sit outside the guard and are
+ * kept safe only by the answer maps being separate (spec §6).
+ */
+export function procurementKcIdGuard(): KcIdGuard {
+  return { kind: 'idSet', ids: PROCUREMENT_BUILT_IN_IDS }
+}
+
+/**
+ * Defensive parse of ONE instructor-added KC question. Returns null if unusable —
+ * `loadProcurementConfig` drops those rather than throwing.
+ *
+ * ⚠ THE BODY LIVES IN `shared/kcSurface` (spec §5). procurement passes its id SET and its
+ * two stages; an unrecognised stage is dropped, falling back to DEFAULT_ADDED_KC_STAGE.
+ */
+export function parseAddedKcQuestion(
+  raw: unknown,
+  guard: KcIdGuard = procurementKcIdGuard(),
+): ProcurementAddedKcQuestion | null {
+  const q = parseSharedAddedKcQuestion(raw, { guard, stages: PROCUREMENT_KC_STAGES })
+  return q === null ? null : (q as ProcurementAddedKcQuestion)
+}
+
+/** The stage a stored added question is asked in. ⚠ Absent ⇒ `kc` — see the constant. */
+export function addedKcStage(q: ProcurementAddedKcQuestion): ProcurementKcStage {
+  return q.stage ?? DEFAULT_ADDED_KC_STAGE
+}
+
+/** ONE instructor-added knowledge-check question. */
+export interface ProcurementAddedKcQuestion {
+  id: string
+  type: 'mc' | 'text'
+  prompt: string
+  options?: { value: string; label: string }[]
+  /** mc only: the correct option value. Absent ⇒ recorded but UNGRADED. */
+  correct_value?: string
+  explanation?: string
+  /** ⚠ Absent ⇒ `kc`, the pre-play stage. */
+  stage?: ProcurementKcStage
+}
+
 // ── The effective config ───────────────────────────────────────────────────────
 
 /** Everything a student may read. Anything they must not is absent BY TYPE — the seed
@@ -219,6 +387,15 @@ export interface ProcurementConfig {
    * see questions.ts. There is no `/17` anywhere in this game.
    */
   kcVisible: string[]
+  /**
+   * ⚠⚠ THE THREE CONVERGENCE FIELDS (spec §5). `kcHidden` REPLACES `kcVisible` (D18) — the
+   * legacy field above is still READ, and still parsed, but nothing writes it any more and
+   * nothing downstream consults it. It stays only so the migration has something to read.
+   */
+  kcHidden: KcHiddenMap
+  kcOrder: KcOrderMap
+  kcOverrides: KcOverrideMap
+  addedKcQuestions: ProcurementAddedKcQuestion[]
 }
 
 export const DEFAULT_CONFIG: ProcurementConfig = {
@@ -237,6 +414,10 @@ export const DEFAULT_CONFIG: ProcurementConfig = {
   reserveAuto: true,
   kcEnabled: DEFAULT_KC_ENABLED,
   kcVisible: [],
+  kcHidden: {},
+  kcOrder: {},
+  kcOverrides: {},
+  addedKcQuestions: [],
 }
 
 // ── Defensive parsing ──────────────────────────────────────────────────────────
@@ -382,6 +563,24 @@ export function loadProcurementConfig(
     reserveAuto: bool(d.reserveAuto, true),
     kcEnabled: bool(d.kcEnabled, DEFAULT_KC_ENABLED),
     kcVisible: parseKcVisible(d.kcVisible, knownKcIds, () => defaultVisible(format)),
+    // ⚠⚠ D18 — THE MIGRATION, in ONE extracted function rather than inline here. It is a
+    // DECISION ("which field wins, and how does the old one convert"), and a decision
+    // inlined in a config reader is a decision no unit test can reach: forecast lost two
+    // mutants to exactly that (spec §7). `migrateKcHidden` is called here and tested
+    // directly.
+    kcHidden: migrateKcHidden(
+      { kcHidden: d.kc_hidden, kcVisible: d.kcVisible },
+      // ⚠ THE CURRENT FORMAT'S POOL, not the whole pool. See migrateKcHidden's own note —
+      // converting against every id would hide the other format's questions outright.
+      defaultVisible(format),
+    ),
+    kcOrder: parseKcOrder(d.kc_order),
+    kcOverrides: parseKcOverrides(d.kc_overrides),
+    addedKcQuestions: Array.isArray(d.added_kc_questions)
+      ? d.added_kc_questions
+        .map(q => parseAddedKcQuestion(q))
+        .filter((q): q is ProcurementAddedKcQuestion => q !== null)
+      : [],
   }
 }
 

@@ -1,4 +1,10 @@
-import type { ProcurementFormat } from './config'
+import {
+  addedKcStage, setProcurementBuiltInIds,
+  type KcOverrideMap, type ProcurementAddedKcQuestion, type ProcurementConfig,
+  type ProcurementFormat, type ProcurementKcStage,
+} from './config'
+import { calcKCScore } from '@mygames/game-server'
+import { applyKcOrder } from '../shared/kcSurface'
 import { hash32 } from './auction/rng'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -330,6 +336,19 @@ export const KC_POOL: readonly KcQuestion[] = [
  *  against, so a removed question cannot keep a stale entry alive in a stored config. */
 export const KC_POOL_IDS: readonly string[] = KC_POOL.map(q => q.id)
 
+// ⚠⚠ THE COLLISION GUARD'S AUTHORITY, HANDED TO config.ts AT MODULE LOAD. procurement's
+// built-in ids are UNPREFIXED (`S1`…`S9`, `O1`…`O10`), so the `kc_` prefix rule the other
+// four prefixed games use would protect nothing here — an added question could take `S3`
+// and shadow a built-in in the grader's lookup. It needs the explicit id SET, as scorecard
+// does. Injected rather than imported so config.ts stays free of the pool and the import
+// cycle never forms, exactly as `knownKcIds` already is.
+setProcurementBuiltInIds(KC_POOL_IDS)
+
+/** The same set, for callers that want it without reaching through config.ts. */
+export function procurementBuiltInIdsForFormat(): ReadonlySet<string> {
+  return new Set(KC_POOL_IDS)
+}
+
 /**
  * The DEFAULT visible set for a format: its own questions, hidden the other's.
  *
@@ -392,6 +411,158 @@ export function scoringSet(
   return gradedFor(format, kcVisible).map(q => ({ field: q.id, correct_value: q.correct_value! }))
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// THE CONVERGENCE SURFACE (spec §5) — hide, order, overrides, added questions.
+//
+// ⚠⚠ THE FUNCTIONS ABOVE TAKE `(format, kcVisible)` AND THESE TAKE THE WHOLE CONFIG.
+// That is the migration boundary (D18): `kcVisible` is read only by `migrateKcHidden`, and
+// everything from here down works from `config.kcHidden`. The old signatures survive
+// because the report and the open-format views still call them with a DERIVED visible list;
+// they are not a second source of truth.
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * An instructor's rewrite of a built-in question, applied.
+ *
+ * ⚠⚠ TEXT ONLY — the prompt, and option LABELS looked up BY VALUE. There is no path from
+ * this function to `correct_value`, so an override provably cannot move a score; the grader
+ * compares values, which an override never touches.
+ *
+ * ⚠ The EXPLANATION is deliberately NOT overridable: it is the teaching text that justifies
+ * the authored answer, and a rewritten stem with an unrewritten explanation is at least
+ * visibly inconsistent rather than silently wrong.
+ */
+export function applyKcOverride(q: KcQuestion, overrides: KcOverrideMap): KcQuestion {
+  const o = overrides[q.id]
+  if (!o) return q
+  return {
+    ...q,
+    prompt: o.prompt ?? q.prompt,
+    options: o.options
+      ? q.options.map(opt => ({ ...opt, label: o.options![opt.value] ?? opt.label }))
+      : q.options,
+  }
+}
+
+/** Has an instructor rewritten this question? Drives the "edited" badge, nothing else. */
+export function isKcOverridden(id: string, overrides: KcOverrideMap): boolean {
+  return overrides[id] !== undefined
+}
+
+/**
+ * This instance's BUILT-IN questions at one pool stage: format-filtered, hidden ones
+ * removed, overridden, in the instructor's order.
+ *
+ * ⚠⚠ THE `kcEnabled` GATE LIVES HERE, NOT ONLY IN THE CALLERS. Before this pass the ternary
+ * sat in `getQuestions`, `report` and `submitKcAnswer` separately — three copies of one
+ * rule, and the resolver itself ignored it. That is the shape scorecard and forecast both
+ * shipped a real bug in. It gates the GRADED `kc` stage only (D12): `prep` and `debrief` are
+ * ungraded free text and resolve unconditionally, which §9 records as intended behaviour.
+ *
+ * ⚠ THE FORMAT FILTER IS NOT OVERRIDABLE and comes first, as it always has.
+ */
+export function resolveBuiltIns(config: ProcurementConfig, stage: QuestionStage): KcQuestion[] {
+  return applyKcOrder(resolveBuiltInsUnordered(config, stage), q => q.id, config.kcOrder)
+}
+
+/** The same set WITHOUT the ordering pass — see `procurementPreStage` for why. */
+export function resolveBuiltInsUnordered(
+  config: ProcurementConfig,
+  stage: QuestionStage,
+): KcQuestion[] {
+  if (stage === 'kc' && !config.kcEnabled) return []
+  return KC_POOL
+    .filter(q => q.stage === stage
+      && q.formats.includes(config.format)
+      && config.kcHidden[q.id] !== true)
+    .map(q => applyKcOverride(q, config.kcOverrides))
+}
+
+/** An added question that carries a usable key, and therefore a mark. */
+export function isGradedAdded(q: ProcurementAddedKcQuestion): boolean {
+  return q.type === 'mc' && typeof q.correct_value === 'string'
+}
+
+/**
+ * This instance's ADDED questions: hidden ones removed, in order.
+ *
+ * ⚠⚠ D12 — `kcEnabled` GATES GRADED QUESTIONS ONLY. A graded addition disappears with the
+ * toggle; an UNGRADED one does not, and is governed by its own visibility — the same rule
+ * procurement's two free-text built-ins already followed.
+ *
+ * ⚠ Omitted `stage` ⇒ EVERY stage. The grader calls it that way deliberately: gradedness is
+ * stage-independent (D3).
+ */
+export function resolveAddedKcQuestions(
+  config: ProcurementConfig,
+  stage?: ProcurementKcStage,
+): ProcurementAddedKcQuestion[] {
+  return applyKcOrder(resolveAddedKcQuestionsUnordered(config, stage), q => q.id, config.kcOrder)
+}
+
+/** The same, unordered — see `procurementPreStage` for why the stages need it. */
+export function resolveAddedKcQuestionsUnordered(
+  config: ProcurementConfig,
+  stage?: ProcurementKcStage,
+): ProcurementAddedKcQuestion[] {
+  const visible = config.addedKcQuestions.filter(q => config.kcHidden[q.id] !== true)
+  const gated = config.kcEnabled ? visible : visible.filter(q => !isGradedAdded(q))
+  return stage === undefined ? gated : gated.filter(q => addedKcStage(q) === stage)
+}
+
+/**
+ * ⚠⚠ THE GRADER'S SCORING SET — the whole of it, in one place.
+ *
+ * `procurementSubmitKcAnswer` calls exactly this and builds no list of its own. Visible AND
+ * graded: a hidden question is absent (never asked), and an ungraded one is absent from
+ * numerator AND denominator.
+ *
+ * ⚠ THE BUILT-IN HALF IS THE `kc` STAGE ONLY, because `prep` and `debrief` built-ins carry
+ * no `correct_value` — the `.filter` is what makes that true rather than the stage tag, per
+ * D3, and an added mc placed in `debrief` IS graded from there.
+ */
+export function procurementScoringSet(
+  config: ProcurementConfig,
+): { field: string; correct_value: string }[] {
+  return [
+    ...resolveBuiltIns(config, 'kc')
+      .filter(q => q.correct_value !== null)
+      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
+    ...resolveAddedKcQuestions(config)
+      .filter(isGradedAdded)
+      .map(q => ({ field: q.id, correct_value: q.correct_value! })),
+  ]
+}
+
+/**
+ * ⚠⚠ THE SCORE THIS ANSWER SET EARNS, or null if it does not earn one — the whole grading
+ * DECISION, in a pure function the suite can reach.
+ *
+ * ⚠⚠ PROCUREMENT IS THE ONE GAME NOT ON `kcScoreOrNull`, AND THAT IS CORRECT (spec §9). Its
+ * rule is stricter: with an EMPTY graded set it writes NEITHER a score NOR a completion
+ * stamp, and consumers read the absent field as null. `kcScoreOrNull` writes null AND lets
+ * the caller stamp `knowledge_check_completed_at`, handing a student a completed knowledge
+ * check the first time they open the screen — which is the thing this guard exists to
+ * prevent. Do not "align" it.
+ *
+ * ⚠ THE GUARD USED TO BE UNREACHABLE and a test pinned the invariant that made it so: every
+ * `kc`-stage question carried a key. ADDED QUESTIONS END THAT — an instructor may now put an
+ * ungraded free-text question in the `kc` stage, or hide every graded one. The guard is LIVE
+ * now, and has its own coverage instead of an unreachability proof.
+ */
+export function procurementKcScoreFor(
+  allAnswers: Record<string, string>,
+  config: ProcurementConfig,
+): number | null {
+  const forScoring = procurementScoringSet(config)
+  // ⚠ THE EMPTY-SET GUARD, and the ONLY difference from the rest of the family.
+  if (forScoring.length === 0) return null
+  if (!forScoring.every(q => allAnswers[q.field] != null)) return null
+  // ⚠ THE ARITHMETIC IS THE SHARED `calcKCScore` AND IS NOT REIMPLEMENTED HERE. What is
+  // local is the DECISION of when to write at all; the scoring rule must never fork.
+  return calcKCScore(allAnswers, forScoring).score
+}
+
 /**
  * A deterministic per-student option order.
  *
@@ -434,4 +605,130 @@ export function toClientQuestions(questions: readonly KcQuestion[], participantI
 /** Look one question up by id, whatever its stage. */
 export function questionById(id: string): KcQuestion | undefined {
   return KC_POOL.find(q => q.id === id)
+}
+
+// ── The two stage lists (spec D9) ─────────────────────────────────────────────
+//
+// ⚠⚠ THE POOL HAS THREE STAGE TAGS AND THE INSTRUCTOR SEES TWO. `kc` and `prep` are both
+// asked before the first round — the graded questions, then the written plan — so they are
+// ONE configurable stage and two serve-time tags. `debrief` is asked after the final
+// results screen. A built-in's own tag is NEVER rewritten.
+//
+// ⚠ PROCUREMENT NEEDED NO FOLDING, unlike the other five. Its prep and debrief paragraphs
+// were ALREADY pool entries with `(ungraded)` tags and their own visibility — that is the
+// design the rest of the family converged ONTO. What they gain here is edit, reorder, and a
+// stage that accepts added questions.
+//
+// ⚠⚠ AND THEREFORE THERE IS NO BOUNDARY TRANSLATION IN THIS GAME. The other five keep their
+// paragraph prompts in config keys (`debriefPrompt`, `prepPrompt`) and translate to and from
+// `kc_overrides` in the settings page. Procurement has NO such key — config.ts says so in as
+// many words — so its free-text prompts are edited through `kc_overrides` like any other
+// built-in, and nothing needs translating. Do not invent a config key for them.
+//
+// ⚠ `kind` ROUTES THE SUBMIT and must not be inferred from `type`:
+//     'authored'  built-in mc          → procurementSubmitKcAnswer  (kc_static_answers)
+//     'free-text' built-in prep/debrief → procurementSubmitFreeText  (free_text_answers)
+//     'added'     any addition          → procurementSubmitKcAnswer  (kc_static_answers)
+// An ADDED free-text question is `type: 'text'` and still goes to the KC callable.
+
+export interface ProcurementStageRow {
+  kind: 'authored' | 'added' | 'free-text'
+  field: string
+  type: 'mc' | 'text'
+  prompt: string
+  placeholder?: string
+  options: { value: string; label: string }[]
+}
+
+const rowOf = (q: KcQuestion): ProcurementStageRow => ({
+  kind: q.kind === 'mc' ? 'authored' : 'free-text',
+  field: q.id,
+  type: q.kind === 'mc' ? 'mc' : 'text',
+  prompt: q.prompt,
+  placeholder: q.placeholder ?? undefined,
+  options: q.options.map(o => ({ value: o.value, label: o.label })),
+})
+
+const addedRow = (q: ProcurementAddedKcQuestion): ProcurementStageRow => ({
+  kind: 'added',
+  field: q.id,
+  type: q.type,
+  prompt: q.prompt,
+  options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+})
+
+/**
+ * The PRE-PLAY stage: the graded built-ins, the prep paragraph, and any `kc`-stage addition.
+ *
+ * ⚠⚠ EVERY SOURCE IS RESOLVED *UNORDERED* AND `applyKcOrder` RUNS ONCE, AT THE BOTTOM, over
+ * the whole list. Applying it inside the resolvers as well makes the second pass sort against
+ * positions the first produced — invisible under a COMPLETE map, wrong under a partial one,
+ * because `applyKcOrder` falls back to an item's CURRENT index for an unmentioned id. That
+ * bug shipped in newsvendor and was fixed in pd and pricing (spec §6).
+ */
+export function procurementPreStage(config: ProcurementConfig): ProcurementStageRow[] {
+  const rows = [
+    ...resolveBuiltInsUnordered(config, 'kc').map(rowOf),
+    ...resolveBuiltInsUnordered(config, 'prep').map(rowOf),
+    ...resolveAddedKcQuestionsUnordered(config, 'kc').map(addedRow),
+  ]
+  return applyKcOrder(rows, r => r.field, config.kcOrder)
+}
+
+/**
+ * The DEBRIEF stage: the debrief paragraph and any `debrief`-stage addition.
+ *
+ * ⚠ PROCUREMENT HAS NO SERVER-ENFORCED REVEAL GATE, unlike forecast, and must not gain one.
+ * Its final results screen simply PRECEDES this stage; nothing is withheld until it is
+ * answered, because there is no answer key to contaminate — the results are the student's
+ * own outcome, which they are entitled to see.
+ */
+export function procurementDebriefStage(config: ProcurementConfig): ProcurementStageRow[] {
+  const rows = [
+    ...resolveBuiltInsUnordered(config, 'debrief').map(rowOf),
+    ...resolveAddedKcQuestionsUnordered(config, 'debrief').map(addedRow),
+  ]
+  return applyKcOrder(rows, r => r.field, config.kcOrder)
+}
+
+/**
+ * A stage as the STUDENT receives it — every mc row's options SHUFFLED per student, answer
+ * keys absent.
+ *
+ * ⚠⚠ THE SHUFFLE LIVES AT THE SERVE BOUNDARY THE CALLABLE COMPOSES, so a test of this
+ * function tests the WIRING rather than the shuffle primitive. Every pass in this programme
+ * lost a mutant to that distinction (spec §7).
+ */
+export function stageToClient(
+  rows: ProcurementStageRow[],
+  participantId: string,
+): ProcurementStageRow[] {
+  return rows.map(r => (
+    r.options.length > 1
+      ? { ...r, options: shuffleOptions(r.options, participantId, r.field).map(o => ({ value: o.value, label: o.label })) }
+      : r
+  ))
+}
+
+/**
+ * This instance's added questions IN THE CLIENT SHAPE — whitelisted field by field, shuffled.
+ *
+ * ⚠⚠ `stage` IS REQUIRED. In pd this argument was optional for an hour and dropping it at the
+ * call site served every after-results question before play — a mutation no unit test caught,
+ * because every test passed the stage explicitly. Requiring it makes that a compile error.
+ */
+export function addedToClientKcQuestions(
+  config: ProcurementConfig,
+  participantId: string,
+  stage: ProcurementKcStage,
+) {
+  return resolveAddedKcQuestions(config, stage).map(q => ({
+    field: q.id,
+    kind: q.type,
+    prompt: q.prompt,
+    options: q.type === 'mc'
+      ? shuffleOptions(q.options ?? [], participantId, q.id).map(o => ({ value: o.value, label: o.label }))
+      : [],
+    placeholder: null,
+  }))
 }

@@ -4,6 +4,10 @@ import { colors, typography } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
+  KnowledgeCheckSettings,
+  type KcSettingsDraft, type KcSettingsQuestion, type KcSettingsStage,
+} from '../shared/KnowledgeCheckSettings'
+import {
   procurementGetConfig, procurementUpdateConfig, procurementInstructorSession,
   instructorErrorMessage, FORMAT_LABEL,
   type ProcurementConfigResult, type ProcurementFormat,
@@ -21,11 +25,17 @@ import {
 //     stale tab that posts anyway is refused.
 //
 //  2. THE KC IS ONE MERGED POOL WITH PER-QUESTION VISIBILITY, and the live count is
-//     rendered from the SAME derivation the grader uses. "8 of 17 questions visible, 8
-//     graded" is `kcVisibleCount` / `kcPoolTotal` / `kcGradedCount`, all computed
-//     server-side by `gradedFor()` — the function `procurementSubmitKcAnswer` calls to
-//     build its denominator. THE DENOMINATOR IS NEVER STORED, so the number an
-//     instructor reads here is by construction the number a student's score is out of.
+//     rendered from the SAME derivation the grader uses. THE DENOMINATOR IS NEVER STORED,
+//     so the number an instructor reads here is by construction the number a student's
+//     score is out of.
+//     ⚠ The count line and the question list now come from the SHARED block, which counts
+//     `kc.poolTotal` / `kc.visibleCount` / `kc.gradedCount` — computed server-side by
+//     `procurementScoringSet()`, the function `procurementSubmitKcAnswer` calls to build
+//     its denominator. This page's own hand-rolled list and count line are gone; the count
+//     LINE ITSELF came from here originally and returns unchanged.
+//     ⚠⚠ `kcVisible` IS GONE (D18). Visibility is `kc_hidden` now, with the polarity the
+//     other five games use — true means HIDDEN. The server converts a legacy instance on
+//     read and deletes the old field on the first save; this page never sees it.
 //
 // ⚠ THE SEED IS WRITE-ONLY. `seedSet` says whether one is in force; the value never
 // comes back. A Settings page is a normal web page, and a value on screen is a value in
@@ -108,6 +118,30 @@ function BandField({
   )
 }
 
+/**
+ * ⚠ THE STAGE LABELS ARE THIS GAME'S, passed as props — the shared block knows nothing about
+ * auctions. Procurement has a RESULTS screen, so the second stage is "after the results"
+ * rather than forecast's "before the reveal": nothing is withheld here.
+ *
+ * ⚠⚠ TWO STAGES, THREE POOL TAGS. The pool tags questions `kc`, `prep` and `debrief`; `kc`
+ * and `prep` are both asked before the first round — the graded questions, then the written
+ * plan — so they are ONE stage to configure. The server groups `prep` under `kc` for display
+ * and never rewrites a built-in's own tag.
+ */
+const KC_STAGES: KcSettingsStage[] = [
+  {
+    id: 'kc',
+    label: 'Before play',
+    note: 'Asked before the first round — the graded questions and the written plan.',
+  },
+  {
+    id: 'debrief',
+    label: 'After the results',
+    note: 'Asked once the auction is over. ⚠ Students have already seen their own results — '
+      + 'their profit, how often they won, and how their bids compared with the benchmark.',
+  },
+]
+
 export default function Settings() {
   const session = useInstructorSession(procurementInstructorSession)
   const navigate = useNavigate()
@@ -116,9 +150,68 @@ export default function Settings() {
   const [note, setNote] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [seedInput, setSeedInput] = useState('')
+  // ═══════════════════════════════════════════════════════════════════════════
+  // THE KNOWLEDGE CHECK — the SHARED block (convergence spec §2, §8.4).
+  //
+  // ⚠ Procurement's hand-rolled list and its own count line are GONE, replaced by the
+  // block. It is the block's ORIGIN: this page's count line was copied OUT five passes ago
+  // and shipped verbatim in the other five games, and it comes back here unchanged —
+  // "<n> of <m> questions visible, <g> graded", then "A student's score is out of the
+  // graded questions that are visible — the denominator follows this list and is never
+  // stored." Checked against the original; the shared copy had not drifted.
+  //
+  // ⚠⚠ NO BOUNDARY TRANSLATION IN THIS GAME, unlike the other five. Their paragraph prompts
+  // live in config keys (`prepPrompt` / `debriefPrompt`) and have to be translated to and
+  // from `kc_overrides` here. Procurement's free-text questions are POOL ENTRIES — there is
+  // no such key, deliberately (functions config.ts) — so they are edited through
+  // `kc_overrides` like any other built-in and `kcPatch` has nothing to split out.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const [kcDraft, setKcDraft] = useState<KcSettingsDraft | null>(null)
+
+  /** The server's inventory in the shared block's shape. */
+  function kcQuestions(r: ProcurementConfigResult): KcSettingsQuestion[] {
+    return [...r.kc.builtIn, ...r.kc.added]
+  }
+
+  /**
+   * ⚠⚠ D18 — THE DRAFT IS SEEDED FROM `kcHidden`, THE MIGRATED FIELD, AND `kcVisible` IS
+   * NEVER READ HERE. The server converts a legacy instance on read, so by the time this page
+   * sees it the polarity is already the family's: true means HIDDEN.
+   */
+  function seedKc(r: ProcurementConfigResult): KcSettingsDraft {
+    return {
+      enabled: r.config.kcEnabled,
+      hidden: { ...r.kcHidden },
+      order: { ...r.kcOrder },
+      overrides: { ...r.kcOverrides },
+      added: (r.addedKcQuestions as KcSettingsDraft['added']).map(q => ({ ...q })),
+    }
+  }
+
+  /** The draft, in the callable's field names. ⚠ `kcVisible` is NOT sent — the callable
+   *  deletes it from the document when `kcHidden` arrives. */
+  function kcPatch(d: KcSettingsDraft) {
+    return {
+      kcEnabled: d.enabled,
+      kcHidden: d.hidden,
+      kcOrder: d.order,
+      kcOverrides: d.overrides,
+      addedKcQuestions: d.added.map(q => ({
+        ...q,
+        // The shared draft types `stage` as a plain string (generic across six games);
+        // procurement's callable takes its own two-value union.
+        stage: q.stage === 'debrief' ? ('debrief' as const) : ('kc' as const),
+      })),
+    }
+  }
 
   const load = useCallback(async () => {
-    try { setData(await procurementGetConfig()); setError(null) } catch (err) {
+    try {
+      const r = await procurementGetConfig()
+      setData(r)
+      setKcDraft(seedKc(r))
+      setError(null)
+    } catch (err) {
       setError(instructorErrorMessage(err))
     }
   }, [])
@@ -380,59 +473,49 @@ export default function Settings() {
             </div>
           </section>
 
-          {/* ── the knowledge check ────────────────────────────────────────── */}
-          <section style={{ marginBottom: '2rem' }}>
-            <h2 style={{ fontSize: '0.95rem' }}>Knowledge check</h2>
-            <label style={{ fontSize: '0.85rem' }}>
-              <input type="checkbox" data-testid="proc-set-kc-enabled"
-                checked={c.kcEnabled} disabled={busy}
-                onChange={e => void save({ kcEnabled: e.target.checked })} />
-              {' '}Ask the knowledge check
-            </label>
-
-            {/* ⚠ THE LIVE COUNT. Same derivation as the grader's denominator. */}
-            <p data-testid="proc-set-kc-count" style={{ fontSize: '0.85rem', marginTop: '0.75rem' }}>
-              <strong>{data.kcVisibleCount} of {data.kcPoolTotal}</strong> questions visible,
-              {' '}<strong>{data.kcGradedCount}</strong> graded.
-              {data.kcPoolTotal === 0 && (
-                <span style={{ color: colors.textSecondary }}>
-                  {' '}The question pool has not been written yet.
-                </span>
-              )}
-            </p>
-            <p style={{ fontSize: '0.75rem', color: colors.textSecondary }}>
-              A student's score is out of the graded questions that are visible — the
-              denominator follows this list and is never stored.
-            </p>
-
-            {(['kc', 'prep', 'debrief'] as const).map(stage => {
-              const rows = data.kcPool.filter(q => q.stage === stage)
-              if (rows.length === 0) return null
-              return (
-                <div key={stage} style={{ marginTop: '0.9rem' }}>
-                  <h3 style={{ fontSize: '0.8rem', margin: '0 0 0.25rem', color: colors.textSecondary }}>
-                    {stage === 'kc' ? 'Knowledge check'
-                      : stage === 'prep' ? 'Before play — written answer'
-                        : 'After the results — written answer'}
-                  </h3>
-                  {rows.map(q => (
-                    <label key={q.id} style={{ display: 'block', fontSize: '0.85rem', marginTop: '0.3rem' }}>
-                      <input type="checkbox" data-testid={`proc-set-q-${q.id}`}
-                        checked={q.visible} disabled={busy}
-                        onChange={e => {
-                          const next = e.target.checked
-                            ? [...c.kcVisible, q.id]
-                            : c.kcVisible.filter(id => id !== q.id)
-                          void save({ kcVisible: next })
-                        }} />
-                      {' '}<strong>{q.id}</strong> — {q.prompt.slice(0, 90)}{q.prompt.length > 90 ? '…' : ''}
-                      {!q.graded && <em style={{ color: colors.textSecondary }}> (ungraded)</em>}
-                    </label>
-                  ))}
-                </div>
-              )
-            })}
-          </section>
+          {/* ── the knowledge check — the SHARED block (convergence spec §2) ── */}
+          {kcDraft && (
+            <section style={{ marginBottom: '2rem' }}>
+              <KnowledgeCheckSettings
+                testIdPrefix="proc-kc"
+                questions={kcQuestions(data)}
+                stages={KC_STAGES}
+                draft={kcDraft}
+                onChange={setKcDraft}
+                // ⚠⚠ D12 — THE TOGGLE GATES GRADED QUESTIONS ONLY, and in THIS game that was
+                // already the shipped behaviour rather than a change: the `kc` stage was
+                // wrapped in the ternary while `prep` and `debrief` resolved unconditionally.
+                // Spec §9 recorded it as something the page must SAY; this is where it says it.
+                enableNote={(
+                  <>
+                    Off removes the graded questions and any graded question you have added.
+                    ⚠ It does <em>not</em> remove the two written answers — the plan before
+                    play or the reflection after the results — or any free-text question you
+                    have added. Those are ungraded, and each has its own visibility checkbox
+                    below.
+                  </>
+                )}
+                // ⚠ NO STARTED-BANNER IS PASSED, DELIBERATELY. Procurement has a signal
+                // (`formatLocked`, from `hasAnySubmission`) and one section-scoped notice that
+                // uses it — on the FORMAT control, saying results from two mechanisms cannot be
+                // read as one set. That is not a page-level "students have already started"
+                // banner like scorecard's. Spec §10 records this as a decision pending for
+                // five games, to be swept once rather than invented separately in each.
+              />
+              <button
+                data-testid="proc-save-kc"
+                disabled={busy}
+                onClick={() => void save(kcPatch(kcDraft))}
+                style={{
+                  marginTop: '0.75rem', padding: '0.5rem 1.1rem', fontSize: '0.85rem',
+                  fontWeight: 600, cursor: 'pointer', background: colors.text,
+                  color: colors.white, border: 'none', borderRadius: 6,
+                }}
+              >
+                {busy ? 'Saving…' : 'Save the questions'}
+              </button>
+            </section>
+          )}
 
           {/* ── determinism ───────────────────────────────────────────────── */}
           <section style={{ marginBottom: '2rem' }}>

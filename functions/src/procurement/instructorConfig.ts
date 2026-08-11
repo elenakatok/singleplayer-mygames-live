@@ -9,8 +9,17 @@ import {
   isFormat, defaultReserve,
   HARD_MIN_ROUNDS, HARD_MAX_ROUNDS, HARD_MIN_RIVALS, HARD_MAX_RIVALS,
   HARD_MAX_DELAY_JITTER_MS,
+  addedKcStage, parseAddedKcQuestion, parseKcHidden, parseKcOrder, parseKcOverrides,
+  procurementBuiltInIds, PROCUREMENT_KC_STAGES,
+  type ProcurementConfig, type ProcurementKcStage, type ProcurementAddedKcQuestion,
 } from './config'
-import { KC_POOL_IDS, defaultVisibleFor, poolForFormat, gradedFor } from './questions'
+import {
+  KC_POOL_IDS, defaultVisibleFor, poolForFormat, procurementScoringSet,
+  applyKcOverride, isKcOverridden, isGradedAdded,
+} from './questions'
+import {
+  lockedKcQuestionIds, validateKcOverrides, procurementOverrideContext, KC_LOCK_REASON,
+} from './kcLock'
 import { hasAnySubmission } from './instance'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -79,13 +88,100 @@ export const procurementGetConfig = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, a
       stage: q.stage,
       prompt: q.prompt,
       graded: q.correct_value !== null,
-      visible: config.kcVisible.includes(q.id),
+      // ⚠ D18 — READ FROM `kcHidden`, THE MIGRATED FIELD. `kcVisible` is no longer consulted
+      // anywhere outside `migrateKcHidden`.
+      visible: config.kcHidden[q.id] !== true,
     })),
     kcPoolTotal: pool.length,
-    kcVisibleCount: pool.filter(q => config.kcVisible.includes(q.id)).length,
-    kcGradedCount: gradedFor(config.format, config.kcVisible).length,
+    kcVisibleCount: pool.filter(q => config.kcHidden[q.id] !== true).length,
+    kcGradedCount: procurementScoringSet(config).length,
+    /** ⚠ The three convergence fields as STORED — what the page seeds its draft from. */
+    kcHidden: config.kcHidden,
+    kcOrder: config.kcOrder,
+    kcOverrides: config.kcOverrides,
+    addedKcQuestions: config.addedKcQuestions,
+    /** Everything the shared knowledge-check block renders. */
+    kc: kcInventory(config),
   }
 })
+
+/**
+ * The instructor-facing inventory of every question this instance could ask — the payload
+ * the shared settings block renders.
+ *
+ * ⚠ THIS IS THE INSTRUCTOR CALLABLE, so `correctValue` belongs here. `procurementGetQuestions`
+ * (the STUDENT path) still strips every key.
+ *
+ * ⚠⚠ THIS FORMAT'S POOL ONLY. procurement serves two mutually exclusive sets on `format`, so
+ * the page shows the questions THIS instance can ask. The other format's stored hides, order
+ * and overrides are untouched and reappear when the instructor flips back.
+ *
+ * ⚠⚠ THE TWO FREE-TEXT QUESTIONS ARE ORDINARY ROWS AND ALWAYS WERE. Unlike the other five
+ * games there is nothing to fold in and no boundary translation: their prompts live in the
+ * pool, not in a config key, so they are edited through `kc_overrides` like any built-in.
+ *
+ * ⚠ `prep` IS REPORTED AS STAGE `kc` FOR DISPLAY, because both are asked before the first
+ * round and the picker offers two stages, not three. The built-in's own pool tag is
+ * untouched — this is grouping, not a rewrite.
+ */
+function kcInventory(config: ProcurementConfig) {
+  // ⚠ `lockedKcQuestionIds` does its OWN normalisation (kcLock.ts's `bare`) — do not
+  // pre-clear the maps here as well, or the page and the callable would classify differently.
+  const locked = lockedKcQuestionIds(config)
+
+  const builtIn = poolForFormat(config.format).map((raw) => {
+    const q = applyKcOverride(raw, config.kcOverrides)
+    return {
+      id: q.id,
+      kind: 'builtin' as const,
+      stage: (q.stage === 'debrief' ? 'debrief' : 'kc') as ProcurementKcStage,
+      type: (q.kind === 'mc' ? 'mc' : 'text') as 'mc' | 'text',
+      prompt: q.prompt,
+      placeholder: q.placeholder ?? undefined,
+      options: q.options.map(o => ({ value: o.value, label: o.label })),
+      correctValue: q.correct_value,
+      /** ⚠ BY THE PRESENCE OF A KEY (D3), never by stage or type. */
+      graded: q.correct_value !== null,
+      visible: config.kcHidden[q.id] !== true,
+      locked: locked.has(q.id),
+      lockReason: locked.has(q.id) ? KC_LOCK_REASON : null,
+      overridden: isKcOverridden(q.id, config.kcOverrides),
+      /** The AUTHORED text, so the page can offer "revert to the original". */
+      originalPrompt: raw.prompt,
+      originalOptions: raw.options.map(o => ({ value: o.value, label: o.label })),
+      order: config.kcOrder[q.id] ?? null,
+    }
+  })
+
+  const added = config.addedKcQuestions.map(q => ({
+    id: q.id,
+    kind: 'added' as const,
+    stage: addedKcStage(q),
+    type: q.type,
+    prompt: q.prompt,
+    options: (q.options ?? []).map(o => ({ value: o.value, label: o.label })),
+    correctValue: q.correct_value ?? null,
+    graded: isGradedAdded(q),
+    visible: config.kcHidden[q.id] !== true,
+    locked: false,
+    lockReason: null,
+    overridden: false,
+    order: config.kcOrder[q.id] ?? null,
+  }))
+
+  const pool = [...builtIn, ...added]
+  return {
+    stages: PROCUREMENT_KC_STAGES,
+    builtIn,
+    added,
+    /** ⚠ THE COUNT LINE'S THREE NUMBERS — visible AND graded. Never stored (D5). This is
+     *  procurement's own count, returning to procurement: it donated the wording to the
+     *  shared block five passes ago. */
+    poolTotal: pool.length,
+    visibleCount: pool.filter(q => q.visible).length,
+    gradedCount: pool.filter(q => q.visible && q.graded).length,
+  }
+}
 
 // ── Update ─────────────────────────────────────────────────────────────────────
 
@@ -248,13 +344,99 @@ export const procurementUpdateConfig = onCall({ cors: PROCUREMENT_CORS_ORIGINS }
   if ('kcEnabled' in patch && typeof patch.kcEnabled === 'boolean') {
     configPatch.kcEnabled = patch.kcEnabled
   }
-  if ('kcVisible' in patch) {
-    // Unknown ids are DROPPED rather than rejected: a Settings page held open across a
-    // release that removed a question would otherwise fail the whole save.
-    const known = new Set(KC_POOL_IDS)
-    configPatch.kcVisible = Array.isArray(patch.kcVisible)
-      ? patch.kcVisible.filter((v): v is string => typeof v === 'string' && known.has(v))
-      : []
+  // ══════════════════════════════════════════════════════════════════════════
+  // ⚠⚠ D18 — THE THREE CONVERGENCE FIELDS, AND THE END OF `kcVisible`.
+  //
+  // `kcVisible` IS NO LONGER ACCEPTED FROM THE CLIENT and is no longer written. Every save
+  // writes `kc_hidden` and DELETES `kcVisible` from the document, so an instance heals itself
+  // the first time an instructor saves anything. Until then `migrateKcHidden` converts on
+  // read (config.ts).
+  //
+  // ⚠ THE DELETE IS UNCONDITIONAL ON ANY SAVE THAT TOUCHES THE QUESTION LIST, not only on a
+  // visibility change. A save that reordered a question while leaving `kcVisible` in place
+  // would leave the document holding both fields — legal (the reader prefers `kc_hidden`) but
+  // exactly the ambiguity this migration exists to remove.
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    const stored = loadProcurementConfig(
+      (await instanceRef.collection('config').doc(CONFIG_DOC).get()).data(),
+      KC_POOL_IDS, defaultVisibleFor,
+    )
+
+    if ('addedKcQuestions' in patch) {
+      if (!Array.isArray(patch.addedKcQuestions)) {
+        throw new HttpsError('invalid-argument', 'addedKcQuestions must be an array.')
+      }
+      const parsed: ProcurementAddedKcQuestion[] = []
+      const seen = new Set<string>()
+      for (const raw of patch.addedKcQuestions) {
+        const q = parseAddedKcQuestion(raw)
+        if (!q) {
+          throw new HttpsError('invalid-argument',
+            'An added question is incomplete — every question needs a prompt, and a multiple-choice '
+            + 'question needs at least two options and a correct answer among them.')
+        }
+        // ⚠⚠ THE COLLISION GUARD IS THE EXPLICIT ID SET, NOT THE `kc_` PREFIX RULE. These ids
+        // are `S1`…`S9` / `O1`…`O10` — unprefixed — so a prefix rule would protect nothing and
+        // an added `S3` would shadow a built-in in the grader's lookup. The shared parser has
+        // already refused it; this second check exists to produce the instructor-facing
+        // sentence rather than the generic "incomplete question" message.
+        if (procurementBuiltInIds().has(q.id)) {
+          throw new HttpsError('invalid-argument',
+            `'${q.id}' is the id of a built-in question. Please choose a different one.`)
+        }
+        if (seen.has(q.id)) throw new HttpsError('invalid-argument', `Duplicate question id: ${q.id}`)
+        seen.add(q.id)
+        parsed.push(q)
+      }
+      configPatch.added_kc_questions = parsed
+    }
+
+    const knownAdded = new Set(
+      (configPatch.added_kc_questions as ProcurementAddedKcQuestion[] | undefined)?.map(q => q.id)
+      ?? stored.addedKcQuestions.map(q => q.id),
+    )
+    // ⚠ THE WHOLE POOL, not this format's slice: a hide or an order set in the other format
+    // must round-trip rather than be refused the moment the instructor flips.
+    const knownId = (id: string) => procurementBuiltInIds().has(id) || knownAdded.has(id)
+
+    if ('kcHidden' in patch) {
+      const p = parseKcHidden(patch.kcHidden)
+      for (const id of Object.keys(p)) {
+        if (!knownId(id)) throw new HttpsError('invalid-argument', `'${id}' is not a question in this game.`)
+      }
+      configPatch.kc_hidden = p
+      // ⚠⚠ THE LEGACY FIELD IS REMOVED FROM THE DOCUMENT. This is the "write-new" half of
+      // read-both/write-new, and it is what lets the legacy read branch eventually be deleted.
+      configPatch.kcVisible = FieldValue.delete()
+    }
+
+    if ('kcOrder' in patch) {
+      const p = parseKcOrder(patch.kcOrder)
+      for (const id of Object.keys(p)) {
+        if (!knownId(id)) throw new HttpsError('invalid-argument', `'${id}' is not a question in this game.`)
+      }
+      configPatch.kc_order = p
+    }
+
+    if ('kcOverrides' in patch) {
+      // ⚠⚠ THE LOCK IS ENFORCED HERE, NOT ONLY IN THE UI (spec §5) — even though procurement
+      // locks nothing today. The detector is live; the day a stem gains a config value this
+      // starts refusing without another line of code.
+      //
+      // ⚠ Classified against the PROSPECTIVE format, so flipping `format` in the same save is
+      // judged against the format being saved rather than the one being left.
+      const next: ProcurementConfig = {
+        ...stored,
+        format: isFormat(configPatch.format) ? configPatch.format : stored.format,
+      }
+      const rejections = validateKcOverrides(
+        parseKcOverrides(patch.kcOverrides),
+        procurementOverrideContext(next),
+      )
+      if (rejections.length > 0) throw new HttpsError('invalid-argument', rejections[0].message)
+      configPatch.kc_overrides = parseKcOverrides(patch.kcOverrides)
+    }
   }
 
   // ── the seed — TRUTH DOC, never config ──────────────────────────────────────

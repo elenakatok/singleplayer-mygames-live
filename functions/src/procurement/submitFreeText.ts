@@ -6,7 +6,7 @@ import {
   PROCUREMENT_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC,
   loadProcurementConfig,
 } from './config'
-import { KC_POOL_IDS, defaultVisibleFor, resolveQuestions } from './questions'
+import { KC_POOL_IDS, defaultVisibleFor, resolveBuiltIns } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // procurementSubmitFreeText (student) — the open-response paragraphs, UNGRADED.
@@ -64,8 +64,12 @@ export const procurementSubmitFreeText = onCall({ cors: PROCUREMENT_CORS_ORIGINS
   const configSnap = await instanceRef.collection('config').doc(CONFIG_DOC).get()
   const config = loadProcurementConfig(configSnap.data(), KC_POOL_IDS, defaultVisibleFor)
 
-  const prep = resolveQuestions(config.format, config.kcVisible, 'prep')
-  const debrief = resolveQuestions(config.format, config.kcVisible, 'debrief')
+  // ⚠ RESOLVED THROUGH THE SAME FUNCTION THE SERVE PATH USES, so a hidden paragraph is not
+  // answerable and an overridden one validates against the text the student was actually
+  // shown. ⚠ ONLY BUILT-IN free text comes here: an ADDED free-text question is `type:
+  // 'text'` but is stored in `kc_static_answers` and goes to procurementSubmitKcAnswer.
+  const prep = resolveBuiltIns(config, 'prep')
+  const debrief = resolveBuiltIns(config, 'debrief')
   const stage = prep.some(q => q.id === field) ? 'prep'
     : debrief.some(q => q.id === field) ? 'debrief'
       : null

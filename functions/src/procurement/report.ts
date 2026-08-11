@@ -5,7 +5,7 @@ import {
   PROCUREMENT_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC,
   loadProcurementConfig,
 } from './config'
-import { KC_POOL_IDS, defaultVisibleFor, gradedFor, resolveQuestions } from './questions'
+import { KC_POOL_IDS, defaultVisibleFor, procurementScoringSet, resolveBuiltIns } from './questions'
 import {
   parseStoredRounds, toClientHistory, totalProfit, roundsWon, toReportRivalPoints,
 } from './rounds'
@@ -62,14 +62,17 @@ export const procurementGetReport = onCall({ cors: PROCUREMENT_CORS_ORIGINS }, a
   const config = loadProcurementConfig(configSnap.data(), KC_POOL_IDS, defaultVisibleFor)
   /** ⚠ COMPUTED, not stored — the same call the grader makes. A report that printed a
    *  stored denominator could disagree with the score beside it. */
-  const gradedTotal = config.kcEnabled ? gradedFor(config.format, config.kcVisible).length : 0
+  // ⚠ THE `config.kcEnabled ?` TERNARY IS GONE — one of three copies of a rule the resolver
+  // now owns. `procurementScoringSet` is the SAME call the grader makes, and it counts added
+  // graded questions as well as built-ins.
+  const gradedTotal = procurementScoringSet(config).length
 
   /** The free-text questions this instance asks, in flow order: prep, then debrief.
    *  Their PROMPTS travel with the report so each Tier-2 tile is captioned with the
    *  question it answers rather than a bare id. */
   const textQuestions = [
-    ...resolveQuestions(config.format, config.kcVisible, 'prep'),
-    ...resolveQuestions(config.format, config.kcVisible, 'debrief'),
+    ...resolveBuiltIns(config, 'prep'),
+    ...resolveBuiltIns(config, 'debrief'),
   ]
 
   const rows = participantsSnap.docs.map(d => {

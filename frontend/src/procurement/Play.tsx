@@ -14,7 +14,7 @@ import { procurementResumeIndex, procurementScreenCount, procurementStartIterati
 import {
   procurementBootstrap, procurementGetState, procurementGetQuestions, STUDENT_CLASSROOM_URL,
   type ProcurementParams, type ProcurementPlayedRow, type ProcurementRoundResult,
-  type ProcurementKcQuestionClient, type ProcurementRivalPoint,
+  type ProcurementStageRowClient, type ProcurementRivalPoint,
   type ProcurementAuction, type ProcurementOpenTurn,
 } from './api'
 
@@ -59,9 +59,9 @@ import {
 
 type Loaded = {
   params: ProcurementParams
-  kc: ProcurementKcQuestionClient[]
-  prep: ProcurementKcQuestionClient | null
-  debrief: ProcurementKcQuestionClient | null
+  /** ⚠ SERVER-ORDERED, hidden rows already gone. The client re-derives nothing. */
+  preStage: ProcurementStageRowClient[]
+  debriefStage: ProcurementStageRowClient[]
   startIndex: number
   startIteration: number
 }
@@ -115,33 +115,30 @@ export default function Play() {
       .then(([state, questions]) => {
         if (cancelled) return
 
-        // ⚠ ONE prep and ONE debrief question by construction (the pool carries S8 and
-        // S9 for the sealed format). Taking [0] rather than mapping keeps the flow's
-        // shape honest — if a second is ever authored, this is where it surfaces.
-        const prep = questions.prep[0] ?? null
-        const debrief = questions.debrief[0] ?? null
-        const kc = questions.kcEnabled ? questions.kc : []
+        // ⚠⚠ THE TWO STAGES, SERVER-ORDERED, with `kc_hidden`, `kc_order` and the
+        // `kcEnabled` gate already applied. The legacy `kc` / `prep` / `debrief` fields still
+        // ship, but rebuilding the flow from them would re-derive an order the server has
+        // already decided and would drop any added question.
+        //
+        // ⚠ The old "ONE prep and ONE debrief by construction, so take [0]" assumption is
+        // GONE: an instructor may now add questions to either stage, so both are lists.
+        const preStage = questions.stages.pre
+        const debriefStage = questions.stages.debrief
 
-        const resumeArgs = {
-          kcCount: kc.length,
-          kcAnswered: questions.kcAnswered.length,
-          prepEnabled: prep !== null,
-          prepAnswered: questions.prepAnswered.length > 0,
-          debriefEnabled: debrief !== null,
-          debriefAnswered: questions.debriefAnswered.length > 0,
+        const startIndex = procurementResumeIndex({
+          preAnswered: preStage.map(r => r.answered),
+          debriefAnswered: debriefStage.map(r => r.answered),
           gameOver: state.gameOver || state.roundsPlayed >= state.params.rounds,
           roundsPlayed: state.roundsPlayed,
-        }
-        const startIndex = procurementResumeIndex(resumeArgs)
+        })
         const total = procurementScreenCount({
-          kcCount: kc.length, prepEnabled: prep !== null, debriefEnabled: debrief !== null,
+          preCount: preStage.length, debriefCount: debriefStage.length,
         })
 
         setLoaded({
           params: state.params,
-          kc,
-          prep,
-          debrief,
+          preStage,
+          debriefStage,
           startIndex,
           startIteration: procurementStartIteration(state.roundsPlayed),
         })
@@ -324,26 +321,58 @@ export default function Play() {
     return <PageShell>{results()}</PageShell>
   }
 
-  const screens: SequenceScreen[] = [
-    // ── The knowledge check: one graded screen per question, NO GATE (§10) ──────
-    ...loaded.kc.map((q, i) => ({
-      id: q.field,
-      render: ({ onDone }: { onDone: () => void }) => (
-        <KcScreen question={q} index={i} total={loaded.kc.length} onDone={onDone} />
-      ),
-    })),
+  /**
+   * ONE row of a stage.
+   *
+   * ⚠⚠ `kind` ROUTES THE SUBMIT, and it is read here rather than inferred from `type`. A
+   * built-in paragraph (`free-text`) goes to procurementSubmitFreeText and lands in
+   * `free_text_answers`; an ADDED question — even a free-text one, which is also
+   * `type: 'text'` — goes to procurementSubmitKcAnswer and lands in `kc_static_answers`.
+   * Inferring from `type` would post an added paragraph to a callable that has never heard
+   * of it.
+   */
+  const renderRow = (
+    row: ProcurementStageRowClient, i: number, total: number, eyebrow: string,
+  ) => ({
+    id: row.field,
+    render: ({ onDone }: { onDone: () => void }) => (
+      row.kind === 'free-text'
+        ? (
+          <FreeTextScreen
+            question={{
+              field: row.field,
+              kind: 'text',
+              prompt: row.prompt,
+              options: [],
+              placeholder: row.placeholder ?? null,
+            }}
+            eyebrow={eyebrow}
+            onDone={onDone}
+          />
+        )
+        : (
+          <KcScreen
+            question={{
+              field: row.field,
+              kind: row.type,
+              prompt: row.prompt,
+              options: row.options,
+              placeholder: row.placeholder ?? null,
+            }}
+            index={i}
+            total={total}
+            onDone={onDone}
+          />
+        )
+    ),
+  })
 
-    // ── The prep paragraph (S8), before round 1 ────────────────────────────────
-    ...(loaded.prep ? [{
-      id: loaded.prep.field,
-      render: ({ onDone }: { onDone: () => void }) => (
-        <FreeTextScreen
-          question={loaded.prep!}
-          eyebrow="Before you start"
-          onDone={onDone}
-        />
-      ),
-    }] : []),
+  const screens: SequenceScreen[] = [
+    // ── The pre-play stage: the graded built-ins, the prep paragraph, and any question
+    //    the instructor added there. NO GATE (§10) — a wrong answer is recorded and the
+    //    student continues.
+    ...loaded.preStage.map((row, i) =>
+      renderRow(row, i, loaded.preStage.length, 'Before you start')),
 
     // ── The round loop. ⚠ ONE OR THE OTHER, chosen by the instance's format: an open
     //    instance resolved through the sealed mechanism would produce rounds whose
@@ -400,17 +429,12 @@ export default function Play() {
       render: ({ onDone }: { onDone: () => void }) => results(onDone),
     },
 
-    // ── The debrief paragraph (S9), AFTER the results ──────────────────────────
-    ...(loaded.debrief ? [{
-      id: loaded.debrief.field,
-      render: ({ onDone }: { onDone: () => void }) => (
-        <FreeTextScreen
-          question={loaded.debrief!}
-          eyebrow="One last question"
-          onDone={onDone}
-        />
-      ),
-    }] : []),
+    // ── The debrief stage, AFTER the results ───────────────────────────────────
+    // ⚠ NO REVEAL GATE. Unlike forecast, nothing here is withheld until the stage is
+    // answered — the results screen shows the student their OWN outcome, which they are
+    // entitled to, and there is no answer key for a later answer to be contaminated by.
+    ...loaded.debriefStage.map((row, i) =>
+      renderRow(row, i, loaded.debriefStage.length, 'One last question')),
   ]
 
   return (

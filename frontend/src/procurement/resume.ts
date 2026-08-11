@@ -15,23 +15,22 @@
 // flow past it — so "results is done" is expressed as "the debrief has been answered",
 // which is a fact, instead of as a flag nothing would maintain.
 //
-// ⚠ THE KC INDEX IS A COUNT, NOT A findIndex OVER IDS. The server hands back the
-// questions in its own resolved order and the answered ids alongside; counting how many
-// of the ASKED set are answered is stable when an instructor hides a question
-// mid-assignment, whereas an index into a shifted array is not.
+// ⚠⚠ THE STAGES ARE `boolean[]`, ONE FLAG PER SERVED ROW — NEVER A COUNT, and this
+// REPLACES an earlier note here arguing the opposite. That note said a count was more
+// stable than "a findIndex over ids" because an instructor hiding a question mid-assignment
+// shifts the array. The premise is gone: the server now sends one `answered` flag PER ROW,
+// computed against the list it is serving in the same response, so there is no stale index
+// to shift. And a count is actively wrong once rows can be REORDERED or hidden — it assumes
+// the answered rows are a PREFIX. A student who answered rows 1 and 3 resumes at row 2 under
+// findIndex and at row 3 under a count, silently skipping the question they missed.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export interface ProcurementResumeInput {
-  /** How many KC questions this student is asked. Zero when the KC is off. */
-  kcCount: number
-  /** How many of those they have answered. */
-  kcAnswered: number
-  /** Is there a prep question in this instance at all? */
-  prepEnabled: boolean
-  prepAnswered: boolean
-  /** Is there a debrief question in this instance at all? */
-  debriefEnabled: boolean
-  debriefAnswered: boolean
+  /** One flag per PRE-PLAY row, in served order: the graded built-ins, the prep paragraph
+   *  and any pre-play addition, already ordered and with hidden rows removed. */
+  preAnswered: readonly boolean[]
+  /** One flag per DEBRIEF row, in served order. */
+  debriefAnswered: readonly boolean[]
   /** The server's own verdict that play is over. */
   gameOver: boolean
   roundsPlayed: number
@@ -39,10 +38,10 @@ export interface ProcurementResumeInput {
 
 /** How many screens the flow has, for the "everything is done" comparison. */
 export function procurementScreenCount(i: {
-  kcCount: number; prepEnabled: boolean; debriefEnabled: boolean
+  preCount: number; debriefCount: number
 }): number {
-  // KC questions + prep? + the loop (one screen) + results + debrief?
-  return i.kcCount + (i.prepEnabled ? 1 : 0) + 1 + 1 + (i.debriefEnabled ? 1 : 0)
+  // the pre-play stage + the loop (one screen) + results + the debrief stage
+  return i.preCount + 1 + 1 + i.debriefCount
 }
 
 /**
@@ -52,19 +51,12 @@ export function procurementScreenCount(i: {
  * as "show the terminal results view" rather than mounting the runner past its end.
  */
 export function procurementResumeIndex(i: ProcurementResumeInput): number {
-  // ── The knowledge check ────────────────────────────────────────────────────
-  // ⚠ Clamped. A stale `kcAnswered` larger than the asked set (an instructor hid a
-  // question after this student answered it) must not push the index past the KC block.
-  const answered = Math.min(i.kcAnswered, i.kcCount)
-  if (answered < i.kcCount) return answered
+  // ── The pre-play stage ─────────────────────────────────────────────────────
+  const firstPre = i.preAnswered.findIndex(a => !a)
+  if (firstPre !== -1) return firstPre
 
-  let idx = i.kcCount
-
-  // ── The prep paragraph ─────────────────────────────────────────────────────
-  if (i.prepEnabled) {
-    if (!i.prepAnswered) return idx
-    idx += 1
-  }
+  const preCount = i.preAnswered.length
+  let idx = preCount
 
   // ── The round loop ─────────────────────────────────────────────────────────
   // One screen, however many rounds it contains; the loop resumes itself from
@@ -73,17 +65,22 @@ export function procurementResumeIndex(i: ProcurementResumeInput): number {
   idx += 1
 
   // ── Final results ──────────────────────────────────────────────────────────
-  // No stored fact of its own — the debrief's answer is what moves past it.
-  if (i.debriefEnabled && !i.debriefAnswered) return idx
-  if (!i.debriefEnabled) return idx + 1
-  idx += 1
+  // ⚠ No stored fact of its own — a pass-through screen that writes nothing. The DEBRIEF
+  // stage's stored answers are what carry the flow past it, so "results is done" is
+  // expressed as a fact rather than as a flag nothing would maintain.
+  const firstDebrief = i.debriefAnswered.findIndex(a => !a)
 
-  // ── The debrief paragraph ──────────────────────────────────────────────────
-  return idx + 1
+  // Nothing left in the debrief stage — past the end.
+  if (firstDebrief === -1) return idx + 1 + i.debriefAnswered.length
+
+  // ⚠ NOTHING ANSWERED YET ⇒ THE RESULTS SCREEN FIRST. Arriving from the last round, a
+  // student reads their own outcome before being asked to reflect on it. Once they are
+  // PART-WAY through the stage the results screen is behind them, and re-showing it would
+  // be a step backwards.
+  if (firstDebrief === 0) return idx
+  return idx + 1 + firstDebrief
 }
 
-/** Which iteration the round loop resumes at (0-based) — simply the rounds already
- *  stored. The server is the only thing that knows this. */
 export function procurementStartIteration(roundsPlayed: number): number {
   return Math.max(0, roundsPlayed)
 }

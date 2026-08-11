@@ -1,12 +1,15 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https'
 import * as admin from 'firebase-admin'
 import { FieldValue } from 'firebase-admin/firestore'
-import { extractStudentOnCallIds, calcKCScore } from '@mygames/game-server'
+import { extractStudentOnCallIds } from '@mygames/game-server'
 import {
   PROCUREMENT_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC,
   loadProcurementConfig,
 } from './config'
-import { KC_POOL_IDS, defaultVisibleFor, resolveQuestions, scoringSet } from './questions'
+import {
+  KC_POOL_IDS, defaultVisibleFor, resolveBuiltIns, resolveAddedKcQuestions,
+  procurementKcScoreFor,
+} from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // procurementSubmitKcAnswer (student) — grades ONE knowledge-check question.
@@ -59,12 +62,29 @@ export const procurementSubmitKcAnswer = onCall({ cors: PROCUREMENT_CORS_ORIGINS
   const configSnap = await instanceRef.collection('config').doc(CONFIG_DOC).get()
   const config = loadProcurementConfig(configSnap.data(), KC_POOL_IDS, defaultVisibleFor)
 
-  if (!config.kcEnabled) {
-    throw new HttpsError('failed-precondition', 'The knowledge check is not part of this game.')
-  }
+  // ⚠⚠ NO BLANKET `kcEnabled` REFUSAL ANY MORE. D12 makes the toggle gate GRADED questions
+  // only, and this callable now also carries UNGRADED additions — a free-text question an
+  // instructor added to either stage. Refusing the whole callable made those unanswerable
+  // whenever the graded check was off. The gate lives in the resolvers, so a question the
+  // toggle removes is simply absent from the lookup below and gets the ordinary refusal.
 
-  const visible = resolveQuestions(config.format, config.kcVisible, 'kc')
-  const question = visible.find(q => q.id === field)
+  // ⚠ ROUTE THE FIELD TO ITS OWN SOURCE. Built-ins FIRST; an added question cannot take a
+  // built-in id (config.ts's explicit id SET — the `kc_` prefix rule would protect nothing
+  // in this game), so this lookup order can never shadow one with the other.
+  // ⚠ RESOLVED, not raw: a hidden question is not answerable, and an override's rewritten
+  // option labels are the ones validated against. `resolveAddedKcQuestions` is called with
+  // NO stage — answerability is stage-independent (D3) and this callable serves both.
+  const builtIn = resolveBuiltIns(config, 'kc').find(q => q.id === field)
+  const added = builtIn ? undefined : resolveAddedKcQuestions(config).find(q => q.id === field)
+  const question = builtIn ?? (added
+    ? {
+      id: added.id,
+      options: (added.options ?? []).map(o => ({ value: o.value, label: o.label })),
+      correct_value: added.correct_value ?? null,
+      explanation: added.explanation ?? '',
+      kind: added.type,
+    }
+    : undefined)
   if (!question) {
     // ⚠ Covers three distinct cases with one message, deliberately: not in the pool,
     // not tagged for this format, or switched off. All three mean the same thing to a
@@ -72,12 +92,11 @@ export const procurementSubmitKcAnswer = onCall({ cors: PROCUREMENT_CORS_ORIGINS
     // not being asked.
     throw new HttpsError('invalid-argument', `'${field}' is not a knowledge-check question in this game.`)
   }
-  if (!question.options.some(o => o.value === answer)) {
+  // ⚠ AN ADDED FREE-TEXT QUESTION HAS NO OPTIONS AND IS NOT CHECKED AGAINST ANY. Built-ins
+  // in the `kc` stage are always mc, so this branch is new with added questions.
+  if (question.kind === 'mc' && !question.options.some(o => o.value === answer)) {
     throw new HttpsError('invalid-argument', 'Please choose one of the options.')
   }
-
-  /** The graded set, per request, from the live config. THE DENOMINATOR. */
-  const forScoring = scoringSet(config.format, config.kcVisible)
   const participantRef = instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId)
 
   const result = await db.runTransaction(async (tx) => {
@@ -97,7 +116,6 @@ export const procurementSubmitKcAnswer = onCall({ cors: PROCUREMENT_CORS_ORIGINS
     const allAnswers: Record<string, string> = {}
     for (const [k, v] of Object.entries(existing)) allAnswers[k] = v.answer
     allAnswers[field] = answer
-    const allAnswered = forScoring.every(q => allAnswers[q.field] != null)
 
     const patch: Record<string, unknown> = {
       participant_id: participantId,
@@ -109,11 +127,20 @@ export const procurementSubmitKcAnswer = onCall({ cors: PROCUREMENT_CORS_ORIGINS
     }
 
     // The score lands once, when the last graded question is answered.
-    // ⚠ `forScoring.length > 0` guards the empty-pool case: with no graded questions
-    // `every()` is vacuously true, and without this a student would be handed a
-    // completed KC with a score of 0/0 the first time they touched the screen.
-    if (forScoring.length > 0 && allAnswered && pData.knowledge_check_score == null) {
-      patch.knowledge_check_score = calcKCScore(allAnswers, forScoring).score
+    //
+    // ⚠⚠ THE WHOLE DECISION IS `procurementKcScoreFor` — "is the graded set non-empty, is it
+    // complete, and what does it score" in ONE pure function the suite can reach. It used to
+    // be three conditions inlined here, and forecast lost two mutants to exactly that shape:
+    // a decision inlined in a callable is a decision no unit test can reach (spec §7).
+    //
+    // ⚠ THE EMPTY-SET GUARD IS INSIDE IT AND IS PROCUREMENT'S OWN RULE (spec §9): with no
+    // graded questions `every()` is vacuously true, and without the guard a student would be
+    // handed a completed KC of 0/0 the first time they touched the screen. ⚠ DO NOT swap this
+    // for `kcScoreOrNull` to match the other five — that writes null AND would let the stamp
+    // land, which is the thing being prevented.
+    const score = procurementKcScoreFor(allAnswers, config)
+    if (score !== null && pData.knowledge_check_score == null) {
+      patch.knowledge_check_score = score
       patch.knowledge_check_completed_at = FieldValue.serverTimestamp()
     }
 
