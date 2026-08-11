@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { colors, typography } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
+import { StartedBanner } from '../shared/StartedBanner'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   KnowledgeCheckSettings,
@@ -262,6 +263,16 @@ export default function Settings() {
 
       {c && data && (
         <div style={{ fontFamily: typography.fontFamily }}>
+
+          {/* ⚠ THE PAGE-LEVEL BANNER (KC convergence §10, Elena 08-10). Predicate:
+              data.formatLocked — ⚠ THE NAME IS ABOUT THE FORMAT CONTROL, THE SIGNAL IS NOT.
+              It is `hasAnySubmission`, which queries participants for `rounds_played > 0`
+              (instance.ts) — the same predicate newsvendor and forecast use, and a genuine
+              "someone has bid", not "someone has been issued a format". A student who opened
+              the game and left has no round and does not raise it.
+              ⚠ The format-lock notice further down is NOT folded into this: it says what
+              THAT control does, which this cannot. */}
+          <StartedBanner started={data.formatLocked} testIdPrefix="proc" />
 
           {/* ── format ─────────────────────────────────────────────────────── */}
           <section style={{ marginBottom: '2rem' }}>

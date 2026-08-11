@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { colors } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
+import { StartedBanner } from '../shared/StartedBanner'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   pdGetConfig, pdUpdateConfig, pdInstructorSession, CLASSROOM_URL,
@@ -232,6 +233,13 @@ export default function Settings() {
 
   return chrome(
     <div data-testid="pd-settings">
+      {/* ⚠ THE PAGE-LEVEL BANNER (KC convergence §10, Elena 08-10). Predicate: cfg.anyRoundsDrawn —
+          the per-student horizon is DRAWN at first load (init.ts, via getState), so a student who
+          only opened the game already has a game nobody else can be compared against.
+          ⚠ The section-scoped notices below are NOT folded into this and must not be: they
+          name what editing THAT section does, which this cannot. */}
+      <StartedBanner started={cfg.anyRoundsDrawn} testIdPrefix="pd" />
+
       {/* ── Payoffs ─────────────────────────────────────────────────────────── */}
       <Section title="Payoff matrix">
         <div style={row}>

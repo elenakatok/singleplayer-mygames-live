@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { colors } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
+import { StartedBanner } from '../shared/StartedBanner'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   newsvendorGetConfig, newsvendorUpdateConfig, newsvendorInstructorSession, CLASSROOM_URL,
@@ -263,6 +264,12 @@ export default function Settings() {
 
   return chrome(
     <>
+      {/* ⚠ THE PAGE-LEVEL BANNER (KC convergence §10, Elena 08-10). Predicate: loaded.anyRoundsPlayed —
+          nothing is drawn for a student at load — a fresh participant has no per-student
+          state at all — so the earliest moment two games diverge is the first period played.
+          ⚠ The section-scoped notices below are NOT folded into this. */}
+      <StartedBanner started={loaded.anyRoundsPlayed} testIdPrefix="nv" />
+
       {loaded.configError && (
         <p data-testid="nv-settings-config-error" style={{ ...warn, fontWeight: 600, marginBottom: '1rem' }}>
           ⚠ {loaded.configError}

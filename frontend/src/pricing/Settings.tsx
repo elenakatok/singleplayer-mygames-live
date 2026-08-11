@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { colors } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
+import { StartedBanner } from '../shared/StartedBanner'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   pricingGetConfig, pricingUpdateConfig, pricingInstructorSession, CLASSROOM_URL,
@@ -241,6 +242,13 @@ export default function Settings() {
 
   return chrome(
     <div data-testid="pricing-settings">
+      {/* ⚠ THE PAGE-LEVEL BANNER (KC convergence §10, Elena 08-10). Predicate: cfg.anyRoundsDrawn —
+          as pd — the horizon is DRAWN at first load, before any round is played. `anyRoundsPlayed`
+          also exists and fires later; the earlier signal is the honest one for this copy.
+          ⚠ The section-scoped notices below are NOT folded into this and must not be: they
+          name what editing THAT section does, which this cannot. */}
+      <StartedBanner started={cfg.anyRoundsDrawn} testIdPrefix="pricing" />
+
       {/* ── The mode ────────────────────────────────────────────────────────── */}
       <Section title="Rules">
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', fontSize: '0.95rem' }}>

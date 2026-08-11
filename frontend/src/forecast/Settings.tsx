@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { colors } from '@mygames/game-ui'
 import { InstructorChrome } from '../shared/InstructorChrome'
+import { StartedBanner } from '../shared/StartedBanner'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   forecastGetConfig, forecastUpdateConfig, forecastInstructorSession,
@@ -245,6 +246,13 @@ export default function Settings() {
 
   return (
     <InstructorChrome title="Forecasting Game — settings" navLinks={navLinks} onNavigate={navigate}>
+      {/* ⚠ THE PAGE-LEVEL BANNER (KC convergence §10, Elena 08-10). Predicate: data.anyRoundsPlayed —
+          as newsvendor — nothing per-student is drawn at load, so the first month played is the
+      earliest divergence. ⚠ This signal already fed the `warnings` array below; the banner is
+      a second, page-level consumer of it, not a new signal.
+          ⚠ The section-scoped notices below are NOT folded into this. */}
+      <StartedBanner started={data.anyRoundsPlayed} testIdPrefix="fc" />
+
       {/* ── The warnings (spec §3, §3a, §5a) — advice, never a block ────────── */}
       {data.warnings.length > 0 && (
         <section

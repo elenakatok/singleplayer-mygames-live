@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { colors } from '@mygames/game-ui'
+import { StartedBanner } from '../shared/StartedBanner'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { InstructorChrome } from '../shared/InstructorChrome'
 import {
@@ -10,7 +11,7 @@ import {
 } from './api'
 import { PolicyGridSVG, PolicyGridLegend } from './PolicyGridSVG'
 import {
-  KnowledgeCheckSettings, visibleGradedIds,
+  KnowledgeCheckSettings,
   type KcSettingsDraft, type KcSettingsQuestion, type KcSettingsStage,
 } from '../shared/KnowledgeCheckSettings'
 
@@ -94,7 +95,6 @@ export default function Settings() {
    *  `set(k)(v)` helper is flat. Both go into the same `scorecardUpdateConfig` call. */
   const [kcDraft, setKcDraft] = useState<KcSettingsDraft | null>(null)
   /** What was graded when the page loaded — D2's comparison point. */
-  const [gradedAtLoad, setGradedAtLoad] = useState<string[]>([])
 
   useEffect(() => {
     if (session.kind !== 'ready') return
@@ -106,7 +106,6 @@ export default function Settings() {
         setForm(seed(r))
         const d = seedKc(r)
         setKcDraft(d)
-        setGradedAtLoad(visibleGradedIds(kcQuestions(r), d))
       })
       .catch(e => { if (!cancelled) setError(instructorErrorMessage(e)) })
     return () => { cancelled = true }
@@ -176,7 +175,6 @@ export default function Settings() {
       setKcDraft(d)
       // ⚠ The D2 baseline moves to what was just SAVED, so the banner reflects "changed
       // since you last saved" rather than firing forever after one edit.
-      setGradedAtLoad(visibleGradedIds(kcQuestions(r), d))
       setSavedAt(new Date().toLocaleTimeString())
     } catch (e) {
       setError(instructorErrorMessage(e))
@@ -232,12 +230,6 @@ export default function Settings() {
 
   const { induced } = data
 
-  /** ⚠ D2's trigger: has the VISIBLE GRADED set moved since the last load or save? A
-   *  reworded prompt or a reordered stage does not change anybody's denominator and must
-   *  not raise the banner — only adding, hiding or unhiding a graded question does. */
-  const gradedChanged = kcDraft !== null
-    && JSON.stringify(visibleGradedIds(kcQuestions(data), kcDraft)) !== JSON.stringify(gradedAtLoad)
-
   /** ⚠ The §9.1 caution, shown beside Save so it is in front of the instructor at the
    *  moment they commit. It never blocks — `save()` does not consult it. */
   const preStageAdded = (kcDraft?.added ?? []).filter(
@@ -256,15 +248,9 @@ export default function Settings() {
       ]}
       onNavigate={navigate}
     >
-      {data.started && (
-        <p style={{
-          background: '#fff8e6', border: '1px solid #e6d3a3', borderRadius: 6,
-          padding: '0.6rem 0.9rem', fontSize: '0.85rem',
-        }}>
-          ⚠ Students have already started. Editing the rules now means different students
-          played different games — the reports cannot separate them.
-        </p>
-      )}
+      {/* ⚠ The wording that used to be inline here is now shared/StartedBanner.tsx,
+          verbatim — this page is where it came from, and five other games adopted it. */}
+      <StartedBanner started={data.started} testIdPrefix="sc" />
 
       <h3>Structure</h3>
       {numField('contracts', 'Contracts')}
@@ -348,24 +334,14 @@ export default function Settings() {
               curves, and answer the linking question.
             </>
           )}
-          // ⚠ D2 — WARN, NEVER BLOCK. The banner already exists at the top of this page for
-          // parameter edits; the knowledge check becomes one more thing that triggers it,
-          // and it fires on the VISIBLE GRADED SET changing rather than on any keystroke.
-          startedWarning={
-            data.started && gradedChanged ? (
-              <p
-                data-testid="sc-kc-started-warning"
-                style={{
-                  background: '#fff8e6', border: '1px solid #e6d3a3', borderRadius: 6,
-                  padding: '0.6rem 0.9rem', fontSize: '0.85rem', marginTop: '0.75rem',
-                }}
-              >
-                ⚠ Students have already started, and you have changed which graded questions
-                are asked. Anyone who has already finished was scored out of the OLD set —
-                the reports will pool two different denominators. Saving is still allowed.
-              </p>
-            ) : null
-          }
+          // ⚠⚠ NO `startedWarning` IS PASSED ANY MORE — DELETED 2026-08-11, deliberately.
+          // A KC-specific save-time warning lived here, firing when the VISIBLE GRADED SET
+          // changed. The page-level banner at the top now covers it, and Elena's decision
+          // is ONE mechanism across six games rather than five with one and scorecard with
+          // two. The standing banner also needs no baseline, no comparison and no
+          // definition of "a change" — and it is on screen BEFORE the instructor edits
+          // anything, where a save-time warning could only ever arrive afterwards.
+          // ⚠ Do not reinstate it without reversing that decision; a test asserts it is gone.
         />
       )}
 
