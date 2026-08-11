@@ -212,7 +212,7 @@ export function OpenBidScreen({
             color: auction.youHold ? colors.successText ?? '#0a7' : colors.errorAction,
           }}
         >
-          {auction.youAreOut ? 'You have dropped out of this auction'
+          {auction.youAreOut ? outSentence(auction.exitKind)
             : auction.youHold ? 'You are winning' : 'You are not winning'}
         </p>
 
@@ -383,12 +383,33 @@ export function OpenBidScreen({
   )
 }
 
+/**
+ * ⚠⚠ ONE PHRASING FOR THE AUTO-DROP EVENT, USED IN BOTH PLACES — the status line above the
+ * auction and the history row inside it. A student who reads two different descriptions of
+ * the same event has to work out whether they are the same event, and that is not a puzzle
+ * worth setting on a screen they are trying to bid on.
+ *
+ * ⚠ "the price is at or below your cost", NOT "went below your cost". Since 2026-08-11
+ * auto-drop also fires when a bot bids EXACTLY the player's cost — at which point every bid
+ * they could make must undercut it and would therefore be below their own cost. "Went below"
+ * was accurate under the old strict boundary and is now wrong in the case that motivated the
+ * change.
+ */
+export const AUTO_DROP_REASON = 'the price is at or below your cost'
+
+/** The status line's sentence for a player who is out, by HOW they left. */
+export function outSentence(exitKind: 'dropOut' | 'autoDrop' | null): string {
+  return exitKind === 'autoDrop'
+    ? `You are out of this auction — ${AUTO_DROP_REASON}`
+    : 'You have dropped out of this auction'
+}
+
 /** ⚠ THREE ROW KINDS, THREE SENTENCES. An auto-drop must not read as "dropped out": the
- *  student did not quit, the price went below what they were allowed to pay. */
+ *  student did not quit, the auction moved past what they were allowed to pay. */
 function eventSuffix(row: { kind?: string; amount: number | null }): string {
   if (row.amount !== null) return ` — ${row.amount}`
   return row.kind === 'autoDrop'
-    ? ' — out: the price went below your cost'
+    ? ` — out: ${AUTO_DROP_REASON}`
     : ' — dropped out'
 }
 

@@ -74,6 +74,16 @@ export interface ClientAuction {
   youHold: boolean
   yourLastBid: number | null
   youAreOut: boolean
+  /**
+   * ⚠ HOW they left, on the LIVE view — not only on the round result.
+   *
+   * `autoDrop` means the auction reached or passed their cost and removed them; `dropOut`
+   * means they pressed the button. The screen must say which, and until 2026-08-11 it
+   * could not: this field existed on the round-result payload only, so the status line had
+   * nothing but the `youAreOut` boolean and told an auto-dropped player they had "dropped
+   * out of this auction" — the one thing the history row directly below it denied.
+   */
+  exitKind: 'dropOut' | 'autoDrop' | null
   /** ⚠ Declared back on submitBid so a collision can be DESCRIBED. It is never a reason
    *  to reject on its own (§4.6) — see `playerBid`. */
   sequence: number
@@ -126,6 +136,7 @@ export function toClientAuction(
     youHold: state.holder === PLAYER_ID,
     yourLastBid: lastPlayerBid(state, s),
     youAreOut: state.playerOut,
+    exitKind: state.playerExitKind,
     sequence: state.sequence,
     nextBotAtMs: state.nextBotAtMs,
     step: stepAt(state.standing, s.schedule),

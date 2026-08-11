@@ -390,17 +390,33 @@ function commitOneBotBid(state: OpenState, s: OpenSettings, nowMs: number): Open
     decisions: state.decisions + 1,
   }
 
-  // ⚠⚠ AUTO-DROP: the price has fallen below the player's own cost, so there is no bid
-  // left they are allowed to make (§4.3, now applied to the player). They are removed.
+  // ⚠⚠ AUTO-DROP: the price is now AT OR BELOW the player's own cost, so there is no bid
+  // left they are allowed to make (§4.3, applied to the player). They are removed.
   //
-  // ⚠⚠ IT CAN NEVER FIRE ON A PLAYER ABOUT TO WIN, and that is structural rather than a
-  // guard somebody has to remember: this branch runs only on a BOT bid, so the holder is
-  // that bot and not the player — and a player who HOLDS is standing at their own bid,
-  // which is at or above their cost because they cannot bid below it. A player holding at
+  // ⚠⚠ THE BOUNDARY IS `<=`, AND THE `=` HALF IS THE WHOLE POINT (Elena, 2026-08-11).
+  // It used to be `<`, which left a player sitting in an auction they could no longer act
+  // in: every bid must undercut the standing by at least the step, so once a bot holds at
+  // EXACTLY the player's cost every bid the player could make is below their own cost and
+  // refused. They were priced out in fact, but stayed in the auction until they pressed
+  // Drop Out — and their exit was then recorded as a voluntary drop rather than as being
+  // priced out, which is a different thing and reports as one.
+  //
+  // ⚠ THE OLD COMMENT HERE JUSTIFIED `<` BY THE ROUND-STEALING CASE — "a player holding at
   // exactly their own cost with every bot stopped is the normal winning path, and firing
-  // here would steal a won round. The `holder` test below says so explicitly anyway, and
-  // a test asserts it.
-  if (!next.playerOut && next.holder !== s.playerId && amount < s.playerCost) {
+  // here would steal a won round". That reasoning was sound about the DANGER and wrong
+  // about what prevented it. The comparison was never what protected that case:
+  //
+  //   `next.holder` CANNOT BE THE PLAYER AT THIS LINE. This branch runs only inside
+  //   `commitOneBotBid`, `next.holder` is set to `chosen.bidderId` immediately above, and
+  //   `chosen` comes from `willingBots`, which filters `s.bots` — an array the player is
+  //   never a member of. So `next.holder !== s.playerId` is invariably true here.
+  //
+  // The winning path is protected one level up instead, and more strongly: a player who
+  // holds at their own cost with every bot stopped produces NO bot bid at all, so
+  // `commitOneBotBid` never runs and this check is never reached. The `holder` clause is
+  // kept as a belt-and-braces assertion of an invariant, not as a live filter — dropping
+  // it should change nothing, and a test asserts exactly that.
+  if (!next.playerOut && next.holder !== s.playerId && amount <= s.playerCost) {
     const removed: OpenState = {
       ...next,
       playerOut: true,
@@ -471,10 +487,13 @@ export type BidAccepted = { ok: true; state: OpenState }
  * ⚠ VALIDATION IS A GATE WITH A VISIBLE MESSAGE, NOT A SILENT FILTER (open §8.3 case 3).
  * A rejected bid changes nothing and tells the player why.
  *
- * ⚠ A BID BELOW THE PLAYER'S OWN COST IS LEGAL AND IS NEVER BLOCKED (open §8.3 case 4).
- * If it wins, the profit is negative. Losing money is a legitimate mistake and part of
- * the lesson; the lecture's own scatter shows students doing it. Note this function is
- * not even TOLD the player's cost — it could not block one if it wanted to.
+ * ⚠⚠ A BID BELOW THE PLAYER'S OWN COST IS REFUSED (open §8.3 case 4, Elena 2026-08-04) —
+ * the check is a dozen lines below, and this comment asserted the OPPOSITE until
+ * 2026-08-11. It said the bid was "legal and never blocked", that losing money was part of
+ * the lesson, and — the line that shows how old it is — that "this function is not even
+ * TOLD the player's cost". It is: `s.playerCost`, and that is what the check reads. One
+ * rule for every bidder in the auction, in both formats; §4.3's bot floor and this are the
+ * same rule.
  *
  * ⚠ THE PLAYER'S BID DOES NOT CASCADE. It commits, and then `settle` schedules the bot's
  * ANSWER for `delay(newStanding)` later — the reply is a separate commit, so the player

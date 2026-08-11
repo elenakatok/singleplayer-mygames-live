@@ -260,6 +260,10 @@ export type ProcurementAuction = {
   youHold: boolean
   yourLastBid: number | null
   youAreOut: boolean
+  /** ⚠ HOW they left, on the LIVE view. `autoDrop` = the auction reached or passed their
+   *  cost and removed them; `dropOut` = they pressed the button. The status line must say
+   *  which — see OpenBidScreen. */
+  exitKind: 'dropOut' | 'autoDrop' | null
   /** Declared back on a bid so a collision can be described. ⚠ A stale one NEVER rejects
    *  on its own — the server re-checks against the new standing (open §4.6). */
   sequence: number
@@ -304,7 +308,8 @@ export type ProcurementOpenTurn = {
     profit: number
     profitTotal: number
     droppedOut: boolean
-    /** How they left. `autoDrop` = the price went below their cost. Null when they won. */
+    /** How they left. `autoDrop` = the auction reached or passed their cost. Null when
+     *  they won. */
     exitKind: 'dropOut' | 'autoDrop' | null
     /** ⚠ §7's pair, read back off the stored record rather than recomputed. */
     exitPrice: number | null

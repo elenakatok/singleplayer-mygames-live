@@ -424,6 +424,126 @@ describe('⚠⚠ AUTO-DROP — the price passes the player, and it must never st
     expect(done.history.some(e => e.kind === 'dropOut')).toBe(false)
   })
 
+  it('⚠⚠ FIRES AT THE COST EXACTLY, not only below it (Elena, 2026-08-11)', () => {
+    // MUTANT: revert the guard to `amount < s.playerCost`. → fails.
+    // WHY THE BOUNDARY MOVED: at the moment a bot holds AT the player's cost, every bid
+    // the player could make must undercut it by at least the step, so every one of them is
+    // below their own cost and refused. They are priced out in fact; under `<` they stayed
+    // in the auction until they pressed Drop Out, and the record then called it a
+    // voluntary drop.
+    //
+    // ⚠ CONSTRUCTED SO A BOT BID LANDS ON THE COST EXACTLY. The ladder from the reserve is
+    // 110 → 100 → 90 → 80 → 75 → … → 50 → 48 → 46 → 44 → 42 → 40 → …, so 40 is a rung.
+    // ⚠ TWO BOTS, NOT ONE: a bot may not undercut itself (§4.2), so a lone bot bids once
+    // and the cascade halts. Two low-cost bots alternate all the way down.
+    const s = base({
+      playerCost: 40,
+      bots: [{ bidderId: 'rival3', cost: 21 }, { bidderId: 'rival5', cost: 22 }],
+    })
+
+    // ⚠⚠ STEP THE CASCADE ONE BID AT A TIME AND STOP THE INSTANT THE STANDING IS 40.
+    // Running it to completion does NOT discriminate: under the old `<` the bots simply
+    // carry on to 38, which IS below the cost, so the player ends up auto-dropped either
+    // way and every end-state assertion passes under both. The claim is about WHEN it
+    // fires, so the test has to look at the moment it fires. (First version of this test
+    // ran to completion and the reverted-to-`<` mutant SURVIVED.)
+    // Walk to 42 — the rung above the cost — leaving the NEXT bot bid to land on 40 exactly.
+    let st = openAuction(s, 0)
+    for (let i = 0; i < 60 && st.standing > 42; i++) {
+      st = advanceOne(st, s, st.nextBotAtMs ?? 0).state
+    }
+    expect(st.standing).toBe(42)
+    expect(st.playerOut).toBe(false)          // still in, one rung above their cost
+
+    // ⚠⚠ ONE MORE BOT BID — it lands on 40, the cost exactly. THAT is what must remove them.
+    // Under the old `<` this call left `playerOut` false and the player sat in an auction
+    // they could no longer act in. Running the cascade to COMPLETION does not discriminate:
+    // the bots carry on to 38 either way, so every end-state assertion passes under both
+    // comparisons. (The first version of this test did exactly that and the mutant SURVIVED.)
+    st = advanceOne(st, s, st.nextBotAtMs ?? 0).state
+
+    expect(st.history.some(e => e.kind === 'bid' && e.amount === 40)).toBe(true)
+    expect(st.playerOut).toBe(true)
+    expect(st.playerExitKind).toBe('autoDrop')
+    expect(st.playerExitPrice).toBe(40)
+    // ⚠ THE AUTO-DROP LANDS BEFORE ANY BID BELOW THE COST. The player's removal is a
+    // response to the bid AT 40, not to a later one at 38 — which is the whole distinction
+    // between `<=` and `<`.
+    const hist = st.history
+    const at40 = hist.findIndex(e => e.kind === 'bid' && e.amount === 40)
+    const dropAt = hist.findIndex(e => e.kind === 'autoDrop')
+    const firstBelow = hist.findIndex(e => e.kind === 'bid' && (e.amount ?? 99) < 40)
+    expect(dropAt).toBe(at40 + 1)
+    expect(firstBelow === -1 || dropAt < firstBelow).toBe(true)
+  })
+
+  it('⚠ the recorded exit price is the COST, not the bot bid that triggered it', () => {
+    // MUTANT: record `amount` instead of `s.playerCost`. → fails on the strict-below case,
+    // where the two differ. (At the boundary they are equal, which is exactly why the
+    // strict-below case is the one that discriminates.)
+    // ⚠ 46 is a rung on the ladder, so the trigger and the cost would coincide — which is
+    // the case that does NOT discriminate. Cost 45 is NOT a rung: the cascade steps 46 → 44,
+    // so the triggering bid is 44 and the recorded exit must still be 45.
+    const s = base({
+      playerCost: 45,
+      bots: [{ bidderId: 'rival3', cost: 21 }, { bidderId: 'rival5', cost: 22 }],
+    })
+    const done = run(openAuction(s, 0), s)
+    expect(done.playerExitKind).toBe('autoDrop')
+    expect(done.playerExitPrice).toBe(45)
+    expect(playerExit(done, s).exitPrice).toBe(45)
+    expect(done.playerExitPrice).not.toBe(44)   // ⚠ not the bid that triggered it
+  })
+
+  it('⚠ a bot bid one ABOVE the cost does NOT auto-drop — the boundary is `<=`, not `<= +1`', () => {
+    // MUTANT: widen to `amount <= s.playerCost + 1`. → fails. Both bots floor at 40, so the
+    // lowest bid either will make is 40 — one above the player's cost of 39, and the player
+    // must still be IN.
+    const s = base({
+      playerCost: 39,
+      bots: [{ bidderId: 'rival3', cost: 40 }, { bidderId: 'rival5', cost: 40 }],
+    })
+    const done = run(openAuction(s, 0), s)
+    expect(done.standing).toBe(40)
+    expect(done.playerOut).toBe(false)
+    expect(done.playerExitKind).toBeNull()
+
+    // ⚠⚠ AND HERE IS THE RESIDUAL GAP, PINNED RATHER THAN FIXED. The player is still in the
+    // auction and has NO legal move: the standing is 40, the step at 40 is 2, so the best
+    // they may bid is 38 — below their cost of 39 and refused — while 39 itself does not
+    // clear the minimum. Item 1 closed the boundary AT the cost; it does not close the
+    // window `cost < standing < cost + step`, which is non-empty wherever the step exceeds
+    // 1 (the shipped ladder uses steps of 10, 5 and 2 above a price of 30). Elena's stated
+    // reason for the change — "at that point the player has no legal move" — applies here
+    // too. REPORTED, NOT CHANGED: widening further is her call, not a test's.
+    expect(maxLegalBid(done.standing, SCHEDULE)).toBe(38)
+    expect(playerBid(done, s, 39, done.sequence, 0).ok).toBe(false)
+    expect(playerBid(done, s, 38, done.sequence, 0).ok).toBe(false)
+  })
+
+  it('⚠⚠ THE HOLDER CLAUSE IS AN INVARIANT, NOT A LIVE FILTER — dropping it changes nothing', () => {
+    // MUTANT: delete `next.holder !== s.playerId` from the guard. → this test still passes,
+    // and that is the POINT: the clause cannot fire, because the check runs only inside
+    // `commitOneBotBid`, where `next.holder` was just set to a bot's id from `willingBots`
+    // (which filters `s.bots`, an array the player is never in).
+    //
+    // ⚠ THE ROUND-STEALING CASE IS PREVENTED ONE LEVEL UP, and this asserts that directly:
+    // a player holding at their own cost with every bot stopped produces NO bot bid at all,
+    // so the auto-drop check is never reached. The mutant that WOULD break it is one that
+    // let this run on a player bid — which is why the assertion is about the winning path
+    // rather than about the clause.
+    const s = base({ playerCost: 34, bots: [{ bidderId: 'rival1', cost: 47 }, { bidderId: 'rival2', cost: 63 }] })
+    let st = run(openAuction(s, 0), s)
+    for (let k = 0; k < 60 && st.status === 'waiting'; k++) {
+      const next = maxLegalBid(st.standing, SCHEDULE)
+      if (next < 34) break
+      st = bid(st, s, next)
+    }
+    expect(st.winnerId).toBe('player')
+    expect(st.playerOut).toBe(false)
+    expect(st.history.some(e => e.kind === 'autoDrop')).toBe(false)
+  })
+
   it('⚠⚠ NEVER fires on a player holding at their own cost with every bot stopped — '
     + 'that is the normal WINNING path', () => {
     // The case Elena singled out. The player holds the low bid AT their cost; no bot can

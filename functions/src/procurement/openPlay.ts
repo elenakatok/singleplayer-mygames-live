@@ -147,8 +147,12 @@ function resolvedRoundRecord(
     won,
     price: state.price,
     // Part 1 §7 step 5, unchanged by the mechanism: a LOSING supplier incurs no cost, so
-    // a loss is 0 and never negative. A winner's profit CAN be negative — bidding below
-    // your own cost is legal and never blocked (§8.3 case 4).
+    // a loss is 0 and never negative.
+    // ⚠⚠ AND A WINNER'S PROFIT CANNOT BE NEGATIVE EITHER, since 2026-08-04. This comment
+    // said the opposite until 2026-08-11 — "a winner's profit CAN be negative — bidding
+    // below your own cost is legal and never blocked (§8.3 case 4)". A bid below the
+    // player's own cost is now REFUSED (open §8.3 case 4), so `state.price - cost` is the
+    // winning bid minus a cost it is at or above: zero at worst, never negative.
     profit: won && state.price !== null ? state.price - cost : 0,
     played_at: playedAtNow(),
     rival_costs: [...botCosts],

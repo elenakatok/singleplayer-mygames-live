@@ -188,6 +188,11 @@ const PARAMS_KEYS = [
  *  moves and reports nothing about who is left. */
 const AUCTION_KEYS = [
   'round', 'status', 'standing', 'holderLabel', 'youHold', 'yourLastBid', 'youAreOut',
+  // ⚠ ADDED 2026-08-11. HOW the player left, not merely THAT they left, so the status line
+  // can say "the price is at or below your cost" instead of telling an auto-dropped player
+  // they "dropped out". ⚠ It leaks nothing this file guards: it is a fact about the
+  // player's OWN exit, never about a bot's cost or which bots have stopped.
+  'exitKind',
   'sequence', 'nextBotAtMs', 'step', 'minNextBid', 'canBid', 'history',
   'totalBidders', 'winnerLabel', 'youWon', 'price',
 ].sort()
@@ -741,6 +746,12 @@ async function main() {
   check(sameKeys(q0, [
     'ok', 'kcEnabled', 'kc', 'kcAnswered', 'gradedTotal',
     'prep', 'prepAnswered', 'debrief', 'debriefAnswered',
+    // ⚠ ADDED by the KC-convergence adoption (2026-08-10): the two STAGES, server-ordered,
+    // which the flow now renders from. The legacy `kc`/`prep`/`debrief` fields above stay.
+    // ⚠ This contract was not updated in that pass and this check had been failing since —
+    // found on 2026-08-11 when the harness was next run. The suite was green throughout,
+    // because the key set is pinned HERE and nowhere else.
+    'stages',
   ].sort()), 'getQuestions key set is exactly the contract')
   check(q0.kc.every(q => sameKeys(q, ['field', 'kind', 'prompt', 'options', 'placeholder'].sort())),
     'every question key set is exactly the contract')

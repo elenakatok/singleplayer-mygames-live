@@ -133,7 +133,12 @@ export const KC_POOL: readonly KcQuestion[] = [
     'This is a first-price auction, so the winner is paid exactly what they bid. The supplier '
     + 'who bid 41 wins and is paid 41. The other bids affect only who wins, never the price.'),
 
-  mc('S3', BOTH,
+  // ⚠ SEALED ONLY, since 2026-08-11 (Elena). This was BOTH, which meant an open instance
+  // asked it AND O3 — the same question in the open format's own language, same answer (0),
+  // same reasoning. O3 is the one that belongs there, so S3 gives up its open tag and keeps
+  // its place in a sealed instance. ⚠ S1 KEEPS `BOTH` deliberately: O2 asks what PRICE an
+  // open auction stops at, not which bid wins, so S1 is not duplicated there.
+  mc('S3', SEALED,
     'Suppose your cost is 35. You bid 58, and another supplier wins the contract. What is your profit?',
     [
       '0',

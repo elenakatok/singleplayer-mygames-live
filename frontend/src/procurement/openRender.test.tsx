@@ -58,6 +58,7 @@ const auction = (over: Partial<ProcurementAuction> = {}): ProcurementAuction => 
   youHold: false,
   yourLastBid: null,
   youAreOut: false,
+  exitKind: null,
   sequence: 10,
   nextBotAtMs: null,
   step: 2,
@@ -213,8 +214,39 @@ describe('§5.1 the bid box is live and PRE-FILLED with the minimum legal bid', 
     expect(html).not.toMatch(/data-testid="proc-open-dropout"[^>]*disabled/)
   })
 
+  it('⚠⚠ AN AUTO-DROPPED PLAYER IS NEVER TOLD THEY "DROPPED OUT"', () => {
+    // MUTANT: render the status line off `youAreOut` alone, ignoring `exitKind`. → fails.
+    // That was the shipped behaviour until 2026-08-11: the status line said "You have
+    // dropped out of this auction" while the history row directly below it said the price
+    // had passed them. One event, two descriptions, one of them a lie about what they did.
+    const html = render(auction({
+      youAreOut: true, exitKind: 'autoDrop', status: 'resolved', minNextBid: null, canBid: false,
+    }))
+    expect(textOf(html, 'proc-open-winning'))
+      .toBe('You are out of this auction — the price is at or below your cost')
+    expect(textOf(html, 'proc-open-winning')).not.toContain('dropped out')
+  })
+
+  it('⚠ and the SAME phrasing is used in the history row — one event, one sentence', () => {
+    // MUTANT: reword either site independently. → fails. Both read AUTO_DROP_REASON.
+    const html = render(auction({
+      youAreOut: true, exitKind: 'autoDrop', status: 'resolved', minNextBid: null, canBid: false,
+      history: [{ kind: 'autoDrop', label: 'You', amount: null, isYou: true }],
+    }))
+    expect(textOf(html, 'proc-open-history'))
+      .toContain('You — out: the price is at or below your cost')
+  })
+
+  it('a VOLUNTARY drop still reads as one — the two must not converge', () => {
+    // MUTANT: return the auto-drop sentence for every exit kind. → fails.
+    const html = render(auction({
+      youAreOut: true, exitKind: 'dropOut', status: 'resolved', minNextBid: null, canBid: false,
+    }))
+    expect(textOf(html, 'proc-open-winning')).toBe('You have dropped out of this auction')
+  })
+
   it('and they are refused once the player has dropped out', () => {
-    const html = render(auction({ youAreOut: true, status: 'resolved', minNextBid: null, canBid: false }))
+    const html = render(auction({ youAreOut: true, exitKind: 'dropOut', status: 'resolved', minNextBid: null, canBid: false }))
     expect(html).toMatch(/data-testid="proc-open-dropout"[^>]*disabled/)
     expect(textOf(html, 'proc-open-winning')).toBe('You have dropped out of this auction')
   })
@@ -294,7 +326,10 @@ describe('§5.1 the history, most recent first, with band markers', () => {
     const html2 = render(auction({
       history: [{ kind: 'autoDrop', label: 'You', amount: null, isYou: true }],
     }))
-    expect(textOf(html2, 'proc-open-history')).toContain('You — out: the price went below your cost')
+    // ⚠ WORDING CHANGED 2026-08-11 from "the price went below your cost". Auto-drop now
+    // also fires when a bot bids AT the player's cost, so "went below" is wrong in exactly
+    // the case that motivated the change. Same sentence as the status line, deliberately.
+    expect(textOf(html2, 'proc-open-history')).toContain('You — out: the price is at or below your cost')
     expect(textOf(html2, 'proc-open-history')).not.toContain('dropped out')
   })
 

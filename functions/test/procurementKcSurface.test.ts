@@ -71,7 +71,41 @@ describe('the shipped pool', () => {
     // A finding, reported rather than papered over: the pool is S1–S9 and O1–O10.
     expect(KC_POOL_IDS).toHaveLength(19)
     expect(SEALED_IDS).toHaveLength(9)
-    expect(OPEN_IDS).toHaveLength(13)
+    // ⚠ 12, NOT 13, since 2026-08-11 — S3 gave up its both-formats tag (Elena). O3 asks
+    // the same thing in the open format's own language, so S3 added nothing there.
+    // MUTANT: leave S3 tagged BOTH. → fails here and on the graded count below.
+    expect(OPEN_IDS).toHaveLength(12)
+  })
+
+  it('⚠⚠ AN OPEN INSTANCE SERVES 12 AND GRADES OUT OF 10; A SEALED ONE IS UNCHANGED', () => {
+    // MUTANT: leave S3 tagged BOTH. → the open figures read 13 / 11.
+    expect(poolForFormat('open_descending')).toHaveLength(12)
+    expect(procurementScoringSet(openCfg())).toHaveLength(10)
+    // Sealed is untouched by the change.
+    expect(poolForFormat('sealed_first_price')).toHaveLength(9)
+    expect(procurementScoringSet(cfg())).toHaveLength(7)
+    // S3 is still in the POOL and still asked in a sealed instance.
+    expect(KC_POOL_IDS).toContain('S3')
+    expect(poolForFormat('sealed_first_price').map(q => q.id)).toContain('S3')
+    expect(poolForFormat('open_descending').map(q => q.id)).not.toContain('S3')
+  })
+
+  it('⚠ a stored hide/order/override keyed to S3 is TOLERATED in an open instance', () => {
+    // ⚠ THE PRICING LESSON: a map keyed by id must tolerate an id the instance no longer
+    // serves. An instructor who hid S3 in a sealed instance, or reordered it, keeps that
+    // entry — it simply matches nothing in an open one, and reappears intact in a sealed
+    // one. MUTANT: throw or filter on an unserved id. → fails.
+    const c = openCfg({
+      kcHidden: { S3: true },
+      kcOrder: { S3: -1 },
+      kcOverrides: { S3: { prompt: 'edited in the sealed instance' } },
+    })
+    expect(() => procurementPreStage(c)).not.toThrow()
+    expect(procurementPreStage(c).map(r => r.field)).not.toContain('S3')
+    expect(procurementScoringSet(c)).toHaveLength(10)
+    // And the entry survives the round trip back into a sealed instance.
+    const sealed = cfg({ kcHidden: { S3: true } })
+    expect(procurementPreStage(sealed).map(r => r.field)).not.toContain('S3')
   })
 
   it('⚠⚠ THE TWO FORMAT SETS ARE **NOT** DISJOINT — S1, S3 and S5 are in BOTH', () => {
@@ -81,8 +115,10 @@ describe('the shipped pool', () => {
     // each. A flat map therefore gives those three SHARED state across the flip and gives
     // every exclusive question isolated state — which is right, because a shared question is
     // literally the same question. The isolation tests below use an EXCLUSIVE id.
+    // ⚠ S1 and S5 since 2026-08-11 — S3 was untagged (Elena). S1 stays because O2 asks
+    // what PRICE an open auction stops at, not which bid wins; S5 stays by decision.
     const shared = SEALED_IDS.filter(id => OPEN_IDS.includes(id))
-    expect(shared).toEqual(['S1', 'S3', 'S5'])
+    expect(shared).toEqual(['S1', 'S5'])
   })
 
   it('the free-text questions are pool entries with ordinary ids', () => {
@@ -180,16 +216,19 @@ describe('migrateKcHidden — kcVisible → kc_hidden', () => {
     // ⚠ The instructor's escape hatch is better than it was, and that IS the improvement:
     // the settings page now lists O1…O10 with their boxes unticked, so the empty check is
     // visible and fixable instead of being an unexplained absence.
-    const c = load({ format: 'open_descending', kcVisible: ['S1', 'S5'] })   // S3 omitted
-    expect(c.kcHidden.S3).toBe(true)
+    // ⚠ THE OMITTED ID IS S5, NOT S3 — S3 left the open pool on 2026-08-11 and so is no
+    // longer something an OPEN instance can hide or serve at all. S5 is the remaining
+    // both-formats id besides S1, so it is the one that still demonstrates the conversion.
+    const c = load({ format: 'open_descending', kcVisible: ['S1'] })   // S5 omitted
+    expect(c.kcHidden.S5).toBe(true)
     expect(c.kcHidden.O1).toBe(true)
     const served = resolveBuiltIns(c, 'kc').map(q => q.id)
-    expect(served).toEqual(['S1', 'S5'])
+    expect(served).toEqual(['S1'])
 
     // ⚠ FIDELITY, ASSERTED DIRECTLY: the migrated read serves exactly what the legacy
     // filter would have served, rather than merely looking similar.
     const legacy = poolForFormat('open_descending')
-      .filter(q => q.stage === 'kc' && ['S1', 'S5'].includes(q.id))
+      .filter(q => q.stage === 'kc' && ['S1'].includes(q.id))
       .map(q => q.id)
     expect(served).toEqual(legacy)
   })

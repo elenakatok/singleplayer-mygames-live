@@ -131,9 +131,11 @@ export interface StoredRound {
 
 /** One event of an open round, as stored. snake_case to match the rest of the record. */
 export interface OpenEventRecord {
-  /** ⚠ `autoDrop` = the price fell below the player's own cost and they were removed
-   *  (Elena, 2026-08-04). A distinct kind from `dropOut`, because a history that told a
-   *  student they quit when the auction left them behind would be a lie in the record. */
+  /** ⚠ `autoDrop` = the price reached or fell below the player's own cost and they were
+   *  removed (Elena, 2026-08-04; the boundary became inclusive 2026-08-11 — AT their cost
+   *  they already have no legal move). A distinct kind from `dropOut`, because a history
+   *  that told a student they quit when the auction left them behind would be a lie in
+   *  the record. */
   kind: 'bid' | 'dropOut' | 'autoDrop'
   bidder_id: string
   /** Absent on a drop-out. */

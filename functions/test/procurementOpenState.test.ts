@@ -76,6 +76,12 @@ const sameKeys = (obj: object, keys: string[]) =>
 
 const AUCTION_KEYS = [
   'round', 'status', 'standing', 'holderLabel', 'youHold', 'yourLastBid', 'youAreOut',
+  // ⚠ ADDED 2026-08-11. HOW the player left, not only THAT they left — the status line has
+  // to say "the price is at or below your cost" rather than "you dropped out", and until
+  // this field crossed the boundary it could not tell the difference. ⚠ It leaks nothing:
+  // it is a fact about the PLAYER's own exit, never about a bot's cost or a bot's state,
+  // which is what the rest of this file exists to guard.
+  'exitKind',
   'sequence', 'nextBotAtMs', 'step', 'minNextBid', 'canBid', 'history',
   'totalBidders', 'winnerLabel', 'youWon', 'price',
 ]
