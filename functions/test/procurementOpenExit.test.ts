@@ -495,30 +495,50 @@ describe('⚠⚠ AUTO-DROP — the price passes the player, and it must never st
     expect(done.playerExitPrice).not.toBe(44)   // ⚠ not the bid that triggered it
   })
 
-  it('⚠ a bot bid one ABOVE the cost does NOT auto-drop — the boundary is `<=`, not `<= +1`', () => {
-    // MUTANT: widen to `amount <= s.playerCost + 1`. → fails. Both bots floor at 40, so the
-    // lowest bid either will make is 40 — one above the player's cost of 39, and the player
-    // must still be IN.
+  it('⚠⚠ THE RESIDUAL WINDOW IS CLOSED — no legal move means OUT, even above the cost', () => {
+    // MUTANT: revert to the price comparison `amount <= s.playerCost`. → fails.
+    // ⚠ THIS CASE USED TO ASSERT THE OPPOSITE. Until the second revision on 2026-08-11 it
+    // pinned the player as still IN here, with a note that they had no legal move and had
+    // to press Drop Out — the same situation the first revision set out to remove, one rung
+    // higher. Elena closed it: the test is now the player's own legality rule.
+    //
+    // Cost 39; both bots floor at 40, so the cascade halts with a bot holding at 40 — ABOVE
+    // the player's cost, so neither earlier version of the guard fired. But the step at 40
+    // is 2, so the best bid available to the player is 38: below their cost and refused,
+    // while 39 does not clear the ceiling. No legal move ⇒ out.
     const s = base({
       playerCost: 39,
       bots: [{ bidderId: 'rival3', cost: 40 }, { bidderId: 'rival5', cost: 40 }],
     })
     const done = run(openAuction(s, 0), s)
+
+    expect(done.standing).toBe(40)                    // ⚠ ABOVE the cost — the whole point
+    expect(maxLegalBid(done.standing, SCHEDULE)).toBe(38)   // …but the ceiling is below it
+    expect(done.playerOut).toBe(true)
+    expect(done.playerExitKind).toBe('autoDrop')
+    expect(done.playerExitPrice).toBe(39)             // still the COST, not the standing
+  })
+
+  it('⚠⚠ AND IT DOES NOT FIRE WHILE ONE LEGAL MOVE REMAINS — bidding AT cost is a move', () => {
+    // MUTANT: relax the comparison to `maxLegalBid(...) <= s.playerCost`. → fails, and this
+    // is the mutant that matters most: at equality the player may still bid EXACTLY their
+    // own cost — legal, zero profit, and the endpoint the dominant strategy aims at (KC O4).
+    // Removing them there would take away the one move the game teaches them to consider.
+    //
+    // Cost 38 against the same halt at 40: maxLegalBid(40) = 38, so exactly one bid is
+    // legal, and it is their cost.
+    const s = base({
+      playerCost: 38,
+      bots: [{ bidderId: 'rival3', cost: 40 }, { bidderId: 'rival5', cost: 40 }],
+    })
+    const done = run(openAuction(s, 0), s)
+
     expect(done.standing).toBe(40)
+    expect(maxLegalBid(done.standing, SCHEDULE)).toBe(38)
     expect(done.playerOut).toBe(false)
     expect(done.playerExitKind).toBeNull()
-
-    // ⚠⚠ AND HERE IS THE RESIDUAL GAP, PINNED RATHER THAN FIXED. The player is still in the
-    // auction and has NO legal move: the standing is 40, the step at 40 is 2, so the best
-    // they may bid is 38 — below their cost of 39 and refused — while 39 itself does not
-    // clear the minimum. Item 1 closed the boundary AT the cost; it does not close the
-    // window `cost < standing < cost + step`, which is non-empty wherever the step exceeds
-    // 1 (the shipped ladder uses steps of 10, 5 and 2 above a price of 30). Elena's stated
-    // reason for the change — "at that point the player has no legal move" — applies here
-    // too. REPORTED, NOT CHANGED: widening further is her call, not a test's.
-    expect(maxLegalBid(done.standing, SCHEDULE)).toBe(38)
-    expect(playerBid(done, s, 39, done.sequence, 0).ok).toBe(false)
-    expect(playerBid(done, s, 38, done.sequence, 0).ok).toBe(false)
+    // ⚠ AND THE MOVE IS REALLY THERE — asserted, not inferred from `playerOut`.
+    expect(playerBid(done, s, 38, done.sequence, 0).ok).toBe(true)
   })
 
   it('⚠⚠ THE HOLDER CLAUSE IS AN INVARIANT, NOT A LIVE FILTER — dropping it changes nothing', () => {

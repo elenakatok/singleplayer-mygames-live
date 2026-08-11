@@ -390,16 +390,34 @@ function commitOneBotBid(state: OpenState, s: OpenSettings, nowMs: number): Open
     decisions: state.decisions + 1,
   }
 
-  // ⚠⚠ AUTO-DROP: the price is now AT OR BELOW the player's own cost, so there is no bid
-  // left they are allowed to make (§4.3, applied to the player). They are removed.
+  // ⚠⚠ AUTO-DROP: THE PLAYER HAS NO LEGAL MOVE LEFT, so they are removed.
   //
-  // ⚠⚠ THE BOUNDARY IS `<=`, AND THE `=` HALF IS THE WHOLE POINT (Elena, 2026-08-11).
-  // It used to be `<`, which left a player sitting in an auction they could no longer act
-  // in: every bid must undercut the standing by at least the step, so once a bot holds at
-  // EXACTLY the player's cost every bid the player could make is below their own cost and
-  // refused. They were priced out in fact, but stayed in the auction until they pressed
-  // Drop Out — and their exit was then recorded as a voluntary drop rather than as being
-  // priced out, which is a different thing and reports as one.
+  // ⚠⚠ THE TEST IS THE PLAYER'S OWN LEGALITY RULE, NOT A PRICE COMPARISON (Elena,
+  // 2026-08-11, second revision). `playerBid` accepts an amount iff BOTH
+  //
+  //     amount >= s.playerCost                          (the cost floor, §4.2)
+  //     amount <= maxLegalBid(standing, s.schedule)      (the undercut ceiling, §4.2)
+  //
+  // so a legal bid exists **iff `maxLegalBid(standing) >= playerCost`**, and the condition
+  // below is precisely its negation. That is why it is the right test rather than merely a
+  // wider one: it asks the question the rule actually poses.
+  //
+  // ⚠ IT SUBSUMES BOTH EARLIER VERSIONS, which were price comparisons and each too narrow:
+  //   `amount <  playerCost`  — left a player in when a bot bid AT their cost, where every
+  //                             undercut is below cost and refused.
+  //   `amount <= playerCost`  — closed that, and still left them in for the whole window
+  //                             `playerCost < standing < playerCost + step`, where the best
+  //                             bid available is `standing − step`, below cost, refused.
+  // The second window was NOT hypothetical: the shipped ladder steps by 10, 5 and 2 above a
+  // price of 30, so a player whose cost is 39 facing a standing of 40 could bid neither 39
+  // (does not clear the ceiling) nor 38 (below the floor). Both versions left somebody
+  // priced out in fact but still in the auction until they pressed Drop Out — and the record
+  // then called it a VOLUNTARY drop, which is a different event and reports as one.
+  //
+  // ⚠ THE COMPARISON IS STRICT. `maxLegalBid(standing) == playerCost` means the player may
+  // still bid EXACTLY their cost — legal, zero profit, and the endpoint the dominant
+  // strategy aims at (KC O4). Firing there would remove a player who still had the one move
+  // the game teaches them to consider.
   //
   // ⚠ THE OLD COMMENT HERE JUSTIFIED `<` BY THE ROUND-STEALING CASE — "a player holding at
   // exactly their own cost with every bot stopped is the normal winning path, and firing
@@ -416,7 +434,8 @@ function commitOneBotBid(state: OpenState, s: OpenSettings, nowMs: number): Open
   // `commitOneBotBid` never runs and this check is never reached. The `holder` clause is
   // kept as a belt-and-braces assertion of an invariant, not as a live filter — dropping
   // it should change nothing, and a test asserts exactly that.
-  if (!next.playerOut && next.holder !== s.playerId && amount <= s.playerCost) {
+  if (!next.playerOut && next.holder !== s.playerId
+    && maxLegalBid(next.standing, s.schedule) < s.playerCost) {
     const removed: OpenState = {
       ...next,
       playerOut: true,
