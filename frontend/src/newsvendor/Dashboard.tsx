@@ -291,7 +291,20 @@ export function InstanceHeader({ params, benchmark, configError }: {
         {params.periods} periods · price {formatMoney(params.P)} · cost {formatMoney(params.c)}
         {params.v !== 0 && <> · salvage {formatMoney(params.v)}</>}
         {params.h !== 0 && <> · holding {formatMoney(params.h)}</>}
-        {params.g !== 0 && <> · shortage {formatMoney(params.g)}</>}
+        {/* ⚠⚠ SHORTAGE IS A SINGLE-SOURCE LINE, AND DUAL DROPS IT ENTIRELY — not to $0.
+            Under dual sourcing demand beyond the reserved quantity is BOUGHT from the
+            second supplier, so a shortage never occurs and `g` never enters anything:
+            not profit, not the critical ratio (CU is the PREMIUM `cL − c`, not the retail
+            margin), not Q*. Showing "$0" would claim a shortage costs nothing; the point
+            is that there is not one.
+            ⚠ THE MODE DECIDES WHICH LINES EXIST, NOT JUST THEIR VALUES — the convention
+            ParamsPanel states for the student's screen and Settings states in prose
+            ("hidden here because dual sourcing never incurs one; it is left stored,
+            untouched, for if you switch back"). This banner was the one instructor
+            surface that had missed it.
+            ⚠ DISPLAY ONLY. `g` is untouched in the config and returns with its stored
+            value the moment the instance is switched back to single source. */}
+        {!params.dual && params.g !== 0 && <> · shortage {formatMoney(params.g)}</>}
         {/* ⚠ DUAL ONLY, and it is the FULL second-supplier price the instructor typed
             into Settings — not the derived premium. `params.cL` is zeroed by
             clientState.ts on a regular instance, so this cannot render there even if
