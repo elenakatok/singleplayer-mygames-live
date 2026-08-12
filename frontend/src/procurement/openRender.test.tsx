@@ -1,5 +1,3 @@
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- classic JSX transform
-import React from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 
@@ -369,6 +367,11 @@ describe('the round end is deliberately spare — §5.2 is CP4b', () => {
   const outcome = {
     round: 3, yourCost: 34, yourLastBid: 38, won: false,
     price: 36, profit: 0, profitTotal: 12, droppedOut: false,
+    // ⚠ null is the CORRECT value here, not a placeholder: this player neither pressed
+    // Drop Out nor was auto-dropped (`droppedOut: false`), and the winning overrides
+    // below inherit it — which api.ts documents as right for a winner ("Null when they
+    // won"). The three cases are 'dropOut' | 'autoDrop' | null; see openAuction.ts.
+    exitKind: null,
     exitPrice: 36, exitCensored: false, perfectProfit: 2, perfectWon: true,
   }
   const html = renderToStaticMarkup(

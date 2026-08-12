@@ -1,4 +1,3 @@
-import React from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 
@@ -27,7 +26,7 @@ const BASE: NewsvendorParams = {
   P: 3000, c: 1000, v: 800, g: 150, h: 300,
   dual: false, cL: 0,
   isNormal: true, mean: 1000, sd: 300, minD: 0, maxD: 0,
-  periods: 20, orderMin: 0, orderMax: 10_000, showCalculator: true,
+  periods: 20, orderMin: 0, orderMax: 10_000, showCalculator: true, showServiceLevel: true,
 }
 
 /** ⚠ DUAL zeroes nothing — `g` keeps its stored value and `cL` becomes real. That is the

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  procurementResumeIndex, procurementScreenCount, procurementStartIteration,
+  procurementResumeIndex, procurementScreenCount,
   type ProcurementResumeInput,
 } from './resume'
 

@@ -1,5 +1,3 @@
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- classic JSX transform
-import React from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 
@@ -40,7 +38,13 @@ const PARAMS: ProcurementParams = {
 
 const row = (over: Partial<ProcurementPlayedRow> = {}): ProcurementPlayedRow => ({
   round: 1, yourCost: 30, yourBid: 50, won: true, price: 50, profit: 20,
-  profitTotal: 20, yourEquilibriumBid: 46, ...over,
+  profitTotal: 20, yourEquilibriumBid: 46,
+  // ⚠ SEALED ROUNDS CARRY THESE AS null/false, NOT AS ABSENT. api.ts calls the pair
+  // "OPEN FORMAT ONLY … Null on every sealed round", and the server emits them
+  // unconditionally (`exit_price ?? null`, `exit_censored === true` in rounds.ts), so a
+  // fixture that omitted them was describing a payload the server never sends.
+  exitPrice: null, exitCensored: false,
+  ...over,
 })
 
 /** The VISIBLE text of a testid'd element (tags stripped, whitespace collapsed). */

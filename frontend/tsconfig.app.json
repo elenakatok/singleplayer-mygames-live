@@ -21,6 +21,17 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+  // ⚠⚠ NO `exclude` HERE, DELIBERATELY. This used to carry
+  //   "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+  // which meant `npm run build` and `npm run check` both passed while a test file called
+  // a signature that no longer existed — only `npm test` caught it, and only if someone
+  // ran it. That is what bit the pd pass on 08-10.
+  //
+  // ⚠ A test fixture that constructs a production type IS a type-check of that type, and
+  // it is usually the first thing to rot when the type gains a field. Excluding tests
+  // removes exactly the coverage most likely to catch drift. Do not re-add this.
+  //
+  // The 17 test files all import from 'vitest' explicitly, so no ambient `types` entry is
+  // needed to bring them into this project — `include: ["src"]` is sufficient on its own.
+  "include": ["src"]
 }

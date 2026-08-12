@@ -1,3 +1,17 @@
+// ⚠⚠ `npx tsc --noEmit` IN THIS DIRECTORY CHECKS **NOTHING** AND EXITS 0.
+//
+// This file is `files: []` plus project references — the standard Vite layout. That is
+// what a solution-style root config IS, and it means the bare `tsc` command has no files
+// to compile: it resolves this config, finds an empty file list, reports no errors and
+// succeeds. Every "TS OK" ever taken from `tsc --noEmit` here was vacuous.
+//
+// ⚠ THE GATE IS `npm run check` (= `tsc -b --force`). Only `-b` follows the references
+// below and actually compiles the two real projects. Do not "simplify" a check script
+// back to `tsc --noEmit`.
+//
+// `--force` rather than plain `-b` because `-b` is incremental against the
+// tsbuildinfo files: it is correct when timestamps are trustworthy, and a gate is
+// exactly where you do not want to depend on that.
 {
   "files": [],
   "references": [
