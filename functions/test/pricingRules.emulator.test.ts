@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, it } from 'vitest'
 import {
-  initializeTestEnvironment, assertFails, assertSucceeds,
+  initializeTestEnvironment, assertFails,
   type RulesTestEnvironment,
 } from '@firebase/rules-unit-testing'
 
@@ -22,8 +22,8 @@ import {
 //   • no client reads of participants, by anyone, ever
 //   • no client writes (callables only)
 //   • truth/ denied to ALL clients including an authenticated instructor
-//   • config/main student-readable (market parameters + the PMG flag, all of which
-//     the price-entry screen prints anyway), never client-writable
+//   • config/main denied to clients entirely (closed 2026-08-12 — the price-entry
+//     screen prints the parameters, but gets them from a callable, never from this doc)
 // Runs via `npm run test:rules`.
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -97,9 +97,13 @@ describe('truth/ denied to ALL clients — including an authenticated instructor
   })
 })
 
-describe('instance + config are student-readable; not client-writable', () => {
-  it('a student CAN read config/main (the market parameters)', async () => {
-    await assertSucceeds(student(STU_A, IID).doc(`pricing_game_instances/${IID}/config/main`).get())
+describe('config is denied to clients entirely', () => {
+  // ⚠ THIS USED TO ASSERT THE OPPOSITE — "a student CAN read config/main (the market
+  // parameters)". The parameters ARE shown to the student, but by a callable, never off
+  // this document; nothing under frontend/ imports `db`. Meanwhile an instructor-added
+  // KC question put `correct_value` here (audit 2026-08-12). Closed 2026-08-12.
+  it('a student may NOT read config/main — the market parameters come from a callable', async () => {
+    await assertFails(student(STU_A, IID).doc(`pricing_game_instances/${IID}/config/main`).get())
   })
   it('a student may NOT write config/main', async () => {
     await assertFails(student(STU_A, IID).doc(`pricing_game_instances/${IID}/config/main`).set({ pmg: true }))

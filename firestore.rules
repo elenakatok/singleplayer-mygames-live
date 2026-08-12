@@ -88,12 +88,21 @@ service cloud.firestore {
       allow read: if request.auth != null;
       allow write: if false;
 
-      // Per-instance instructor config (config/main). STUDENT-READABLE, and safe to
-      // be: it holds only the payoff matrix, which the student is shown anyway. The
-      // drawn round count is NOT here — it lives in truth/ below (PD spec §3: the
-      // actual round count is never displayed).
+      // Per-instance instructor config (config/main). ⚠ DENIED TO ALL CLIENTS.
+      // It holds the payoff matrix and the KC question list; an instructor-added KC
+      // question carries `correct_value` and `explanation`, so a readable config/main is
+      // a readable answer key (audit 2026-08-12). The drawn round count is NOT here — it
+      // lives in truth/ below (PD spec §3: the actual round count is never displayed).
+      //
+      // ⚠⚠ THIS SAID "STUDENT-READABLE, AND SAFE TO BE" AND THAT CLAIM WAS FALSE.
+      // Nothing under frontend/ imports `db` — every read, STUDENT AND INSTRUCTOR alike,
+      // goes through a callable (see the "NOTE WHAT IS *NOT* IMPORTED: `db`" banners in
+      // scorecard/api.ts, procurement/api.ts and forecast/api.ts). The grant was
+      // vestigial, and the comment asserting a need that did not exist is exactly how it
+      // survived. Do not restore it: if a screen ever genuinely needs a config field,
+      // serve THAT FIELD from a callable rather than reopening the whole document.
       match /config/{doc} {
-        allow read: if request.auth != null;
+        allow read: if false;
         allow write: if false;
       }
 
@@ -128,13 +137,21 @@ service cloud.firestore {
       allow read: if request.auth != null;
       allow write: if false;
 
-      // Per-instance instructor config (config/main). STUDENT-READABLE, and safe to
-      // be: it holds the market parameters (market size, base shares, unit costs,
-      // share slope, price bounds) and the PMG flag — every one of which is printed
-      // on the price-entry screen anyway. The drawn round count is NOT here; it
-      // lives in truth/ below (Pricing spec §3: never displayed).
+      // Per-instance instructor config (config/main). ⚠ DENIED TO ALL CLIENTS.
+      // It holds the market parameters (market size, base shares, unit costs, share
+      // slope, price bounds), the PMG flag and the KC question list; an instructor-added
+      // KC question carries `correct_value` and `explanation`, so a readable config/main
+      // is a readable answer key (audit 2026-08-12). The drawn round count is NOT here;
+      // it lives in truth/ below (Pricing spec §3: never displayed).
+      //
+      // ⚠⚠ THIS SAID THE PARAMETERS ARE "PRINTED ON THE PRICE-ENTRY SCREEN ANYWAY", AS
+      // THOUGH THAT MADE THE GRANT NECESSARY. It does not: the screen gets them from a
+      // callable, not from this document. Nothing under frontend/ imports `db` — every
+      // read, student AND instructor, goes through a callable. Being shown a number is
+      // not a reason to expose the document it happens to live in. Do not restore the
+      // grant: serve the field from a callable instead.
       match /config/{doc} {
-        allow read: if request.auth != null;
+        allow read: if false;
         allow write: if false;
       }
 
@@ -170,13 +187,21 @@ service cloud.firestore {
       allow read: if request.auth != null;
       allow write: if false;
 
-      // Per-instance instructor config (config/main). STUDENT-READABLE, and safe to
-      // be: it holds the prices and costs (P, c, v, g, h), the demand distribution
-      // and its parameters, and the period count — every one of which is printed on
-      // the place-order screen anyway (spec §7a). Unlike pricing, the period count
-      // is NOT a secret in this game.
+      // Per-instance instructor config (config/main). ⚠ DENIED TO ALL CLIENTS.
+      // It holds the prices and costs (P, c, v, g, h), the demand distribution and its
+      // parameters, the period count (not a secret in this game, unlike pricing) and the
+      // KC question list; an instructor-added KC question carries `correct_value` and
+      // `explanation`, so a readable config/main is a readable answer key
+      // (audit 2026-08-12).
+      //
+      // ⚠⚠ THIS SAID THE FIGURES ARE "PRINTED ON THE PLACE-ORDER SCREEN ANYWAY" AND
+      // TREATED THAT AS LICENCE. It is not: the screen gets them from a callable, never
+      // from this document. Nothing under frontend/ imports `db` — every read, student
+      // AND instructor, goes through a callable. A document is not safe to expose merely
+      // because some of its fields are shown; it is safe to expose when EVERY field is,
+      // and the KC list is not. Do not restore the grant.
       match /config/{doc} {
-        allow read: if request.auth != null;
+        allow read: if false;
         allow write: if false;
       }
 
@@ -216,10 +241,19 @@ service cloud.firestore {
       allow read: if request.auth != null;
       allow write: if false;
 
-      // Per-instance instructor config (config/main). STUDENT-READABLE, and every
-      // field in it is safe to be: the history length, the played-month count (the
-      // header says "month k of N" — spec §4), the forecast box bounds, the product
-      // and unit labels, and the KC/debrief switches.
+      // Per-instance instructor config (config/main). ⚠ DENIED TO ALL CLIENTS.
+      // It holds the history length, the played-month count (the header says "month k
+      // of N" — spec §4), the forecast box bounds, the product and unit labels, the
+      // KC/debrief switches AND the KC question list.
+      //
+      // ⚠⚠ THIS SAID "STUDENT-READABLE, AND EVERY FIELD IN IT IS SAFE TO BE". THE WORD
+      // *EVERY* WAS THE BUG. An instructor-added KC question carries `correct_value` and
+      // `explanation` and lives in this document, so the claim was false the moment
+      // added questions shipped (audit 2026-08-12) — and the comment kept the grant
+      // alive by asserting a safety nobody rechecked. Nothing under frontend/ imports
+      // `db`; every read, student AND instructor, goes through a callable. Do not
+      // restore the grant, and do not re-audit this document field by field — serve
+      // whatever a screen needs from a callable instead.
       //
       // ⚠ THE DEMAND MODEL IS **NOT** HERE, and that is the inversion that separates
       // this game from newsvendor (functions forecast/config.ts). Newsvendor keeps its
@@ -229,7 +263,7 @@ service cloud.firestore {
       // read them off config/main with the plain SDK would be able to forecast the
       // conditional mean exactly, and the game would be over.
       match /config/{doc} {
-        allow read: if request.auth != null;
+        allow read: if false;
         allow write: if false;
       }
 
@@ -275,10 +309,16 @@ service cloud.firestore {
       allow read: if request.auth != null;
       allow write: if false;
 
-      // Per-instance instructor config (config/main). STUDENT-READABLE, and every field
-      // in it is safe to be: the format, the round count, the reserve, both cost ranges,
-      // the bid increment and the open-format pacing. All of it is printed on the
-      // bidding screen anyway.
+      // Per-instance instructor config (config/main). ⚠ DENIED TO ALL CLIENTS.
+      // It holds the format, the round count, the reserve, both cost ranges, the bid
+      // increment, the open-format pacing AND the KC question list.
+      //
+      // ⚠⚠ THIS SAID "STUDENT-READABLE, AND EVERY FIELD IN IT IS SAFE TO BE … ALL OF IT
+      // IS PRINTED ON THE BIDDING SCREEN ANYWAY". *EVERY* AND *ALL* WERE BOTH WRONG. An
+      // instructor-added KC question carries `correct_value` and `explanation` and lives
+      // here (audit 2026-08-12), and it is not printed anywhere. Nothing under frontend/
+      // imports `db`; every read, student AND instructor, goes through a callable — so
+      // the screen never needed this grant to show what it shows. Do not restore it.
       //
       // ⚠ THE RIVAL COST RANGE IS HERE ON PURPOSE, and it is the one field that looks
       // like it should be secret and is not. The equilibrium markup the debrief
@@ -287,7 +327,7 @@ service cloud.firestore {
       // game is NOT forecast: nothing about how a rival's cost is DRAWN is the answer to
       // anything. What must stay hidden is the seed, below.
       match /config/{doc} {
-        allow read: if request.auth != null;
+        allow read: if false;
         allow write: if false;
       }
 
@@ -326,11 +366,19 @@ service cloud.firestore {
       allow read: if request.auth != null;
       allow write: if false;
 
-      // Per-instance instructor config (config/main). STUDENT-READABLE, and every
-      // field in it is safe to be — spec §8 says the student is TOLD all of it:
-      // the contract and period counts, the target score, the bonus, both effort
-      // costs, P(acceptable | LOW effort), the endowment, the display switches and
-      // the nouns.
+      // Per-instance instructor config (config/main). ⚠ DENIED TO ALL CLIENTS.
+      // It holds the contract and period counts, the target score, the bonus, both
+      // effort costs, P(acceptable | LOW effort), the endowment, the display switches,
+      // the nouns AND the KC question list.
+      //
+      // ⚠⚠ THIS SAID "EVERY FIELD IN IT IS SAFE TO BE — SPEC §8 SAYS THE STUDENT IS TOLD
+      // ALL OF IT". Spec §8 is about the GAME PARAMETERS and remains true of them; it
+      // never spoke to the KC list, which arrived later and carries `correct_value` and
+      // `explanation` on any instructor-added question (audit 2026-08-12). A safety
+      // claim scoped to one set of fields silently became a claim about the whole
+      // document. Nothing under frontend/ imports `db`; every read, student AND
+      // instructor, goes through a callable, so nothing needed this grant. Do not
+      // restore it.
       //
       // ⚠⚠ THE SPLIT HERE IS ABOUT THE EXPERIMENTAL DESIGN, NOT THE ECONOMICS — a
       // different seam from every other game in the family. Almost every number in
@@ -345,7 +393,7 @@ service cloud.firestore {
       // the treatment. It is also the mechanism, which makes it exactly the number a
       // student is entitled to reason about.
       match /config/{doc} {
-        allow read: if request.auth != null;
+        allow read: if false;
         allow write: if false;
       }
 

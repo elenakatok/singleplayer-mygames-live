@@ -98,17 +98,36 @@ describe('procurement_ rules — the instance and its config', () => {
         .collection('procurement_game_instances').doc(IID).get())
   })
 
-  it('config/main IS student-readable — the auction parameters are taught, not hidden', async () => {
-    const snap = await assertSucceeds(
+  // ⚠ THIS USED TO ASSERT THE OPPOSITE — "config/main IS student-readable — the auction
+  // parameters are taught, not hidden". Being TAUGHT and being READABLE OFF THIS DOCUMENT
+  // are different things, and only the first was ever true: the bidding screen gets its
+  // parameters from a callable, and nothing under frontend/ imports `db`. Meanwhile an
+  // instructor-added KC question put `correct_value` here (audit 2026-08-12). Closed
+  // 2026-08-12.
+  it('a student may NOT read config/main — the auction parameters come from a callable', async () => {
+    await assertFails(
       student(STU_A, IID)
         .collection('procurement_game_instances').doc(IID)
         .collection('config').doc('main').get())
-    // ⚠ THE ASSERTION THAT CATCHES A FUTURE MISTAKE. If someone ever moves the seed into
-    // config "for convenience", this passes and the next one fails — but this line is
-    // what documents that config is deliberately open, so the failure reads as a moved
-    // secret rather than as a broken rule.
-    expect(snap.data()?.rivalCostDist?.max).toBe(110)
-    expect(snap.data()?.seed).toBeUndefined()
+  })
+
+  it('⚠ and config/main still carries the rival range but NOT the seed', async () => {
+    // ⚠⚠ THE CONTENT CHECK OUTLIVES THE RULE CHANGE, AND ITS READ MOVED. It used to ride
+    // on the student read above; that read now correctly fails, so this goes through
+    // `withSecurityRulesDisabled`. Keep it: "the seed must not live in config" is worth
+    // asserting whoever can read the document, and if the rule ever regresses this is
+    // what makes the failure read as a moved secret rather than only as an open rule.
+    // ⚠ `withSecurityRulesDisabled` resolves to void — it does NOT pass the callback's
+    // return value out. Capture through an outer binding, not a `return`.
+    let data: Record<string, any> = {}
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const snap = await ctx.firestore()
+        .collection('procurement_game_instances').doc(IID)
+        .collection('config').doc('main').get()
+      data = (snap.data() ?? {}) as Record<string, any>
+    })
+    expect(data?.rivalCostDist?.max).toBe(110)
+    expect(data?.seed).toBeUndefined()
   })
 
   it('no client may WRITE config, not even an authenticated one', async () => {

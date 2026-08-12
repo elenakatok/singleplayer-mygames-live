@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, beforeAll, describe, it, expect } from 'vitest'
 import {
-  initializeTestEnvironment, assertFails, assertSucceeds,
+  initializeTestEnvironment, assertFails,
   type RulesTestEnvironment,
 } from '@firebase/rules-unit-testing'
 
@@ -23,8 +23,12 @@ import {
 // Both live in truth/main, denied to every client including an authenticated
 // instructor. The test below therefore does something the sibling rules tests do not:
 // it writes a REALISTIC truth doc carrying the actual model, and asserts the denial —
-// so if a future edit ever moves a parameter into config, the assertion that config is
-// student-readable becomes the thing that catches it.
+// and it ALSO asserts, separately, that config/main carries no model parameter, so a
+// future edit that moves one into config is caught by content and not only by rule.
+//
+// ⚠ config/main is now DENIED to clients too (closed 2026-08-12): the read grant was
+// vestigial, and the doc carries KC answer keys. That content assertion therefore reads
+// through `withSecurityRulesDisabled` — the invariant outlived the rule it rode on.
 //
 // Runs via `npm run test:rules`.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -135,22 +139,36 @@ describe('participant docs are NOT client-readable — not even by their owner',
   })
 })
 
-describe('instance + config are student-readable; not client-writable', () => {
+describe('config is denied to clients entirely', () => {
   const config = `forecast_game_instances/${IID}/config/main`
 
-  it('a student CAN read config/main', async () => {
-    await assertSucceeds(student(STU_A, IID).doc(config).get())
+  // ⚠ THIS USED TO ASSERT THE OPPOSITE — "a student CAN read config/main". The grant was
+  // vestigial (nothing under frontend/ imports `db`; every read goes through a callable)
+  // while an instructor-added KC question put `correct_value` in the document
+  // (audit 2026-08-12). Closed 2026-08-12.
+  it('a student may NOT read config/main', async () => {
+    await assertFails(student(STU_A, IID).doc(config).get())
   })
   it('a student may NOT write config/main', async () => {
     await assertFails(student(STU_A, IID).doc(config).set({ rounds: 1 }))
   })
 
-  it('⚠ and what they read there carries NO model parameter', async () => {
-    // The rule above says config is readable; this says that is SAFE. If a future edit
-    // moves a model parameter into config/main, this fails — which is the whole point
-    // of asserting on the readable doc's contents rather than only on the denied one.
-    const snap = await student(STU_A, IID).doc(config).get()
-    const data = snap.data() ?? {}
+  it('⚠ and config/main carries NO model parameter even so', async () => {
+    // ⚠⚠ THIS ASSERTION SURVIVED THE RULE CHANGE ON PURPOSE, AND ITS READ MOVED.
+    // It used to read as a student, which is how it also demonstrated the doc was open;
+    // that read now correctly fails, so the content check reads through
+    // `withSecurityRulesDisabled` instead. The invariant is INDEPENDENT of who may read:
+    // "the model must not live in config" would still matter if config were public
+    // tomorrow, and defence in depth is the point — the rule is one layer, this is the
+    // other. Deleting it because the doc is now denied would trade a real check for the
+    // assumption that the rule never regresses.
+    // ⚠ `withSecurityRulesDisabled` resolves to void — it does NOT pass the callback's
+    // return value out. Capture through an outer binding, not a `return`.
+    let data: Record<string, unknown> = {}
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const snap = await ctx.firestore().doc(config).get()
+      data = (snap.data() ?? {}) as Record<string, unknown>
+    })
     for (const banned of [
       'intercept', 'trend', 'high_season_lift', 'high_season_months', 'sigma',
       'seasonality', 'season_structure', 'month_offsets', 'demand_draw', 'seed',
