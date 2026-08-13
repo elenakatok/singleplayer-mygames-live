@@ -263,8 +263,12 @@ describe('sparse states', () => {
     expect(html.match(/proc-revequiv-realised/g) ?? []).toHaveLength(1)
     expect(html.match(/proc-revequiv-gap/g) ?? []).toHaveLength(1)
     expect(html).not.toContain('proc-revequiv-nowins')
-    // ⚠ "one auction", not "1 auctions" — this is a chart shown in a lecture.
-    expect(html).toContain('one auction')
+    // ⚠ THIS ASSERTION USED TO READ `toContain('one auction')`, checking the caption's
+    // singular wording. The 2026-08-12 caption rewrite made that VACUOUS: the new static
+    // body contains the phrase "one auction priced two ways", so it matched for every
+    // fixture regardless of win count — a green that distinguished nothing. It asserts
+    // the COUNT now, which is the thing that actually varies with the data.
+    expect(html).toMatch(/1 won by a student/)
   })
 
   it('the legend names both series and marks the computed one as computed', () => {
@@ -276,6 +280,26 @@ describe('sparse states', () => {
     // The diagonal is a guide, never labelled as revenue equivalence.
     expect(html).toContain('Equal prices')
     expect(html).not.toMatch(/revenue equivalence/i)
+  })
+
+  it('⚠ the caption explains the scatter by the ORDER STATISTICS, not by the cost ranges', () => {
+    const html = renderToStaticMarkup(<RevenueEquivalenceSVG report={FIXTURE()} />)
+
+    // ⚠⚠ THE POINT OF THIS TEST IS THE SECOND HALF. The caption first said the greens
+    // sit off the diagonal because students draw from a narrower range than the
+    // suppliers. That is not the reason: revenue equivalence holds IN EXPECTATION, so
+    // fixing x (the second-lowest cost) still leaves the sealed price riding on the
+    // LOWEST cost, a different draw — points must straddle the line even with identical
+    // ranges. The wrong explanation reads as a caveat about this instance and would send
+    // a reader looking for a defect in a chart that is working.
+    expect(html).toContain('agree on average, not auction by auction')
+    expect(html).toContain('the open price is set by the second-lowest cost while the sealed price is set by the lowest')
+    // And the caveat about the blue series being conditional on winning.
+    expect(html).toContain('not a straight read of how much they underbid')
+
+    // ⚠ THE REVERT GUARD. If the narrower-range sentence ever comes back, this fails.
+    expect(html).not.toMatch(/narrower range/i)
+    expect(html).not.toMatch(/not expected to coincide/i)
   })
 
   it('counts every auction and the wins among them', () => {

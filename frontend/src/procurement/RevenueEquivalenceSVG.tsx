@@ -274,15 +274,22 @@ export function RevenueEquivalenceSVG({ report }: { report: ProcurementReport })
           </strong></>
         )}
         {'. '}
-        Each green point is one auction priced two ways from the same costs. The dashed
-        line is where the two ways agree; it is a reference for reading the chart, not a
-        prediction this instance makes — the students draw costs from a narrower range
-        than the simulated suppliers, so the two prices are not expected to coincide here.
-        {wins.length > 0 && (
-          <> The blue points are the {wins.length === 1 ? 'one auction' : `${wins.length} auctions`}
-            {' '}a student actually won, at the same open price, so the grey connector is how
-            far their bid sat from the computed sealed price.</>
-        )}
+        {/* ⚠⚠ THE OFF-DIAGONAL SCATTER IS THE RESULT WORKING, NOT A CAVEAT ABOUT THIS
+            INSTANCE (Elena, 2026-08-12). This caption previously blamed the pattern on
+            students drawing costs from a narrower range than the suppliers. That was
+            WRONG as an explanation: revenue equivalence holds IN EXPECTATION, never
+            auction by auction. Conditional on the second-lowest cost — which fixes x —
+            the sealed price still depends on the LOWEST cost, a different draw entirely,
+            so points must land either side of the line. Greens above the line at low x
+            and below it at high x, crossing near the middle, is exactly that. The
+            asymmetric ranges shift the cloud slightly; they do not produce the shape.
+            Do not restore the narrower-range sentence. */}
+        Each green point is one auction priced two ways from the same costs. The two ways
+        agree on average, not auction by auction — the open price is set by the
+        second-lowest cost while the sealed price is set by the lowest, so individual
+        points sit either side of the dashed line. Blue points are the auctions a student
+        won; note these are the auctions they bid low enough to win, so the gaps are not a
+        straight read of how much they underbid.
       </p>
     </div>
   )
