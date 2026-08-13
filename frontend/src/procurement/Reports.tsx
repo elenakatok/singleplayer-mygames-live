@@ -9,6 +9,7 @@ import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import { ClassScatterSVG, classScatterPoints, classRivalPoints } from './ClassScatterSVG'
 import { OpenClassScatterSVG, openClassExitPoints, openClassBotExits } from './OpenClassScatterSVG'
+import { RevenueEquivalenceSVG, revenueEquivalencePoints } from './RevenueEquivalenceSVG'
 import { rowsByLastName } from './sortName'
 import {
   procurementGetReport, procurementInstructorSession, instructorErrorMessage,
@@ -338,6 +339,11 @@ export default function Reports() {
   const isOpen = data?.format === 'open_descending'
   const studentBids = data ? (isOpen ? openClassExitPoints(data).length : classScatterPoints(data).length) : 0
   const rivalBids = data ? (isOpen ? openClassBotExits(data).length : classRivalPoints(data).length) : 0
+  // ⚠ COMPUTED ONCE, for the tile count AND the modal — a second call inside the tile
+  // would walk every round again on every render, and the two could disagree about how
+  // many auctions there are while sitting on the same screen.
+  const revEquivPoints = data && !isOpen ? revenueEquivalencePoints(data) : []
+  const revEquivWins = revEquivPoints.filter(p => p.actualBid !== null).length
   const openStudent = active?.startsWith('student:') ? active.slice('student:'.length) : null
   const openRow = openStudent ? rows.find(r => r.participantId === openStudent) ?? null : null
 
@@ -365,6 +371,25 @@ export default function Reports() {
       onOpen: () => setActive('chart'),
       disabled: studentBids === 0,
     },
+    // ⚠ SEALED ONLY, AND ABSENT RATHER THAN DISABLED IN AN OPEN INSTANCE. What a
+    // descending auction would have fetched under sealed rules depends on the strategies
+    // bidders would have switched to, not on their costs alone — so there is no honest
+    // counterfactual to grey out. Same reasoning as the chart tile's format split above,
+    // one step further: that one changes which component renders, this one whether the
+    // question is askable at all.
+    ...(isOpen ? [] : [{
+      id: 'revequiv',
+      title: 'Open price against sealed price',
+      preview: (
+        <Stat
+          value={String(revEquivPoints.length)}
+          label={`auctions · ${revEquivWins} won by a student`}
+          testId="proc-tile-revequiv"
+        />
+      ),
+      onOpen: () => setActive('revequiv'),
+      disabled: revEquivPoints.length === 0,
+    }]),
     ...textQuestions.map(q => ({
       id: `text:${q.field}`,
       title: `${q.stage === 'prep' ? 'Before play' : 'After the results'} — ${q.field}`,
@@ -444,6 +469,15 @@ export default function Reports() {
               {' '}Show the simulated suppliers (they stop exactly at cost, so they sit on the line)
             </label>
           )}
+        </Modal>
+      )}
+
+      {active === 'revequiv' && data && !isOpen && (
+        <Modal
+          title="What each auction would have fetched — open against sealed"
+          onClose={() => setActive(null)}
+        >
+          <RevenueEquivalenceSVG report={data} />
         </Modal>
       )}
 
