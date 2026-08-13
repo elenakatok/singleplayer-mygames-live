@@ -16,6 +16,21 @@
     "jsx": "react-jsx",
 
     /* Linting */
+    // ⚠⚠ EXPLICIT ON PURPOSE, AND IT CHANGES NOTHING TODAY. TypeScript 6 already defaults
+    // `strict` to true, so this codebase has been strict-checked since the TS 6 upgrade —
+    // measured 2026-08-12: 0 errors with it set, 0 with it unset, across all 137 source
+    // files, while an explicit `"strict": false` makes a null misuse compile clean.
+    //
+    // ⚠ IT IS WRITTEN DOWN BECAUSE THE SILENCE WAS ALREADY MISREAD ONCE. Earlier the same
+    // day, a pass read the missing key as "strict is off across the whole frontend" and
+    // filed it as a large open hole in the backlog — inferring the compiler's behaviour
+    // from the absence of a line rather than asking the compiler.
+    //
+    // ⚠ AND IT IS INSURANCE. A future TypeScript that reverts the default, or a downgrade
+    // to TS 5.x, would turn strict OFF across all eight single-player games with no config
+    // change and no error — the build would just get quieter. Do not "tidy" this away as
+    // redundant with the default; being redundant with the default is the point.
+    "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
