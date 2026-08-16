@@ -34,7 +34,12 @@ describe('cooperationRate / avgYearsPerRound — per-student normalization', () 
   })
 })
 
-describe('cooperationByRound — Tier 3a, two series', () => {
+/** One series' value at one round, by strategy — the shape moved from four named
+ *  fields to a list when the library went from two ids to seven. */
+const at = (p: { series: { strategy: Strategy; rate: number | null; n: number }[] }, s: Strategy) =>
+  p.series.find(x => x.strategy === s)
+
+describe('cooperationByRound — Tier 3a, one series per ASSIGNED strategy', () => {
   const rows = [
     row('t1', 'tft', 'CCD', [1, 1, 0]),
     row('t2', 'tft', 'CDD', [1, 15, 10]),
@@ -49,30 +54,58 @@ describe('cooperationByRound — Tier 3a, two series', () => {
 
   it('computes each strategy group separately', () => {
     const [r1, r2, r3] = cooperationByRound(rows, 3)
-    expect(r1.tft).toBe(1)      // both TFT students cooperated in round 1
-    expect(r1.grim).toBe(0.5)   // g1 cooperated, g2 defected
-    expect(r2.tft).toBe(0.5)
-    expect(r3.tft).toBe(0)      // both TFT students defected by round 3
-    expect(r3.grim).toBe(0.5)
+    expect(r1.series.length).toBe(2)
+    expect(at(r1, 'tft')!.rate).toBe(1)      // both TFT students cooperated in round 1
+    expect(at(r1, 'grim')!.rate).toBe(0.5)   // g1 cooperated, g2 defected
+    expect(at(r2, 'tft')!.rate).toBe(0.5)
+    expect(at(r3, 'tft')!.rate).toBe(0)      // both TFT students defected by round 3
+    expect(at(r3, 'grim')!.rate).toBe(0.5)
+  })
+
+  it('⚠ ONLY ASSIGNED strategies get a series — a checked-but-undrawn one gets none', () => {
+    // The pool is not the input; the DATA is. A strategy nobody drew has nothing to
+    // plot, and a flat empty line plus a legend entry would read as a finding.
+    const pts = cooperationByRound(rows, 3)
+    expect(pts.length).toBe(3)
+    for (const p of pts) {
+      expect(p.series.length).toBe(2)
+      expect(p.series.map(s => s.strategy)).toEqual(['tft', 'grim'])
+    }
+  })
+
+  it('…and a strategy that IS assigned gets one, in library order', () => {
+    const withMore = [
+      ...rows,
+      row('r1', 'random', 'CDC', [1, 1, 1]),
+      row('m1', 'match_stay', 'CCC', [1, 1, 1]),
+    ]
+    const pts = cooperationByRound(withMore, 3)
+    expect(pts.length).toBe(3)
+    // STRATEGIES order is tft, grim, random, always_first, always_second, alternate,
+    // match_stay — so the present four come out in that relative order.
+    expect(pts[0].series.map(s => s.strategy)).toEqual(['tft', 'grim', 'random', 'match_stay'])
   })
 
   it('pads out to the round count with empty points when nobody got that far', () => {
     const pts = cooperationByRound(rows, 5)
     expect(pts).toHaveLength(5)
-    expect(pts[4]).toMatchObject({ round: 5, tft: null, grim: null, tftN: 0, grimN: 0 })
+    expect(pts[4].round).toBe(5)
+    expect(pts[4].series.length).toBe(2)
+    expect(pts[4].series.every(s => s.rate === null && s.n === 0)).toBe(true)
   })
 
   it('counts only students who PLAYED that round in the denominator', () => {
     // A student who stopped at round 1 must not drag round 2 toward 0%.
     const withQuitter = [row('t1', 'tft', 'CC', [1, 1]), row('t2', 'tft', 'C', [1])]
     const [r1, r2] = cooperationByRound(withQuitter, 2)
-    expect(r1).toMatchObject({ tft: 1, tftN: 2 })
-    expect(r2).toMatchObject({ tft: 1, tftN: 1 })   // 100% of the ONE who played it
+    expect(at(r1, 'tft')).toMatchObject({ rate: 1, n: 2 })
+    expect(at(r2, 'tft')).toMatchObject({ rate: 1, n: 1 })   // 100% of the ONE who played it
   })
 
   it('ignores students with no strategy (never opened the game)', () => {
     const pts = cooperationByRound([...rows, row('never', null, '', [])], 1)
-    expect(pts[0].tftN + pts[0].grimN).toBe(4)
+    expect(pts[0].series.length).toBe(2)
+    expect(pts[0].series.reduce((a, s) => a + s.n, 0)).toBe(4)
   })
 
   it('returns nothing when the round count is unknown (0)', () => {
@@ -88,10 +121,29 @@ describe('outcomeByFirstMove — Tier 3b, grouped bars', () => {
     row('g-def', 'grim', 'DCC', [0, 15, 15]),      // avg 10
   ]
 
-  it('always returns all four cells in a stable order — bars never move', () => {
-    const out = outcomeByFirstMove([])
+  it('an EMPTY roster produces no cells — nobody was assigned anything', () => {
+    // ⚠ IT USED TO RETURN FOUR EMPTY CELLS, because the strategy list was the hardcoded
+    // pair. The cells are now (group × ASSIGNED strategy), and an empty roster has
+    // assigned nothing. The chart already renders "No completed games yet." for this.
+    expect(outcomeByFirstMove([])).toEqual([])
+  })
+
+  it('returns every (group × assigned strategy) cell in a stable order', () => {
+    const out = outcomeByFirstMove(rows)
+    expect(out.length).toBe(4)
     expect(out.map(o => `${o.firstMove}-${o.strategy}`)).toEqual(['C-tft', 'C-grim', 'D-tft', 'D-grim'])
-    expect(out.every(o => o.n === 0 && o.avgYearsPerRound === null)).toBe(true)
+  })
+
+  it('⚠ a THIRD assigned strategy gets its own cells — the pair was hardcoded', () => {
+    // With the two-id list baked in, a student assigned any of the five new strategies
+    // appeared in Tier 1 and in the debrief grouping and had NO bar here at all.
+    const out = outcomeByFirstMove([...rows, row('r1', 'random', 'CCC', [1, 1, 1])])
+    expect(out.length).toBe(6)
+    expect(out.map(o => `${o.firstMove}-${o.strategy}`)).toEqual([
+      'C-tft', 'C-grim', 'C-random', 'D-tft', 'D-grim', 'D-random',
+    ])
+    expect(out.find(o => o.firstMove === 'C' && o.strategy === 'random'))
+      .toMatchObject({ avgYearsPerRound: 1, n: 1 })
   })
 
   it('groups by the student’s FIRST move and the strategy they faced', () => {

@@ -1,6 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore'
 import { FieldValue } from 'firebase-admin/firestore'
-import { STRATEGIES, isStrategy, type Strategy } from './strategy'
+import { DEFAULT_STRATEGY_POOL, isStrategy, type Strategy } from './strategy'
 import {
   INSTANCES_COLLECTION, CONFIG_DOC, truthParticipantDoc,
   HARD_MIN_ROUNDS, loadPdConfig, type PdConfig,
@@ -90,15 +90,30 @@ export function drawRoundCount(
 }
 
 /**
- * One student's bot strategy: ~50/50 across students (spec §5).
+ * One student's bot strategy: UNIFORM OVER THE INSTANCE'S POOL (spec §5).
  * Seeded ⇒ derived from (seed, participantId), so students still differ from each
  * other while the whole run is reproducible. Unseeded ⇒ real randomness.
+ *
+ * ⚠⚠ THE POOL IS A PARAMETER NOW, and the migration identity depends on the arithmetic
+ * being unchanged. It was `hash32(...) % STRATEGIES.length` indexing the hardcoded
+ * ['tft','grim']; it is `% pool.length` indexing the pool, and an unconfigured instance's
+ * pool IS ['tft','grim'] in that order (config.ts `parseStrategyPool`). Same hash input,
+ * same modulus, same array — the same student draws the same strategy they drew before
+ * this pass. `pdStrategyPool.test.ts` pins that against the old implementation.
+ *
+ * ⚠ `pool` is never empty — `parseStrategyPool` guarantees it — so `% pool.length` is
+ * never a division by zero. The guard below is a belt-and-braces for a hand-made call.
  */
-export function drawStrategy(seed: string | null, participantId: string): Strategy {
+export function drawStrategy(
+  seed: string | null,
+  participantId: string,
+  pool: readonly Strategy[] = DEFAULT_STRATEGY_POOL,
+): Strategy {
+  const choices = pool.length > 0 ? pool : DEFAULT_STRATEGY_POOL
   const k = seed === null
-    ? Math.floor(Math.random() * STRATEGIES.length)
-    : hash32(`${seed}:strategy:${participantId}`) % STRATEGIES.length
-  return STRATEGIES[k]
+    ? Math.floor(Math.random() * choices.length)
+    : hash32(`${seed}:strategy:${participantId}`) % choices.length
+  return choices[k]
 }
 
 // ── Transactional first-touch init ─────────────────────────────────────────────
@@ -167,9 +182,23 @@ export async function initPdParticipant(
     const drewRounds = !roundsValid
 
     // ── This student's bot strategy ──────────────────────────────────────────
+    // ⚠⚠ VALIDITY IS "IS IT A KNOWN STRATEGY", NOT "IS IT CURRENTLY IN THE POOL" —
+    // exactly the rule the round count follows two blocks above, and for exactly the
+    // same reason. The pool is instructor-configurable and an already-assigned student
+    // must survive an edit to it: a student drawn `grim` and then re-pooled to
+    // {random} keeps `grim`, because they are mid-game against it. Pool-bounding this
+    // check would silently REASSIGN those students mid-game — the one thing init.ts
+    // exists to prevent, and the redraw bug already caught once on this game.
+    //
+    // ⚠ THEREFORE A STORED STRATEGY MAY LEGITIMATELY BE ONE THAT IS NO LONGER CHECKED,
+    // and nothing downstream may assume otherwise. The play path takes the stored id
+    // straight to `botMove`, and the reports read it back through `isStrategy` — never
+    // through the pool. A pool edit reaches only students who have not yet launched.
     const storedStrategy = studentTruth?.strategy
     const strategyValid = isStrategy(storedStrategy)
-    const strategy = strategyValid ? storedStrategy : drawStrategy(config.seed, participantId)
+    const strategy = strategyValid
+      ? storedStrategy
+      : drawStrategy(config.seed, participantId, config.strategies)
     const drewStrategy = !strategyValid
 
     // ── Writes: ONLY for what was actually missing. An existing value is never

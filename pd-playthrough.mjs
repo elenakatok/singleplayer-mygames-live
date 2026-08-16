@@ -774,11 +774,17 @@ async function main() {
   // Tier 3a — one point per round, both series, denominators included.
   const coop = R.charts.cooperation
   check(coop.length === R.maxRoundsPlayed, `cooperation chart has one point per round played (${coop.length})`)
-  check(coop.every(p => 'tft' in p && 'grim' in p && 'tftN' in p && 'grimN' in p),
-    'each point carries both series and both denominators')
-  check(coop[0].tftN + coop[0].grimN === 2, 'round 1 counts the two students who played it')
+  // ⚠ THE SHAPE MOVED from four named fields to a SERIES LIST when the library went
+  // from two ids to seven. `{tft, grim, tftN, grimN}` hardcoded a two-strategy game
+  // into the wire format.
+  const nAt = (p) => (p.series ?? []).reduce((a, x) => a + x.n, 0)
+  check(coop.every(p => Array.isArray(p.series) && p.series.length === 2),
+    'each point carries one entry per ASSIGNED strategy (two here)')
+  check(coop.every(p => p.series.every(x => 'strategy' in x && 'rate' in x && 'n' in x)),
+    'each series entry carries its strategy, its rate and its own n=')
+  check(nAt(coop[0]) === 2, 'round 1 counts the two students who played it')
   const lastRoundPt = coop[coop.length - 1]
-  check(lastRoundPt.tftN + lastRoundPt.grimN === 1,
+  check(nAt(lastRoundPt) === 1,
     'the final round counts only the finisher — the quitter thins the tail, not drags it down')
 
   // Tier 3b — always four cells, in a stable order.
@@ -1048,6 +1054,165 @@ async function main() {
   check(bosReport.result?.labels?.C === OPERA, 'the report carries the renamed moves')
   check(JSON.stringify(bosReport.result.payoffs) === JSON.stringify(BOS),
     'the report carries all eight values')
+  check(bosReport.result?.strategyText?.always_second?.label === `Always ${BOXING}`,
+    `⚠ the report's strategy labels interpolate the wording (${bosReport.result?.strategyText?.always_second?.label})`)
+  const bosStratJson = JSON.stringify(bosReport.result?.strategyText ?? {})
+  check(bosStratJson.includes(OPERA) && bosStratJson.includes(BOXING),
+    '…the fixture words really are in them (guards the absence check below)')
+  check(!bosStratJson.includes('Defect') && !bosStratJson.includes('Cooperate'),
+    '⚠⚠ …and NEITHER shipped default word appears anywhere in them')
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // [14d] ⚠ THE OPPONENT POOL — seven strategies, instructor-selectable (spec §5).
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n[14d] Available strategies — the pool, the draw, and the never-redraw rule')
+  const psGid = `pd-pool-${stamp}`
+
+  const psCfg0 = await callFn('pdGetConfig', asDev(psGid))
+  check(psCfg0.ok, 'pdGetConfig succeeds on an untouched instance')
+  check(JSON.stringify(psCfg0.result?.strategies) === JSON.stringify(['tft', 'grim']),
+    `⚠⚠ AN UNCONFIGURED INSTANCE MIGRATES TO EXACTLY tft + grim (${JSON.stringify(psCfg0.result?.strategies)})`)
+  const psDoc0 = await getDoc(`pd_game_instances/${psGid}/config/main`)
+  check(psDoc0?.strategies === undefined,
+    '⚠ NO BACKFILL — reading an unconfigured instance writes no `strategies` field')
+  check((psCfg0.result?.strategyOptions ?? []).length === 7,
+    `the settings payload offers all seven ids (${(psCfg0.result?.strategyOptions ?? []).length})`)
+
+  // ── ⚠ ZERO CHECKED IS A HARD BLOCK (and NOT the dilemma advisory's shape) ──
+  const psEmpty = await callFn('pdUpdateConfig', { ...asDev(psGid), strategies: [] })
+  check(!psEmpty.ok, '⚠⚠ ZERO CHECKED IS REFUSED — an instance with no strategies cannot run')
+  check(/at least one/i.test(String(psEmpty.error ?? '')), `…and the message says so (${psEmpty.error})`)
+  const psBadId = await callFn('pdUpdateConfig', { ...asDev(psGid), strategies: ['tft', 'pavlov'] })
+  check(!psBadId.ok, 'an unknown strategy id is refused')
+  const psOne = await callFn('pdUpdateConfig', { ...asDev(psGid), strategies: ['alternate'] })
+  check(psOne.ok, 'ONE checked is legal')
+  check(JSON.stringify(psOne.result?.strategies) === JSON.stringify(['alternate']),
+    'and it is exactly what gets stored')
+
+  // ── THE DRAW COMES FROM THE POOL, AND ONLY FROM THE POOL ──────────────────
+  // ⚠ THE SEED IS WRITTEN FIRST. `putDoc` is a whole-document PATCH, so writing it
+  // AFTER the callable would wipe the `strategies` field the callable just stored —
+  // which it did, on the first draft of this section.
+  const psPool = ['random', 'always_second', 'match_stay']
+  await putDoc(`pd_game_instances/${psGid}/config/main`, { seed: { stringValue: 'pool-seed' } })
+  await callFn('pdUpdateConfig', {
+    ...asDev(psGid), strategies: psPool, minRounds: 3, maxRounds: 3,
+  })
+  const psAfterSave = await getDoc(`pd_game_instances/${psGid}/config/main`)
+  check(psAfterSave?.seed?.stringValue === 'pool-seed'
+    && (psAfterSave?.strategies?.arrayValue?.values ?? []).length === 3,
+    'the instance carries both the seed and the three-strategy pool')
+
+  const psDrawn = []
+  for (let i = 1; i <= 24; i++) {
+    const pid = `pool-stu-${i}`
+    await callFn('pdBootstrap', asStudent(psGid, pid))
+    await callFn('pdGetState', asStudent(psGid, pid))
+    const t = await getDoc(`pd_game_instances/${psGid}/truth/participant_${pid}`)
+    psDrawn.push(t?.strategy?.stringValue)
+  }
+  // ⚠ THE COUNT IS ASSERTED FIRST, so an empty loop cannot pass "never outside".
+  check(psDrawn.length === 24 && psDrawn.every(x => typeof x === 'string'),
+    `24 students were assigned a strategy (${psDrawn.length})`)
+  check(psDrawn.every(x => psPool.includes(x)),
+    `⚠⚠ NO STUDENT DREW AN UNCHECKED STRATEGY (${[...new Set(psDrawn)].sort().join(',')})`)
+  check(new Set(psDrawn).size === psPool.length,
+    `…and every checked strategy was drawn by someone (${new Set(psDrawn).size}/${psPool.length})`)
+
+  // ── ⚠ RE-ENTRY DOES NOT REDRAW ────────────────────────────────────────────
+  const psPid = 'pool-stu-1'
+  const psBefore = (await getDoc(`pd_game_instances/${psGid}/truth/participant_${psPid}`))?.strategy?.stringValue
+  for (let i = 0; i < 5; i++) await callFn('pdGetState', asStudent(psGid, psPid))
+  const psAfter = (await getDoc(`pd_game_instances/${psGid}/truth/participant_${psPid}`))?.strategy?.stringValue
+  check(psBefore === psAfter, `⚠ five more launches did NOT redraw the strategy (${psBefore})`)
+
+  // ── ⚠⚠ RE-ENTRY DOES NOT REDRAW — ON AN **UNSEEDED** INSTANCE ─────────────
+  //
+  // ⚠ THE SEEDED CHECK ABOVE CANNOT DETECT A REDRAW, and that is why this one exists.
+  // With a seed the draw is a pure function of (seed, participant), so an implementation
+  // that redrew on every launch would return the SAME id every time and the before/after
+  // comparison would pass. Only an UNSEEDED instance can tell the two apart: there a
+  // redraw is a fresh uniform pick, so over 8 launches against a 3-strategy pool a
+  // redrawing build survives with probability (1/3)^8 ≈ 1 in 6600.
+  const psuGid = `pd-pool-unseeded-${stamp}`
+  await callFn('pdUpdateConfig', { ...asDev(psuGid), strategies: psPool, minRounds: 3, maxRounds: 3 })
+  const psuDoc = await getDoc(`pd_game_instances/${psuGid}/config/main`)
+  check(psuDoc?.seed === undefined, 'the instance really is unseeded (the premise of this check)')
+  const psuPid = 'pool-unseeded-stu'
+  await callFn('pdBootstrap', asStudent(psuGid, psuPid))
+  await callFn('pdGetState', asStudent(psuGid, psuPid))
+  const psuFirst = (await getDoc(`pd_game_instances/${psuGid}/truth/participant_${psuPid}`))?.strategy?.stringValue
+  check(psPool.includes(psuFirst), `the unseeded student drew from the pool (${psuFirst})`)
+  const psuSeen = new Set([psuFirst])
+  for (let i = 0; i < 8; i++) {
+    await callFn('pdGetState', asStudent(psuGid, psuPid))
+    psuSeen.add((await getDoc(`pd_game_instances/${psuGid}/truth/participant_${psuPid}`))?.strategy?.stringValue)
+  }
+  check(psuSeen.size === 1,
+    `⚠⚠ EIGHT UNSEEDED RE-LAUNCHES NEVER REDREW (saw ${[...psuSeen].join(',')})`)
+
+  // ── ⚠⚠ UNCHECKING MID-GAME DOES NOT DISTURB AN ASSIGNED STUDENT ───────────
+  const psHeld = psAfter
+  const psNarrow = await callFn('pdUpdateConfig',
+    { ...asDev(psGid), strategies: psPool.filter(x => x !== psHeld) })
+  check(psNarrow.ok, `the pool narrows to exclude '${psHeld}'`)
+  check(!psNarrow.result.strategies.includes(psHeld), `…and '${psHeld}' really is unchecked now`)
+  const psStill = (await getDoc(`pd_game_instances/${psGid}/truth/participant_${psPid}`))?.strategy?.stringValue
+  check(psStill === psHeld,
+    `⚠⚠ THE ASSIGNED STUDENT KEEPS '${psHeld}' — a pool edit never reassigns (got ${psStill})`)
+
+  // …and plays it to completion, against the rule they HOLD rather than anything in
+  // the current pool. Predicted independently of the server.
+  const psPredict = (strategy, stu) => {
+    const bot = []
+    for (let i = 0; i < stu.length; i++) {
+      if (strategy === 'always_second') { bot.push('D'); continue }
+      if (strategy === 'match_stay') {
+        if (i === 0) { bot.push('C'); continue }
+        const mine = bot[i - 1]
+        const theirs = stu[i - 1]
+        bot.push(mine === theirs ? mine : (mine === 'C' ? 'D' : 'C'))
+        continue
+      }
+      bot.push(null)   // random — unpredictable by construction
+    }
+    return bot
+  }
+  const psStu = ['C', 'D', 'C']
+  const psBot = []
+  for (let n = 1; n <= 3; n++) {
+    const r = await callFn('pdSubmitRound', asStudent(psGid, psPid, { round: n, move: psStu[n - 1] }))
+    if (!r.ok) { check(false, `round ${n} played against an unchecked-but-held strategy (${r.error})`); break }
+    psBot.push(r.result.round.botMove)
+  }
+  check(psBot.length === 3,
+    `⚠⚠ A STORED-BUT-UNCHECKED STRATEGY PLAYS TO COMPLETION (${psBot.length}/3 rounds)`)
+  const psWant = psPredict(psHeld, psStu)
+  check(psWant.every((m, i) => m === null || m === psBot[i]),
+    `…and every bot move matched '${psHeld}' exactly (want ${psWant.join('')}, got ${psBot.join('')})`)
+  check((await getDoc(`pd_game_instances/${psGid}/truth/participant_${psPid}`))?.strategy?.stringValue === psHeld,
+    '…and the stored strategy is STILL untouched after playing')
+
+  // ── THE REPORTS ───────────────────────────────────────────────────────────
+  const psReport = await callFn('pdGetReport', asDev(psGid))
+  check(psReport.ok, 'pdGetReport succeeds on the pooled instance')
+  check(Object.keys(psReport.result?.strategyText ?? {}).length === 7,
+    "the report carries all seven strategies' labels and reveal lines")
+  check(String(psReport.result?.strategyText?.alternate?.reveal ?? '').includes('never reacted to your choices'),
+    'the alternating reveal line is served')
+  const psCoop = psReport.result?.charts?.cooperation ?? []
+  check(psCoop.length > 0 && Array.isArray(psCoop[0]?.series),
+    'Tier 3a points carry a SERIES LIST, not two named fields')
+  const psSeries = (psCoop[0]?.series ?? []).map(x => x.strategy)
+  check(psSeries.length > 0 && psSeries.every(id => psDrawn.includes(id)),
+    `⚠ every plotted series is a strategy actually ASSIGNED (${psSeries.join(',')})`)
+  check(!psSeries.includes('tft') && !psSeries.includes('grim'),
+    '⚠⚠ …and a strategy NOBODY was assigned gets NO series')
+  check((psCoop[0]?.series ?? []).every(x => typeof x.n === 'number'),
+    'every series carries its own n= for the legend')
+  const psFm = psReport.result?.charts?.firstMove ?? []
+  check(psFm.length > 0 && psFm.every(o => psDrawn.includes(o.strategy)),
+    'Tier 3b cells cover the assigned strategies only')
 
   await callFn('pdUpdateConfig', { ...asDev(GIDS), minRounds: 15, maxRounds: 20 })
   await callFn('pdGetState', asStudent(GIDS, SPID))   // a touch that could have redrawn
@@ -1206,8 +1371,20 @@ async function main() {
     // The strategy names appear ONLY as instructor-page furniture — assert the
     // instructor markers that account for them are present, so a future stray
     // occurrence in student copy is a visible diff rather than a silent pass.
-    check(js.includes('Opponent faced') && js.includes('Faced tit-for-tat'),
+    //
+    // ⚠ THE MARKERS MOVED with the seven-strategy pass. 'Faced tit-for-tat' was a
+    // HARDCODED debrief group title; group titles are now built from the server's
+    // per-instance labels (`Faced ${name}`), so that literal no longer exists and its
+    // absence is correct rather than a regression. The markers below are the strings
+    // that DO account for every strategy name left in the bundle: the settings
+    // checkbox list (the only client-side name mirror, instructor-only) and the two
+    // instructor roster columns.
+    check(js.includes('Opponent faced') && js.includes('Available strategies'),
       'the strategy names in the bundle are accounted for by the instructor pages')
+    check(js.includes('Match-and-stay') && js.includes('Tit-for-tat'),
+      '…specifically by the settings checkbox list, which is instructor-only')
+    check(!js.toLowerCase().includes('pavlov'),
+      '⚠ nothing in the shipped bundle calls match_stay "Pavlov"')
     check(!/rounds?\s+remaining|rounds?\s+left/i.test(js), 'the bundle has no rounds-remaining copy')
     check(!/round\s*\{?\s*\w*\s*\}?\s*of\s*\{/i.test(js), 'the bundle has no "round N of M" template')
   }

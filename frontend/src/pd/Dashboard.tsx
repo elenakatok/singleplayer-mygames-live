@@ -30,7 +30,12 @@ import { compareByLastName } from '../shared/sortName'
 
 const pct = (v: number | null) => (v == null ? '—' : `${Math.round(v * 100)}%`)
 const oneDp = (v: number | null) => (v == null ? '—' : v.toFixed(1))
-const STRATEGY_LABEL: Record<string, string> = { tft: 'Tit-for-tat', grim: 'GRIM' }
+/**
+ * ⚠ NO LOCAL LABEL MAP. It was `{ tft: 'Tit-for-tat', grim: 'GRIM' }` — a second source
+ * of strategy names that could not render "Always <first move>", because it did not
+ * know the instance's wording, and went stale the moment a strategy was added. The
+ * names come from `pdGetReport`'s `strategyText`, resolved server-side.
+ */
 
 const statusRank = (r: PdReportParticipant) => (r.completed ? 2 : r.launched ? 1 : 0)
 const statusText = (r: PdReportParticipant) =>
@@ -53,7 +58,12 @@ const tie = (a: PdReportParticipant, b: PdReportParticipant) => compareByLastNam
 
 const tnum = { fontVariantNumeric: 'tabular-nums' as const }
 
-const buildColumns = (unit: string): readonly SortableColumn<PdReportParticipant, SortKey>[] => [
+const buildColumns = (
+  unit: string,
+  /** strategy id → display name, from pdGetReport. Empty until the fetch lands, in
+   *  which case the raw id shows for a beat rather than a wrong English name. */
+  strategyText: Record<string, { label: string }>,
+): readonly SortableColumn<PdReportParticipant, SortKey>[] => [
   {
     key: 'name', label: 'Name',
     render: r => r.name ?? '—',
@@ -86,7 +96,7 @@ const buildColumns = (unit: string): readonly SortableColumn<PdReportParticipant
   },
   {
     key: 'strategy', label: 'Opponent faced',
-    render: r => (r.strategy ? STRATEGY_LABEL[r.strategy] : '—'),
+    render: r => (r.strategy ? (strategyText[r.strategy]?.label ?? r.strategy) : '—'),
     nullsLast: true,
     isNull: r => r.strategy == null,
     compare: (a, b) => (a.strategy ?? '').localeCompare(b.strategy ?? '') || tie(a, b),
@@ -118,6 +128,8 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const [rows, setRows] = useState<PdReportParticipant[] | null>(null)
   const [unit, setUnit] = useState('years')
+  /** Strategy display names, resolved server-side against this instance's wording. */
+  const [strategyText, setStrategyText] = useState<Record<string, { label: string }>>({})
   const [loadError, setLoadError] = useState<string | null>(null)
   const [scoring, setScoring] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -125,7 +137,7 @@ export default function Dashboard() {
 
   const load = useCallback(() => {
     pdGetReport()
-      .then(res => { setRows(res.participants); setUnit(res.unit) })
+      .then(res => { setRows(res.participants); setUnit(res.unit); setStrategyText(res.strategyText) })
       .catch(err => setLoadError(err instanceof Error ? err.message : 'Failed to load roster.'))
   }, [])
 
@@ -239,7 +251,7 @@ export default function Dashboard() {
         <div data-testid="pd-roster">
           <SortableTable<PdReportParticipant, SortKey>
             rows={rows}
-            columns={buildColumns(unit)}
+            columns={buildColumns(unit, strategyText)}
             getRowKey={r => r.participant_id}
             initialSortKey="status"
             initialSortDir="desc"

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { botMove, isStrategy, STRATEGIES, type Move } from '../src/pd/strategy'
+import {
+  botMove, isStrategy, STRATEGIES, DEFAULT_STRATEGY_POOL, type Move, type Strategy,
+} from '../src/pd/strategy'
 
 // Pure strategy tests (no emulator). Runs under `npm test`.
 
@@ -64,31 +66,70 @@ describe('botMove — GRIM (classic, unforgiving)', () => {
 })
 
 describe('purity + shared invariants', () => {
-  it('does not mutate the history it is given', () => {
-    const history = h('CCD')
-    const copy = [...history]
-    botMove('tft', history)
-    botMove('grim', history)
-    expect(history).toEqual(copy)
+  /** Every strategy whose output is fixed by its inputs. `random` is not one. */
+  const DETERMINISTIC: Strategy[] =
+    STRATEGIES.filter(s => s !== 'random')
+  /** Every strategy that opens with the FIRST move. `always_second` does not, by
+   *  definition, and `random` opens on a coin. */
+  const OPENS_FIRST: Strategy[] =
+    STRATEGIES.filter(s => s !== 'random' && s !== 'always_second')
+
+  it('does not mutate either history it is given', () => {
+    const studentHistory = h('CCD')
+    const botHistory = h('CCC')
+    const sCopy = [...studentHistory]
+    const bCopy = [...botHistory]
+    for (const s of DETERMINISTIC) botMove(s, studentHistory, botHistory)
+    expect(studentHistory).toEqual(sCopy)
+    expect(botHistory).toEqual(bCopy)
   })
 
-  it('is deterministic — same inputs, same output, every time', () => {
-    const history = h('CDCDD')
-    for (const s of STRATEGIES) {
-      const first = botMove(s, history)
-      for (let i = 0; i < 50; i++) expect(botMove(s, history)).toBe(first)
+  it('every DETERMINISTIC strategy is deterministic — same inputs, same output', () => {
+    // ⚠ `random` IS EXCLUDED, and that is the point of the split rather than a gap:
+    // it is the one strategy whose move is a DRAW, which is exactly why its drawn
+    // move is written to the round record and never recomputed (spec §5).
+    const studentHistory = h('CDCDD')
+    const botHistory = h('CCDDC')
+    expect(DETERMINISTIC.length).toBe(6)
+    for (const s of DETERMINISTIC) {
+      const first = botMove(s, studentHistory, botHistory)
+      for (let i = 0; i < 50; i++) expect(botMove(s, studentHistory, botHistory)).toBe(first)
     }
   })
 
-  it('every strategy opens with C (nobody defects first)', () => {
-    for (const s of STRATEGIES) expect(botMove(s, [])).toBe('C')
+  it('every strategy but always_second and random opens with the FIRST move', () => {
+    expect(OPENS_FIRST.length).toBe(5)
+    for (const s of OPENS_FIRST) expect(botMove(s, [], [])).toBe('C')
+    // ⚠ NAMED EXCEPTIONS, asserted rather than skipped: `always_second` opens with the
+    // second move BY DEFINITION, and a test that quietly excluded it would not notice
+    // if it started opening with the first.
+    expect(botMove('always_second', [], [])).toBe('D')
+    expect(['C', 'D']).toContain(botMove('random', [], [], { seed: 's', participantId: 'p' }))
   })
 
   it('isStrategy accepts the library and rejects anything else', () => {
-    expect(STRATEGIES).toEqual(['tft', 'grim'])
+    expect(STRATEGIES).toEqual([
+      'tft', 'grim', 'random', 'always_first', 'always_second', 'alternate', 'match_stay',
+    ])
+    expect(STRATEGIES.length).toBe(7)
     for (const s of STRATEGIES) expect(isStrategy(s)).toBe(true)
-    for (const bad of ['TFT', 'grim ', '', null, undefined, 7, {}]) {
+    for (const bad of ['TFT', 'grim ', '', 'pavlov', 'always', null, undefined, 7, {}]) {
       expect(isStrategy(bad)).toBe(false)
     }
+  })
+
+  it('⚠ the DEFAULT POOL is exactly the two ids that used to be hardcoded', () => {
+    // The whole migration rests on this line: an unconfigured instance draws from
+    // these two, in this order, as it always did.
+    expect(DEFAULT_STRATEGY_POOL).toEqual(['tft', 'grim'])
+  })
+
+  it('⚠ NO STRATEGY READS A PAYOFF — the signature cannot express one', () => {
+    // Stated as a test so the property is defended rather than merely intended: the
+    // game is direction-agnostic (spec §2), so a strategy consulting a payoff would
+    // need a direction the software does not have. botMove takes two move histories
+    // and a seed context, and nothing else. A payoff argument would be a compile
+    // error at every call site — which is the enforcement.
+    expect(botMove.length).toBeLessThanOrEqual(4)
   })
 })

@@ -1,4 +1,5 @@
-import type { PdFirstMoveOutcome, PdMoveLabels } from './api'
+import type { PdFirstMoveOutcome, PdMoveLabels, PdStrategy } from './api'
+import { strategyColor } from './strategyColors'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Tier 3b (spec §9) — OUTCOME BY FIRST DECISION, grouped by the bot faced.
@@ -17,24 +18,25 @@ import type { PdFirstMoveOutcome, PdMoveLabels } from './api'
 // INSTRUCTOR-ONLY: it aggregates the assigned strategy.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const TFT_COLOR = '#2563eb'   // blue
-const GRIM_COLOR = '#dc2626'  // red
-
 export function FirstMoveChartSVG({
   outcomes,
   labels,
   unit = 'years',
+  strategyLabels = {},
 }: {
   outcomes: PdFirstMoveOutcome[]
   labels: PdMoveLabels
   unit?: string
+  /** strategy id → display name, resolved SERVER-SIDE against the instance wording. */
+  strategyLabels?: Record<string, string>
 }) {
   const populated = outcomes.filter(o => o.n > 0 && o.avgYearsPerRound != null)
   if (populated.length === 0) {
     return <p style={{ color: '#94a3b8', margin: 0 }}>No completed games yet.</p>
   }
 
-  const padL = 52, padR = 14, padT = 30, padB = 58
+  const seriesCount = new Set(outcomes.map(o => o.strategy)).size
+  const padL = 52, padR = 14, padT = 30 + Math.max(0, Math.ceil(seriesCount / 3) - 1) * 16, padB = 58
   const plotW = 360
   const plotH = 200
   const W = padL + plotW + padR
@@ -59,17 +61,28 @@ export function FirstMoveChartSVG({
   /** Where v = 0 sits. Bars grow from here, up or down. */
   const yZero = yOf(0)
 
+  // ⚠⚠ ONE BAR PER STRATEGY ACTUALLY ASSIGNED, driven by the data. The list used to be
+  // the two hardcoded ids, which with a seven-strategy library silently DROPPED every
+  // other one: a student assigned `random` showed up in Tier 1 and in the debrief
+  // grouping and had no bar here at all. The server sends only assigned strategies
+  // (reportStats `assignedStrategies`), in a stable order.
+  const series: { key: PdStrategy; label: string; color: string }[] =
+    [...new Set(outcomes.map(o => o.strategy))].map(key => ({
+      key,
+      label: strategyLabels[key] ?? key,
+      color: strategyColor(key),
+    }))
+
   const groups: { firstMove: 'C' | 'D'; label: string }[] = [
     { firstMove: 'C', label: `Opened with ${labels.C}` },
     { firstMove: 'D', label: `Opened with ${labels.D}` },
   ]
   const groupW = plotW / groups.length
-  const barW = Math.min(56, (groupW - 30) / 2)
+  // ⚠ DIVIDED BY THE SERIES COUNT, not by 2. With seven strategies a fixed /2 made the
+  // bars overlap into an unreadable smear; the width now shrinks to fit whatever the
+  // instance actually assigned.
+  const barW = Math.max(6, Math.min(56, (groupW - 30) / Math.max(1, series.length)))
 
-  const series: { key: 'tft' | 'grim'; label: string; color: string }[] = [
-    { key: 'tft', label: 'Tit-for-tat', color: TFT_COLOR },
-    { key: 'grim', label: 'GRIM', color: GRIM_COLOR },
-  ]
 
   const yTicks: number[] = []
   const step = span <= 4 ? 1 : Math.ceil(span / 5)
@@ -84,10 +97,14 @@ export function FirstMoveChartSVG({
         role="img" aria-label="Average payoff per round by first decision and opponent strategy"
         data-testid="pd-firstmove-chart"
       >
-        {/* Legend */}
+        {/* Legend — wrapped, as the cooperation chart's is, for the same reason. */}
         <g transform={`translate(${padL}, 14)`} fontSize="12">
           {series.map((s, i) => (
-            <g key={s.key} transform={`translate(${i * 110}, 0)`}>
+            <g
+              key={s.key}
+              data-testid={`pd-firstmove-legend-${s.key}`}
+              transform={`translate(${(i % 3) * 130}, ${Math.floor(i / 3) * 16})`}
+            >
               <rect x={0} y={-9} width={12} height={12} fill={s.color} />
               <text x={18} y={1} fill="#333">{s.label}</text>
             </g>
@@ -120,7 +137,10 @@ export function FirstMoveChartSVG({
               {series.map((s, si) => {
                 const o = outcomes.find(x => x.firstMove === g.firstMove && x.strategy === s.key)
                 const v = o?.avgYearsPerRound ?? null
-                const x = cx - barW - 4 + si * (barW + 8)
+                // Centre the whole run of bars on the group, whatever its length.
+                const gap = series.length > 4 ? 2 : 8
+                const runW = series.length * barW + (series.length - 1) * gap
+                const x = cx - runW / 2 + si * (barW + gap)
                 if (v == null) {
                   return (
                     <text key={s.key} x={x + barW / 2} y={padT + plotH - 6} textAnchor="middle" fontSize="10" fill="#bbb">

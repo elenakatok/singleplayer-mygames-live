@@ -5,7 +5,8 @@ import {
   PD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC,
   truthParticipantDoc, loadPdConfig,
 } from './config'
-import { isStrategy, type Strategy } from './strategy'
+import { STRATEGIES, isStrategy, type Strategy } from './strategy'
+import { strategyDisplayName, strategyRevealLine } from './strategyText'
 import { parseStoredRounds, totals } from './rounds'
 import { debriefQuestion } from './questions'
 import {
@@ -145,6 +146,21 @@ export const pdGetReport = onCall({ cors: PD_CORS_ORIGINS }, async (request) => 
     unit: config.unit,
     participants,
     charts,
+    /**
+     * ⚠ EVERY STRATEGY'S DISPLAY NAME AND REVEAL LINE, RESOLVED SERVER-SIDE against
+     * THIS instance's wording. The reports and the debrief render these strings as
+     * given and hold no map of their own — a client-side label table would say
+     * "Always Defect" on an instance whose second move is called something else, and
+     * would need editing every time a strategy is added.
+     *
+     * All seven are sent, not only the assigned ones: the roster shows whatever a
+     * student stored, and a student may legitimately hold a strategy the instructor
+     * has since unchecked (init.ts never reassigns).
+     */
+    strategyText: Object.fromEntries(STRATEGIES.map(id => [id, {
+      label: strategyDisplayName(id, config.labels),
+      reveal: strategyRevealLine(id, config.labels),
+    }])),
     debriefPrompt: debriefQuestion.prompt,
   }
 })

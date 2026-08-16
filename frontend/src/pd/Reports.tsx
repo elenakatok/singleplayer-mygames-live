@@ -6,7 +6,7 @@ import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   pdGetReport, pdInstructorSession, CLASSROOM_URL,
-  type PdReportData, type PdReportParticipant, type PdStrategy,
+  PD_STRATEGIES, type PdReportData, type PdReportParticipant, type PdStrategy,
 } from './api'
 import { CooperationChartSVG } from './CooperationChartSVG'
 import { FirstMoveChartSVG } from './FirstMoveChartSVG'
@@ -44,7 +44,17 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   )
 }
 
-const STRATEGY_LABEL: Record<PdStrategy, string> = { tft: 'Tit-for-tat', grim: 'GRIM' }
+/**
+ * ⚠⚠ THE CLIENT-SIDE LABEL MAP IS GONE. It was `{ tft: 'Tit-for-tat', grim: 'GRIM' }` —
+ * a second source for strategy names that (a) went stale the moment a strategy was
+ * added and (b) could not render "Always <first move>" at all, because it did not know
+ * the instance's wording. Names now come from `data.strategyText`, resolved SERVER-SIDE
+ * against this instance's labels, and this page renders them as given.
+ */
+type StrategyText = Record<string, { label: string; reveal: string }>
+const nameOf = (text: StrategyText, id: PdStrategy | null) =>
+  id === null ? '—' : (text[id]?.label ?? id)
+
 const pct = (v: number | null) => (v == null ? '—' : `${Math.round(v * 100)}%`)
 const oneDp = (v: number | null) => (v == null ? '—' : v.toFixed(1))
 const tnum = { fontVariantNumeric: 'tabular-nums' as const }
@@ -65,7 +75,9 @@ type RosterKey = 'name' | 'status' | 'rounds' | 'coop' | 'avgYears' | 'strategy'
  */
 const tie = (a: PdReportParticipant, b: PdReportParticipant) => compareByLastName(a.name ?? '', b.name ?? '')
 
-function OutcomesTable({ rows, unit }: { rows: PdReportParticipant[]; unit: string }) {
+function OutcomesTable({ rows, unit, strategyText }: {
+  rows: PdReportParticipant[]; unit: string; strategyText: StrategyText
+}) {
   const columns: readonly SortableColumn<PdReportParticipant, RosterKey>[] = [
     { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => compareByLastName(a.name ?? '', b.name ?? '') },
     {
@@ -76,7 +88,7 @@ function OutcomesTable({ rows, unit }: { rows: PdReportParticipant[]; unit: stri
     { key: 'rounds', label: 'Rounds', render: r => <span style={tnum}>{r.rounds_played}</span>, compare: (a, b) => a.rounds_played - b.rounds_played || tie(a, b) },
     { key: 'coop', label: 'Cooperation', render: r => <span style={tnum}>{pct(r.cooperation_rate)}</span>, nullsLast: true, isNull: r => r.cooperation_rate == null, compare: (a, b) => (a.cooperation_rate ?? 0) - (b.cooperation_rate ?? 0) || tie(a, b) },
     { key: 'avgYears', label: `Avg ${unit} / round`, render: r => <span style={tnum}>{oneDp(r.avg_years)}</span>, nullsLast: true, isNull: r => r.avg_years == null, compare: (a, b) => (a.avg_years ?? 0) - (b.avg_years ?? 0) || tie(a, b) },
-    { key: 'strategy', label: 'Opponent', render: r => (r.strategy ? STRATEGY_LABEL[r.strategy] : '—'), nullsLast: true, isNull: r => r.strategy == null, compare: (a, b) => (a.strategy ?? '').localeCompare(b.strategy ?? '') || tie(a, b) },
+    { key: 'strategy', label: 'Opponent', render: r => nameOf(strategyText, r.strategy), nullsLast: true, isNull: r => r.strategy == null, compare: (a, b) => (a.strategy ?? '').localeCompare(b.strategy ?? '') || tie(a, b) },
     { key: 'kc', label: 'KC', render: r => <span style={tnum}>{r.knowledge_check_score == null ? '—' : `${Math.round(r.knowledge_check_score * 100)}%`}</span>, nullsLast: true, isNull: r => r.knowledge_check_score == null, compare: (a, b) => (a.knowledge_check_score ?? 0) - (b.knowledge_check_score ?? 0) || tie(a, b) },
   ]
   return (
@@ -94,17 +106,38 @@ function OutcomesTable({ rows, unit }: { rows: PdReportParticipant[]; unit: stri
 
 // ── Tier 2: debrief paragraphs, GROUPED BY STRATEGY FACED ──────────────────────
 
-function DebriefAnswers({ rows }: { rows: PdReportParticipant[] }) {
+function DebriefAnswers({ rows, strategyText }: {
+  rows: PdReportParticipant[]; strategyText: StrategyText
+}) {
   const [showNames, setShowNames] = useState(true)
 
-  // Grouped so the contrast is READABLE, which is the whole point: students who faced
-  // a forgiving opponent and students who faced an unforgiving one played two
-  // different games, and the AI-summary pass wants them separated, not interleaved.
+  // Grouped so the contrast is READABLE, which is the whole point: students who faced a
+  // forgiving opponent and students who faced an unforgiving one played two different
+  // games, and the AI-summary pass wants them separated, not interleaved.
+  //
+  // ⚠⚠ UP TO SEVEN GROUPS, DERIVED FROM THE DATA. The three groups were hardcoded, so a
+  // student assigned any of the five new strategies had their paragraph silently
+  // dropped from this tile — present in Tier 1, absent here. Groups are now the
+  // strategies actually FACED, in the library's canonical order, plus the
+  // never-assigned bucket.
+  //
+  // ⚠ DERIVED FROM WHAT STUDENTS STORED, NOT FROM THE POOL. A student may hold a
+  // strategy the instructor has since unchecked (the assignment is never redrawn), and
+  // their paragraph must still appear under it.
+  const faced = new Set(rows.filter(r => r.debrief).map(r => r.strategy))
   const groups: { key: PdStrategy | 'none'; title: string; rows: PdReportParticipant[] }[] = [
-    { key: 'tft', title: 'Faced tit-for-tat (forgiving)', rows: rows.filter(r => r.strategy === 'tft' && r.debrief) },
-    { key: 'grim', title: 'Faced GRIM (never forgives)', rows: rows.filter(r => r.strategy === 'grim' && r.debrief) },
-    { key: 'none', title: 'No opponent assigned', rows: rows.filter(r => r.strategy == null && r.debrief) },
+    ...PD_STRATEGIES.filter(s => faced.has(s)).map(s => ({
+      key: s as PdStrategy | 'none',
+      title: `Faced ${nameOf(strategyText, s)}`,
+      rows: rows.filter(r => r.strategy === s && r.debrief),
+    })),
+    { key: 'none' as const, title: 'No opponent assigned', rows: rows.filter(r => r.strategy == null && r.debrief) },
   ]
+
+  /** The reveal line for a group, straight from the server. Shown under the heading so
+   *  the instructor reads the paragraphs already knowing what those students faced. */
+  const revealOf = (key: PdStrategy | 'none') =>
+    key === 'none' ? null : (strategyText[key]?.reveal ?? null)
 
   return (
     <div data-testid="pd-report-debrief">
@@ -119,9 +152,14 @@ function DebriefAnswers({ rows }: { rows: PdReportParticipant[] }) {
 
       {groups.map(g => g.rows.length === 0 ? null : (
         <section key={g.key} data-testid={`pd-debrief-group-${g.key}`} style={{ marginBottom: '1.5rem' }}>
-          <h3 style={{ margin: '0 0 0.5rem', fontSize: '0.95rem', color: colors.text }}>
+          <h3 style={{ margin: '0 0 0.15rem', fontSize: '0.95rem', color: colors.text }}>
             {g.title} <span style={{ fontWeight: 400, color: colors.textSecondary }}>({g.rows.length})</span>
           </h3>
+          {revealOf(g.key) && (
+            <p data-testid={`pd-debrief-reveal-${g.key}`} style={{ margin: '0 0 0.5rem', fontSize: '0.8rem', color: colors.textSecondary, lineHeight: 1.5 }}>
+              {revealOf(g.key)}
+            </p>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
             {g.rows.map((r, i) => (
               <div key={r.participant_id} style={{ border: `1px solid ${colors.borderMid}`, borderRadius: 6, padding: '0.6rem 0.8rem' }}>
@@ -169,6 +207,17 @@ export default function Reports() {
   if (err) return chrome(<p style={{ color: '#c00' }}>{err}</p>)
   if (!data) return chrome(<p>Loading reports…</p>)
 
+  /** The names of the strategies ACTUALLY assigned, in library order. Empty when
+   *  nobody has launched — the tile copy handles that case. */
+  const assignedNames = (d: PdReportData): string[] => {
+    const faced = new Set(d.participants.map(p => p.strategy))
+    return PD_STRATEGIES.filter(s => faced.has(s)).map(s => nameOf(d.strategyText, s))
+  }
+
+  /** strategy id → display name, for the two charts. */
+  const labelsOf = (d: PdReportData): Record<string, string> =>
+    Object.fromEntries(Object.entries(d.strategyText).map(([k, v]) => [k, v.label]))
+
   const played = data.participants.filter(p => p.rounds_played > 0)
   const debriefs = data.participants.filter(p => p.debrief)
   const completed = data.participants.filter(p => p.completed)
@@ -195,7 +244,9 @@ export default function Reports() {
       disabled: played.length === 0,
       preview: played.length === 0
         ? <span style={{ color: '#94a3b8' }}>No rounds played yet.</span>
-        : <span>{data.maxRoundsPlayed} rounds — tit-for-tat vs GRIM</span>,
+        // ⚠ The strategies ACTUALLY assigned, named in the instance's wording — not
+        // the two that used to be hardcoded here.
+        : <span>{data.maxRoundsPlayed} rounds — {assignedNames(data).join(' vs ') || 'no opponents assigned'}</span>,
       onOpen: () => setActive('cooperation'),
     },
     {
@@ -215,22 +266,25 @@ export default function Reports() {
 
       {active === 'outcomes' && (
         <Modal title="Outcomes — all students" onClose={() => setActive(null)}>
-          <OutcomesTable rows={data.participants} unit={data.unit} />
+          <OutcomesTable rows={data.participants} unit={data.unit} strategyText={data.strategyText} />
         </Modal>
       )}
       {active === 'debrief' && (
         <Modal title={data.debriefPrompt} onClose={() => setActive(null)}>
-          <DebriefAnswers rows={data.participants} />
+          <DebriefAnswers rows={data.participants} strategyText={data.strategyText} />
         </Modal>
       )}
       {active === 'cooperation' && (
-        <Modal title="Cooperation rate by round — tit-for-tat vs GRIM" onClose={() => setActive(null)}>
-          <CooperationChartSVG points={data.charts.cooperation} />
+        <Modal title={`Cooperation rate by round — ${assignedNames(data).join(' vs ')}`} onClose={() => setActive(null)}>
+          <CooperationChartSVG points={data.charts.cooperation} strategyLabels={labelsOf(data)} />
         </Modal>
       )}
       {active === 'firstmove' && (
         <Modal title="Outcome by first decision" onClose={() => setActive(null)}>
-          <FirstMoveChartSVG outcomes={data.charts.firstMove} labels={data.labels} unit={data.unit} />
+          <FirstMoveChartSVG
+            outcomes={data.charts.firstMove} labels={data.labels} unit={data.unit}
+            strategyLabels={labelsOf(data)}
+          />
         </Modal>
       )}
     </>,

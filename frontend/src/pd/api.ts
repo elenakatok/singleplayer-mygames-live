@@ -1,3 +1,4 @@
+import type { PdStrategy } from './strategies'
 import { httpsCallable } from 'firebase/functions'
 import { FirebaseError } from 'firebase/app'
 import { functions } from '../firebase'
@@ -217,7 +218,10 @@ export const pdSubmitDebrief = (answer: string) =>
 // student-facing types above still cannot express either value. Keep it that way —
 // if a student component ever needs data from here, that is the bug.
 
-export type PdStrategy = 'tft' | 'grim'
+/** ⚠ Declared in `strategies.ts`, which imports nothing — see the note there. Re-exported
+ *  here so call sites that already talk to api.ts keep one import. */
+export type { PdStrategy } from './strategies'
+export { PD_STRATEGIES } from './strategies'
 
 /** One roster row (Tier 1, Reports Contract). */
 export type PdReportParticipant = {
@@ -237,13 +241,26 @@ export type PdReportParticipant = {
   debrief: string | null
 }
 
-/** Tier 3a — one point per round, one value per strategy series. */
+/** One series' value at one round. */
+export type PdCooperationSeriesPoint = {
+  strategy: PdStrategy
+  /** Fraction who played the FIRST move this round. null ⇒ none had played it. */
+  rate: number | null
+  /** The denominator, and the legend's n=. */
+  n: number
+}
+
+/**
+ * Tier 3a — one point per round, one entry per ASSIGNED strategy.
+ *
+ * ⚠ A LIST, NOT NAMED FIELDS. It was `{tft, grim, tftN, grimN}`, which hardcoded a
+ * two-strategy library into the wire format. The series present are the strategies
+ * actually assigned in the instance — a strategy in the pool that nobody drew gets no
+ * series at all.
+ */
 export type PdCooperationPoint = {
   round: number
-  tft: number | null
-  grim: number | null
-  tftN: number
-  grimN: number
+  series: PdCooperationSeriesPoint[]
 }
 
 /** Tier 3b — one bar per (first move × strategy). `avgYearsPerRound` is the mean
@@ -268,6 +285,10 @@ export type PdReportData = {
   unit: string
   participants: PdReportParticipant[]
   charts: { cooperation: PdCooperationPoint[]; firstMove: PdFirstMoveOutcome[] }
+  /** ⚠ Every strategy's display name and debrief reveal line, resolved SERVER-SIDE
+   *  against this instance's wording. The reports render these as given and hold no
+   *  label map of their own. */
+  strategyText: Record<PdStrategy, { label: string; reveal: string }>
   debriefPrompt: string
 }
 
@@ -307,6 +328,12 @@ export type PdAddedKcQuestion = {
 
 export type PdConfigResult = {
   ok: boolean
+  /** The instance's pool — which strategies may be assigned. Never empty. */
+  strategies: PdStrategy[]
+  /** Every id with its display name and reveal line, resolved against the STORED
+   *  wording. The settings page relabels live from `strategyText.ts` as the
+   *  instructor types; this is the load-time value and the drift reference. */
+  strategyOptions: { id: PdStrategy; label: string; reveal: string }[]
   payoffs: PdPayoffs
   labels: PdMoveLabels
   unit: string
@@ -380,6 +407,8 @@ export const pdGetConfig = () => callFn<PdConfigResult>('pdGetConfig')
 /** Save settings. Every field is optional — only what is sent is written (merge), so
  *  a partial save can never clobber a sibling setting. */
 export const pdUpdateConfig = (patch: Partial<{
+  /** The opponent pool. ⚠ The callable REFUSES an empty array — see spec §5.3. */
+  strategies: PdStrategy[]
   payoffs: PdPayoffs
   labels: PdMoveLabels
   unit: string

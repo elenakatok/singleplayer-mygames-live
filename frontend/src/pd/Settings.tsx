@@ -7,11 +7,12 @@ import { StartedBanner } from '../shared/StartedBanner'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
   pdGetConfig, pdUpdateConfig, pdInstructorSession, CLASSROOM_URL,
-  type PdConfigResult, type PdPayoffs, type PdMoveLabels,
+  type PdConfigResult, type PdPayoffs, type PdMoveLabels, type PdStrategy,
 } from './api'
 import { PayoffMatrix } from './PayoffMatrix'
 import { warnNotADilemma, NOT_A_DILEMMA_WARNING } from './dilemma'
 import { derivedKcRow } from './derivedKc'
+import { strategyDisplayName, strategyRuleSummary } from './strategyText'
 import {
   KnowledgeCheckSettings,
   type KcSettingsDraft, type KcSettingsQuestion, type KcSettingsStage,
@@ -58,7 +59,9 @@ import {
 //     ⚠ Its prompt and visibility still store to `debrief_prompt` / `debrief_enabled`;
 //     the translation lives in seedKc/kcPatch below. No stored answer moved.
 //
-//   • The bot strategies (tit-for-tat / GRIM) are NOT configurable — by decision.
+//   • THE OPPONENT POOL — one checkbox per strategy, and the checked set is what this
+//     instance may assign. ⚠ ZERO CHECKED BLOCKS SAVE, here AND at the callable.
+//     ⚠ Unchecking never disturbs a student already assigned that strategy.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -177,6 +180,15 @@ export default function Settings() {
     setCfg(c => (c ? { ...c, payoffs: { ...c.payoffs, [k]: v } } : c))
   const setLabel = (k: keyof PdMoveLabels, v: string) =>
     setCfg(c => (c ? { ...c, labels: { ...c.labels, [k]: v } } : c))
+  /** Toggle one strategy in the pool, keeping the canonical library order. */
+  const setStrategy = (id: PdStrategy, on: boolean) =>
+    setCfg((c) => {
+      if (!c) return c
+      const next = new Set(c.strategies)
+      if (on) next.add(id)
+      else next.delete(id)
+      return { ...c, strategies: c.strategyOptions.map(o => o.id).filter(s => next.has(s)) }
+    })
 
   /**
    * The server's inventory in the shared block's shape — the debrief row included.
@@ -250,6 +262,7 @@ export default function Settings() {
     setSaving(true); setErr(null); setMsg(null)
     try {
       const res = await pdUpdateConfig({
+        strategies: cfg.strategies,
         payoffs: cfg.payoffs,
         labels: cfg.labels,
         unit: cfg.unit,
@@ -288,6 +301,17 @@ export default function Settings() {
   if (!cfg) return chrome(<p>Loading settings…</p>)
 
   const rangeInvalid = cfg.minRounds > cfg.maxRounds || cfg.minRounds < 1
+  /**
+   * ⚠⚠ ZERO CHECKED BLOCKS SAVE — a HARD block, and NOT the dilemma advisory's shape.
+   * The advisory informs and lets the save through, because a non-dilemma matrix is a
+   * legitimate thing to run. An empty pool is not: first touch would have nothing to
+   * draw and no student could start.
+   *
+   * ⚠ THE CALLABLE REFUSES IT TOO, in the same edit (instructorConfig.ts). A
+   * client-only rule is the accept-then-reject mismatch the negative-payoff floor
+   * produced; a server-only rule is the same failure with the roles swapped.
+   */
+  const noStrategies = cfg.strategies.length === 0
 
   return chrome(
     <div data-testid="pd-settings">
@@ -391,6 +415,56 @@ export default function Settings() {
         </p>
       </Section>
 
+      {/* ── The opponent pool ───────────────────────────────────────────────── */}
+      <Section title="Available strategies">
+        <p style={{ ...hint, margin: '0 0 0.6rem' }}>
+          Each student is assigned <strong>one</strong> of the checked strategies at
+          random when they first open the game, and plays it for every round. They are
+          never told which — inferring it from play is the exercise.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+          {cfg.strategyOptions.map(opt => {
+            const checked = cfg.strategies.includes(opt.id)
+            return (
+              <label
+                key={opt.id}
+                data-testid={`pd-set-strategy-${opt.id}`}
+                style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55rem', cursor: 'pointer' }}
+              >
+                <input
+                  type="checkbox" checked={checked}
+                  onChange={e => setStrategy(opt.id, e.target.checked)}
+                  style={{ marginTop: '0.25rem' }}
+                />
+                <span>
+                  {/* ⚠ RELABELLED LIVE from the wording fields above, not from the
+                      server's load-time text — "Always <second move>" must follow a
+                      rename as the instructor types, exactly as the knowledge-check
+                      list now does. See strategyText.ts. */}
+                  <strong>{strategyDisplayName(opt.id, cfg.labels)}</strong>
+                  <span style={{ color: colors.textSecondary }}>
+                    {' — '}{strategyRuleSummary(opt.id, cfg.labels)}
+                  </span>
+                </span>
+              </label>
+            )
+          })}
+        </div>
+        {noStrategies && (
+          <p data-testid="pd-set-no-strategies" style={{ ...hint, color: colors.errorAction }}>
+            Choose at least one strategy — an instance with none cannot be played.
+          </p>
+        )}
+        {cfg.anyRoundsDrawn && (
+          <p data-testid="pd-set-strategies-drawn" style={{ ...hint, color: colors.warnBannerText }}>
+            ⚠ Students have already started, and each has been assigned an opponent.
+            Unchecking a strategy here will <strong>not</strong> change theirs — a
+            student already playing keeps the opponent they were given. A new selection
+            applies to students who have not launched yet.
+          </p>
+        )}
+      </Section>
+
       {/* ── Round range ─────────────────────────────────────────────────────── */}
       <Section title="Number of rounds">
         <div style={row}>
@@ -462,11 +536,11 @@ export default function Settings() {
       <button
         data-testid="pd-set-save"
         onClick={() => void save()}
-        disabled={saving || rangeInvalid}
+        disabled={saving || rangeInvalid || noStrategies}
         style={{
           padding: '0.6rem 1.5rem', fontSize: '1rem', fontWeight: 600,
-          cursor: (saving || rangeInvalid) ? 'not-allowed' : 'pointer',
-          backgroundColor: (saving || rangeInvalid) ? colors.disabledBtnBg : colors.text,
+          cursor: (saving || rangeInvalid || noStrategies) ? 'not-allowed' : 'pointer',
+          backgroundColor: (saving || rangeInvalid || noStrategies) ? colors.disabledBtnBg : colors.text,
           color: colors.white, border: 'none', borderRadius: 6,
         }}
       >

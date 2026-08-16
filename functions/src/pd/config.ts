@@ -1,4 +1,5 @@
 import { DEFAULT_PAYOFFS, parsePayoffs, type PayoffConfig } from './payoff'
+import { STRATEGIES, DEFAULT_STRATEGY_POOL, isStrategy, type Strategy } from './strategy'
 import {
   parseAddedKcQuestion as parseSharedAddedKcQuestion,
   parseKcHidden, parseKcOrder, parseKcOverrides,
@@ -200,6 +201,19 @@ export interface PdConfig {
    * truth/ regardless.
    */
   seed: string | null
+  /**
+   * THE POOL — which opponent strategies this instance may assign (spec §5).
+   *
+   * ⚠ NEVER EMPTY. `parseStrategyPool` returns the shipped default rather than an empty
+   * list, and `pdUpdateConfig` HARD-REFUSES a save with nothing checked. An instance
+   * with no strategies cannot run: first touch would have nothing to draw.
+   *
+   * ⚠ NOT student-readable in any meaningful sense — it lives in config/main, which
+   * rules allow students to read, but no student-facing callable returns it and the
+   * pool is not the assignment. Which strategy a given student FACED is truth/, and
+   * inferring it from play is the exercise (spec §5).
+   */
+  strategies: Strategy[]
 }
 
 /** The shipped default unit. One word — it is rendered straight after a number. */
@@ -220,6 +234,7 @@ export const DEFAULT_PD_CONFIG: PdConfig = {
   debriefEnabled: true,
   debriefPrompt: DEFAULT_DEBRIEF_PROMPT,
   seed: null,
+  strategies: [...DEFAULT_STRATEGY_POOL],
   kcHidden: {},
   kcOrder: {},
   kcOverrides: {},
@@ -266,6 +281,27 @@ export function addedKcStage(q: PdAddedKcQuestion): PdKcStage {
   return q.stage ?? DEFAULT_ADDED_KC_STAGE
 }
 
+/**
+ * The instance's strategy pool, defensively parsed.
+ *
+ * ⚠⚠ THE LAZY MIGRATION. An instance created before the pool was configurable stores no
+ * `strategies` field at all. It reads as DEFAULT_STRATEGY_POOL — exactly the two ids
+ * that used to be hardcoded — so it draws from the same two with the same uniform rule
+ * and plays identically. Nothing is written back; an instance migrates only when an
+ * instructor next saves settings.
+ *
+ * Unknown ids are DROPPED rather than throwing (the posture of every parser here), and
+ * a list that drops to empty falls back to the default rather than producing an
+ * instance nobody can play. The result is deduped and returned in STRATEGIES order, so
+ * the settings page, the reports and the draw all see one canonical ordering.
+ */
+export function parseStrategyPool(raw: unknown): Strategy[] {
+  if (!Array.isArray(raw)) return [...DEFAULT_STRATEGY_POOL]
+  const chosen = new Set(raw.filter(isStrategy))
+  const out = STRATEGIES.filter(s => chosen.has(s))
+  return out.length > 0 ? out : [...DEFAULT_STRATEGY_POOL]
+}
+
 /** Clamp + sanity-check a stored round range. Returns the shipped defaults when the
  *  stored pair is unusable, and never returns min > max. */
 export function parseRoundRange(rawMin: unknown, rawMax: unknown): { minRounds: number; maxRounds: number } {
@@ -293,6 +329,7 @@ export function loadPdConfig(configData: Record<string, unknown> | undefined): P
 
   return {
     payoffs: parsePayoffs(configData?.payoffs),
+    strategies: parseStrategyPool(configData?.strategies),
     labels: {
       C: typeof labelsRaw.C === 'string' && labelsRaw.C.trim() ? labelsRaw.C : DEFAULT_MOVE_LABELS.C,
       D: typeof labelsRaw.D === 'string' && labelsRaw.D.trim() ? labelsRaw.D : DEFAULT_MOVE_LABELS.D,

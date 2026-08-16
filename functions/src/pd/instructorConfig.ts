@@ -13,6 +13,8 @@ import {
 } from './questions'
 import { lockedKcQuestionIds, validateKcOverrides, KC_LOCK_REASON } from './kcLock'
 import { PAYOFF_KEYS } from './payoff'
+import { STRATEGIES, isStrategy, type Strategy } from './strategy'
+import { strategyDisplayName, strategyRevealLine } from './strategyText'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PD settings callables (Slice 5). pdGetConfig returns the whole editable config for
@@ -26,7 +28,10 @@ import { PAYOFF_KEYS } from './payoff'
 //              at serve and grade time, never stored as text (see questions.ts). They
 //              are RETURNED here read-only so the settings page can preview what the
 //              current matrix produces.
-//   fixed      the bot strategies (TFT/GRIM) — not configurable, by decision
+//   editable   THE STRATEGY POOL — which opponent strategies this instance may assign.
+//              At least one must be checked; the callable refuses an empty pool.
+//              ⚠ Unchecking a strategy NEVER disturbs a student already assigned it
+//              (init.ts) — a pool edit reaches only students who have not yet launched.
 //   truth      the DRAWN round counts — never returned here, never editable. Only
 //              their range is. Each STUDENT draws their own on first launch
 //              (init.ts) and a range edit never redraws a student already playing;
@@ -100,6 +105,32 @@ export const pdUpdateConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
       out[key] = v
     }
     patch.payoffs = out
+  }
+
+  // ── The strategy pool — at least one, all known (spec §5) ─────────────────
+  //
+  // ⚠⚠ ZERO CHECKED IS A HARD BLOCK, AND IT IS NOT THE DILEMMA ADVISORY. The advisory
+  // informs and never blocks, because a non-dilemma matrix is a legitimate thing to
+  // run. An instance with an empty pool is not: first touch would have nothing to draw
+  // and no student could start. So this REFUSES, server-side, and the settings page
+  // disables Save on the same condition — both, in the same edit, because a client-only
+  // rule is how the negative-payoff mismatch happened (typed, accepted, rejected on
+  // save) and a server-only rule is the same failure with the roles swapped.
+  if (has(data, 'strategies')) {
+    if (!Array.isArray(data.strategies)) {
+      throw new HttpsError('invalid-argument', 'strategies must be an array.')
+    }
+    for (const s of data.strategies) {
+      if (!isStrategy(s)) throw new HttpsError('invalid-argument', `'${String(s)}' is not a strategy.`)
+    }
+    const chosen = new Set(data.strategies as Strategy[])
+    if (chosen.size === 0) {
+      throw new HttpsError('invalid-argument',
+        'Choose at least one opponent strategy — an instance with none cannot be played.')
+    }
+    // Stored deduped and in STRATEGIES order, so the draw, the settings page and the
+    // reports all see one canonical ordering.
+    patch.strategies = STRATEGIES.filter(s => chosen.has(s))
   }
 
   // ── Move labels — two non-empty strings ───────────────────────────────────
@@ -280,6 +311,15 @@ function configView(config: PdConfig, anyRoundsDrawn: boolean) {
     unit: config.unit,
     minRounds: config.minRounds,
     maxRounds: config.maxRounds,
+    /** ⚠ THE POOL, and the full menu beside it. `strategyOptions` carries every id with
+     *  its display name resolved against THIS instance's wording, so the settings page
+     *  renders the checkbox list without a second source for the ids. */
+    strategies: config.strategies,
+    strategyOptions: STRATEGIES.map(id => ({
+      id,
+      label: strategyDisplayName(id, config.labels),
+      reveal: strategyRevealLine(id, config.labels),
+    })),
     kcEnabled: config.kcEnabled,
     addedKcQuestions: config.addedKcQuestions,
     debriefEnabled: config.debriefEnabled,

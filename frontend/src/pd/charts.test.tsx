@@ -13,8 +13,25 @@ import type { PdCooperationPoint, PdFirstMoveOutcome, PdMoveLabels } from './api
 const LABELS: PdMoveLabels = { C: 'Cooperate', D: 'Defect' }
 const visible = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 
+/**
+ * One chart point in the CURRENT shape — a list of series, not four named fields.
+ *
+ * ⚠ THE SHAPE CHANGED with the seven-strategy library: `{tft, grim, tftN, grimN}`
+ * hardcoded a two-strategy game into the wire format. The helper keeps the old
+ * two-argument ergonomics so the existing assertions below read unchanged.
+ */
 const pt = (round: number, tft: number | null, grim: number | null, tftN = 2, grimN = 2): PdCooperationPoint =>
-  ({ round, tft, grim, tftN, grimN })
+  ({
+    round,
+    series: [
+      { strategy: 'tft', rate: tft, n: tftN },
+      { strategy: 'grim', rate: grim, n: grimN },
+    ],
+  })
+
+/** A point carrying an arbitrary set of series, for the seven-strategy assertions. */
+const ptOf = (round: number, series: PdCooperationPoint['series']): PdCooperationPoint =>
+  ({ round, series })
 
 describe('runsOf — gaps break the line rather than faking 0%', () => {
   it('returns one run when every point has data', () => {
@@ -47,8 +64,12 @@ describe('CooperationChartSVG — Tier 3a', () => {
     expect(html).toContain('data-testid="pd-coop-line-tft"')
     expect(html).toContain('data-testid="pd-coop-line-grim"')
     const text = visible(html)
-    expect(text).toContain('Tit-for-tat')
-    expect(text).toContain('GRIM')
+    // ⚠ NAMES COME FROM THE SERVER MAP NOW. With no map passed the raw id shows —
+    // deliberately, rather than a client-side English table that could not render
+    // "Always <first move>" and went stale the moment a strategy was added. The
+    // seven-strategy block below asserts the labelled path.
+    expect(text).toContain('tft (n=')
+    expect(text).toContain('grim (n=')
   })
 
   it('labels the x axis as rounds and the y axis as percentages', () => {
@@ -227,5 +248,103 @@ describe('FirstMoveChartSVG — a negative mean draws a real bar', () => {
     expect(positive).toContain('data-testid="pd-firstmove-bar-C-tft"')
     expect(positive).not.toContain('pd-firstmove-zeroline')
     expect(rectHeights(positive).every(h => h >= 0)).toBe(true)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠ SEVEN STRATEGIES — one series per ASSIGNED strategy, named and counted.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('CooperationChartSVG — one series per assigned strategy', () => {
+  const LABELS3: Record<string, string> = {
+    tft: 'Tit-for-tat', grim: 'Grim', random: 'Random',
+    always_first: 'Always Zarquon', always_second: 'Always Blorptide',
+    alternate: 'Alternating', match_stay: 'Match-and-stay',
+  }
+  const ALL: PdCooperationPoint['series'] = [
+    { strategy: 'tft', rate: 1, n: 5 },
+    { strategy: 'grim', rate: 0.5, n: 4 },
+    { strategy: 'random', rate: 0.25, n: 3 },
+    { strategy: 'always_first', rate: 0.8, n: 2 },
+    { strategy: 'always_second', rate: 0.1, n: 6 },
+    { strategy: 'alternate', rate: 0.6, n: 7 },
+    { strategy: 'match_stay', rate: 0.4, n: 1 },
+  ]
+
+  it('draws all seven lines and seven legend entries', () => {
+    const html = renderToStaticMarkup(
+      <CooperationChartSVG points={[ptOf(1, ALL), ptOf(2, ALL)]} strategyLabels={LABELS3} />)
+    expect(ALL.length).toBe(7)
+    for (const s of ALL) {
+      expect(html).toContain(`data-testid="pd-coop-line-${s.strategy}"`)
+      expect(html).toContain(`data-testid="pd-coop-legend-${s.strategy}"`)
+    }
+  })
+
+  it('⚠ EVERY LEGEND ENTRY STATES ITS OWN n= — a thin series must read as thin', () => {
+    const text = renderToStaticMarkup(
+      <CooperationChartSVG points={[ptOf(1, ALL)]} strategyLabels={LABELS3} />)
+      .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+    // n taken from the fixture, not read back off the render.
+    expect(text).toContain('Match-and-stay (n=1)')
+    expect(text).toContain('Alternating (n=7)')
+    expect(text).toContain('Tit-for-tat (n=5)')
+  })
+
+  it('⚠⚠ A STRATEGY WITH NO SERIES GETS NO LINE AND NO LEGEND ENTRY', () => {
+    // The server sends only ASSIGNED strategies. Both halves asserted: the assigned one
+    // appears, the checked-but-unassigned one does not.
+    const twoOnly = ALL.filter(s => s.strategy === 'tft' || s.strategy === 'random')
+    expect(twoOnly.length).toBe(2)
+    const html = renderToStaticMarkup(
+      <CooperationChartSVG points={[ptOf(1, twoOnly), ptOf(2, twoOnly)]} strategyLabels={LABELS3} />)
+    expect(html).toContain('data-testid="pd-coop-line-tft"')
+    expect(html).toContain('data-testid="pd-coop-line-random"')
+    for (const absent of ['grim', 'always_first', 'always_second', 'alternate', 'match_stay']) {
+      expect(html).not.toContain(`data-testid="pd-coop-line-${absent}"`)
+      expect(html).not.toContain(`data-testid="pd-coop-legend-${absent}"`)
+    }
+  })
+
+  it('names come from the SERVER map, never from a hardcoded English table', () => {
+    const renamed = renderToStaticMarkup(
+      <CooperationChartSVG
+        points={[ptOf(1, [{ strategy: 'always_second', rate: 0.5, n: 3 }])]}
+        strategyLabels={{ always_second: 'Always Blorptide' }}
+      />).replace(/<[^>]+>/g, ' ')
+    expect(renamed).toContain('Always Blorptide')
+    expect(renamed).not.toContain('Defect')
+    expect(renamed).not.toContain('Cooperate')
+  })
+
+  it('⚠ NEGATIVE CONTROL — an unknown id falls back to the raw id, not to a wrong name', () => {
+    const html = renderToStaticMarkup(
+      <CooperationChartSVG points={[ptOf(1, [{ strategy: 'alternate', rate: 1, n: 2 }])]} />)
+      .replace(/<[^>]+>/g, ' ')
+    // No label map passed at all: the id shows, rather than a name invented client-side.
+    expect(html).toContain('alternate (n=2)')
+  })
+})
+
+describe('FirstMoveChartSVG — one bar per assigned strategy', () => {
+  it('⚠ a THIRD strategy gets bars; the two-id list used to drop it silently', () => {
+    const html = renderToStaticMarkup(
+      <FirstMoveChartSVG
+        outcomes={[
+          { firstMove: 'C', strategy: 'tft', avgYearsPerRound: 1, n: 2 },
+          { firstMove: 'C', strategy: 'random', avgYearsPerRound: 2, n: 3 },
+          { firstMove: 'D', strategy: 'tft', avgYearsPerRound: 3, n: 1 },
+          { firstMove: 'D', strategy: 'random', avgYearsPerRound: 4, n: 1 },
+        ]}
+        labels={{ C: 'Zarquon', D: 'Blorptide' }}
+        unit="points"
+        strategyLabels={{ tft: 'Tit-for-tat', random: 'Random' }}
+      />)
+    for (const id of ['C-tft', 'C-random', 'D-tft', 'D-random']) {
+      expect(html).toContain(`data-testid="pd-firstmove-bar-${id}"`)
+    }
+    expect(html).toContain('data-testid="pd-firstmove-legend-random"')
+    // …and a strategy nobody was assigned has no bar at all.
+    expect(html).not.toContain('data-testid="pd-firstmove-bar-C-grim"')
   })
 })

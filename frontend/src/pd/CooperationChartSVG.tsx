@@ -1,4 +1,5 @@
-import type { PdCooperationPoint } from './api'
+import type { PdCooperationPoint, PdStrategy } from './api'
+import { strategyColor } from './strategyColors'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Tier 3a (spec §9) — CLASS COOPERATION RATE PER ROUND, split by the bot faced.
@@ -6,10 +7,20 @@ import type { PdCooperationPoint } from './api'
 // eBay's PriceOverTimeSVG); this family has no shared chart widget and this slice is
 // not the place to invent one.
 //
-// This is THE debrief chart: two lines diverging is the whole lesson. Against
+// This is THE debrief chart: the lines diverging is the whole lesson. Against
 // tit-for-tat the class typically recovers after a defection (the bot forgives);
-// against GRIM it cannot (the bot never does), so the GRIM line decays and stays
-// down. Elena projects this next lecture.
+// against Grim it cannot (the bot never does), so the Grim line decays and stays down.
+// Elena projects this next lecture.
+//
+// ⚠⚠ ONE SERIES PER STRATEGY **ACTUALLY ASSIGNED**, NOT PER STRATEGY IN THE POOL. The
+// server decides that set (reportStats `assignedStrategies`) and this renders whatever
+// it is handed: a strategy an instructor checked that nobody drew has nothing to plot,
+// and giving it a flat empty line plus a legend entry would invite the reading that its
+// students all did something. It was two hardcoded series before this pass.
+//
+// ⚠ EVERY SERIES CARRIES ITS OWN n= IN THE LEGEND, so a three-student series reads as
+// thin rather than as a finding. With seven possible series that is the difference
+// between a chart and a Rorschach test.
 //
 // INSTRUCTOR-ONLY — the x-axis IS the drawn round count, which no student may see.
 // Reached only through the instructor-authenticated pdGetReport.
@@ -19,24 +30,15 @@ import type { PdCooperationPoint } from './api'
 // the same. Each series is therefore drawn as one polyline per contiguous run.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const TFT_COLOR = '#2563eb'   // blue
-const GRIM_COLOR = '#dc2626'  // red
-
-type Series = { key: 'tft' | 'grim'; label: string; color: string }
-const SERIES: Series[] = [
-  { key: 'tft', label: 'Tit-for-tat', color: TFT_COLOR },
-  { key: 'grim', label: 'GRIM', color: GRIM_COLOR },
-]
-
 /** Contiguous runs of non-null points, so gaps break the line instead of faking a 0%. */
 export function runsOf(
   points: readonly PdCooperationPoint[],
-  key: 'tft' | 'grim',
+  key: PdStrategy,
 ): { round: number; value: number }[][] {
   const runs: { round: number; value: number }[][] = []
   let current: { round: number; value: number }[] = []
   for (const p of points) {
-    const v = p[key]
+    const v = p.series.find(s => s.strategy === key)?.rate ?? null
     if (v == null) {
       if (current.length > 0) { runs.push(current); current = [] }
     } else {
@@ -47,12 +49,48 @@ export function runsOf(
   return runs
 }
 
-export function CooperationChartSVG({ points }: { points: PdCooperationPoint[] }) {
+/**
+ * The series to draw, in server order, each with its label, colour and group size.
+ *
+ * ⚠ `n` IS THE ROUND-1 DENOMINATOR — the number of students assigned that strategy who
+ * played at all. It is the largest n the series ever has (the count is monotone
+ * non-increasing as students drop out mid-game), so the legend states the group's
+ * size rather than whatever it had thinned to by the last round.
+ */
+export function seriesOf(
+  points: readonly PdCooperationPoint[],
+  labels: Record<string, string>,
+): { key: PdStrategy; label: string; color: string; n: number }[] {
+  if (points.length === 0) return []
+  return points[0].series.map(s => ({
+    key: s.strategy,
+    label: labels[s.strategy] ?? s.strategy,
+    color: strategyColor(s.strategy),
+    n: s.n,
+  }))
+}
+
+export function CooperationChartSVG({
+  points,
+  strategyLabels = {},
+}: {
+  points: PdCooperationPoint[]
+  /** strategy id → display name, resolved SERVER-SIDE against the instance wording.
+   *  Defaulted so existing call sites keep compiling; a missing entry falls back to
+   *  the raw id rather than to a hardcoded English name. */
+  strategyLabels?: Record<string, string>
+}) {
   if (points.length === 0) {
     return <p style={{ color: '#94a3b8', margin: 0 }}>No rounds played yet.</p>
   }
 
-  const padL = 46, padR = 14, padT = 30, padB = 42
+  const SERIES = seriesOf(points, strategyLabels)
+  // ⚠ The legend wraps. Seven entries at 110px each is 770px, wider than the plot on
+  // any screen this is projected on; two hardcoded entries never had to.
+  const LEGEND_COLS = 3
+  const legendRows = Math.ceil(SERIES.length / LEGEND_COLS)
+
+  const padL = 46, padR = 14, padT = 30 + Math.max(0, legendRows - 1) * 16, padB = 42
   const plotW = Math.max(240, Math.min(560, points.length * 30))
   const plotH = 220
   const W = padL + plotW + padR
@@ -75,12 +113,16 @@ export function CooperationChartSVG({ points }: { points: PdCooperationPoint[] }
         role="img" aria-label="Class cooperation rate per round, by opponent strategy"
         data-testid="pd-cooperation-chart"
       >
-        {/* Legend */}
+        {/* Legend — wrapped, and every entry states its own n=. */}
         <g transform={`translate(${padL}, 14)`} fontSize="12">
           {SERIES.map((s, i) => (
-            <g key={s.key} transform={`translate(${i * 110}, 0)`}>
+            <g
+              key={s.key}
+              data-testid={`pd-coop-legend-${s.key}`}
+              transform={`translate(${(i % LEGEND_COLS) * 150}, ${Math.floor(i / LEGEND_COLS) * 16})`}
+            >
               <line x1={0} y1={-4} x2={16} y2={-4} stroke={s.color} strokeWidth={2.5} />
-              <text x={22} y={0} fill="#333">{s.label}</text>
+              <text x={22} y={0} fill="#333">{s.label} (n={s.n})</text>
             </g>
           ))}
         </g>
@@ -109,7 +151,7 @@ export function CooperationChartSVG({ points }: { points: PdCooperationPoint[] }
         ))}
         <text x={padL + plotW / 2} y={H - 8} textAnchor="middle" fontSize="12" fill="#555">Round</text>
 
-        {/* The two series */}
+        {/* One polyline group per assigned strategy */}
         {SERIES.map(s => (
           <g key={s.key}>
             {runsOf(points, s.key).map((run, i) => (
