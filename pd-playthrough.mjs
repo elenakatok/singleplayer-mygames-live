@@ -1086,6 +1086,24 @@ async function main() {
   check(/at least one/i.test(String(psEmpty.error ?? '')), `…and the message says so (${psEmpty.error})`)
   const psBadId = await callFn('pdUpdateConfig', { ...asDev(psGid), strategies: ['tft', 'pavlov'] })
   check(!psBadId.ok, 'an unknown strategy id is refused')
+  // ── P(first move) for Random — [0,1], default 0.5 ─────────────────────────
+  check(psCfg0.result?.randomFirstMoveProbability === 0.5,
+    `⚠ an unconfigured instance reads p = 0.5 (${psCfg0.result?.randomFirstMoveProbability})`)
+  check(psDoc0?.random_first_move_probability === undefined,
+    '⚠ NO BACKFILL — reading it writes no probability field')
+  for (const bad of [-0.01, 1.01, 2, 'half', null]) {
+    const r = await callFn('pdUpdateConfig', { ...asDev(psGid), randomFirstMoveProbability: bad })
+    check(!r.ok, `rejects p = ${JSON.stringify(bad)}`)
+  }
+  const pOk = await callFn('pdUpdateConfig', { ...asDev(psGid), randomFirstMoveProbability: 0.25 })
+  check(pOk.ok && pOk.result.randomFirstMoveProbability === 0.25,
+    `p = 0.25 saves and reads back (${pOk.result?.randomFirstMoveProbability})`)
+  for (const edge of [0, 1]) {
+    const r = await callFn('pdUpdateConfig', { ...asDev(psGid), randomFirstMoveProbability: edge })
+    check(r.ok && r.result.randomFirstMoveProbability === edge, `p = ${edge} is legal`)
+  }
+  await callFn('pdUpdateConfig', { ...asDev(psGid), randomFirstMoveProbability: 0.5 })
+
   const psOne = await callFn('pdUpdateConfig', { ...asDev(psGid), strategies: ['alternate'] })
   check(psOne.ok, 'ONE checked is legal')
   check(JSON.stringify(psOne.result?.strategies) === JSON.stringify(['alternate']),
@@ -1250,6 +1268,62 @@ async function main() {
   const psFm = psReport.result?.charts?.firstMove ?? []
   check(psFm.length > 0 && psFm.every(o => psDrawn.includes(o.strategy)),
     'Tier 3b cells cover the assigned strategies only')
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // [14e] ⚠ P(first move) REACHES REAL PLAY, and the reveal line tells the truth.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n[14e] Random’s probability — save → store → serve → play')
+  const prGid = `pd-randp-${stamp}`
+  const prPid = 'randp-stu'
+  const prSave = await callFn('pdUpdateConfig', {
+    ...asDev(prGid), strategies: ['random'], minRounds: 40, maxRounds: 40,
+    randomFirstMoveProbability: 0,
+  })
+  check(prSave.ok, 'an instance pinned to Random at p = 0 saves')
+  const prDoc = await getDoc(`pd_game_instances/${prGid}/config/main`)
+  check(prDoc?.random_first_move_probability?.doubleValue === 0
+    || Number(prDoc?.random_first_move_probability?.integerValue) === 0,
+    'p landed in config/main')
+
+  await callFn('pdBootstrap', asStudent(prGid, prPid))
+  await callFn('pdGetState', asStudent(prGid, prPid))
+  const prBot = []
+  for (let n = 1; n <= 40; n++) {
+    const r = await callFn('pdSubmitRound', asStudent(prGid, prPid, { round: n, move: 'C' }))
+    if (!r.ok) { check(false, `round ${n} played (${r.error})`); break }
+    prBot.push(r.result.round.botMove)
+  }
+  // ⚠ p = 0 MAKES THE OUTCOME CHECKABLE. At 0.5 a 40-round sequence proves nothing;
+  // at 0 every draw must be the second move, so a build ignoring p fails outright.
+  check(prBot.length === 40, `40 rounds played (${prBot.length})`)
+  check(prBot.every(m => m === 'D'),
+    `⚠⚠ p = 0 PRODUCED THE SECOND MOVE EVERY ROUND — p reached the compute step (${[...new Set(prBot)].join(',')})`)
+  const prStored = await getDoc(`pd_game_instances/${prGid}/participants/${prPid}`)
+  const prRounds = prStored?.rounds?.arrayValue?.values ?? []
+  check(prRounds.length === 40
+    && prRounds.every(v => v.mapValue.fields.bot_move.stringValue === 'D'),
+    '⚠ …and every drawn move was WRITTEN to the round record, not recomputed')
+
+  const prReport = await callFn('pdGetReport', asDev(prGid))
+  const prReveal = String(prReport.result?.strategyText?.random?.reveal ?? '')
+  check(!prReveal.includes('equal probability'),
+    '⚠⚠ the reveal line does NOT claim equal probability at p = 0')
+  check(prReveal.includes('every time'), `…it states what actually happened (${prReveal.slice(0, 60)}…)`)
+
+  // ── ⚠ THE EQUILIBRIUM HINT IS INSTRUCTOR-ONLY ─────────────────────────────
+  // It is computed CLIENT-SIDE on the settings page and has no server surface at
+  // all — so the strongest assertion available is that no callable, student or
+  // instructor, carries it, and that no student-facing module imports it.
+  const prState = await callFn('pdGetState', asStudent(prGid, prPid))
+  const prQs = await callFn('pdGetQuestions', asStudent(prGid, prPid))
+  for (const [label, payload] of [['pdGetState', prState], ['pdGetQuestions', prQs]]) {
+    const j = JSON.stringify(payload.result ?? {}).toLowerCase()
+    check(!j.includes('indifferen') && !j.includes('equilibri') && !j.includes('mixed'),
+      `⚠ ${label} carries no equilibrium hint`)
+  }
+  const prCfgJson = JSON.stringify(prSave.result ?? {}).toLowerCase()
+  check(!prCfgJson.includes('indifferen') && !prCfgJson.includes('equilibri'),
+    '⚠ …and neither does the INSTRUCTOR config payload — the hint is client-side only')
 
   await callFn('pdUpdateConfig', { ...asDev(GIDS), minRounds: 15, maxRounds: 20 })
   await callFn('pdGetState', asStudent(GIDS, SPID))   // a touch that could have redrawn
@@ -1431,6 +1505,32 @@ async function main() {
     // under a projector — the defect this palette pass exists to fix.
     check(!js.includes('#0891b2'),
       '⚠ the retired teal is gone from the bundle (it collided with blue on a projector)')
+
+    // ⚠⚠ THE EQUILIBRIUM HINT IS INSTRUCTOR-ONLY, AND THE BUNDLE IS SHARED. Settings,
+    // Dashboard, Reports and Play all ship in one JS bundle, so "absent from the
+    // bundle" is not the available guarantee and asserting it would be a lie. What IS
+    // assertable, and is what actually matters:
+    //   (1) the hint's own module is imported by NO student-facing component, and
+    //   (2) no student callable carries it (asserted at the payloads in §14e).
+    // Same shape as the strategy-library check above: assert against the SOURCE, where
+    // the import graph is legible, rather than against minified output.
+    const STUDENT_MODULES = [
+      'Play.tsx', 'RoundScreen.tsx', 'KcScreen.tsx', 'DebriefScreen.tsx',
+      'HistoryTable.tsx', 'PayoffMatrix.tsx', 'resume.ts',
+    ]
+    const studentSrc = STUDENT_MODULES.map(f =>
+      fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'pd', f), 'utf8'))
+    check(studentSrc.length === STUDENT_MODULES.length,
+      `read all ${STUDENT_MODULES.length} student-facing modules`)
+    check(studentSrc.every(src => !/mixedEquilibrium/.test(src)),
+      '⚠⚠ NO student-facing module imports the equilibrium hint')
+    check(studentSrc.every(src => !/indifferen/i.test(src)),
+      '⚠ …and none of them mentions indifference at all')
+    // NEGATIVE CONTROL: the module IS imported by the instructor settings page, so the
+    // assertion above is about where it is used and not about it being unused.
+    const settingsSrc = fs.readFileSync(path.join(ROOT, 'frontend', 'src', 'pd', 'Settings.tsx'), 'utf8')
+    check(/mixedEquilibrium/.test(settingsSrc),
+      '⚠ NEGATIVE CONTROL — the instructor settings page DOES import it')
     check(!/rounds?\s+remaining|rounds?\s+left/i.test(js), 'the bundle has no rounds-remaining copy')
     check(!/round\s*\{?\s*\w*\s*\}?\s*of\s*\{/i.test(js), 'the bundle has no "round N of M" template')
   }

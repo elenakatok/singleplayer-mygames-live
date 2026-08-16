@@ -13,6 +13,7 @@ import { PayoffMatrix } from './PayoffMatrix'
 import { warnNotADilemma, NOT_A_DILEMMA_WARNING } from './dilemma'
 import { derivedKcRow } from './derivedKc'
 import { strategyDisplayName, strategyRuleSummary } from './strategyText'
+import { mixedEquilibriumText } from './mixedEquilibrium'
 import {
   KnowledgeCheckSettings,
   type KcSettingsDraft, type KcSettingsQuestion, type KcSettingsStage,
@@ -62,6 +63,13 @@ import {
 //   • THE OPPONENT POOL — one checkbox per strategy, and the checked set is what this
 //     instance may assign. ⚠ ZERO CHECKED BLOCKS SAVE, here AND at the callable.
 //     ⚠ Unchecking never disturbs a student already assigned that strategy.
+//
+//   • THE RANDOM OPPONENT'S BIAS — P(first move), in [0, 1], default 0.5. Shown
+//     whether or not Random is checked: a hidden setting that silently persists is
+//     worse than a visible inert one.
+//     ⚠ Beside it, the STUDENT'S INDIFFERENCE PROBABILITY for the current matrix —
+//     instructor-facing, advisory, recomputed live from the form. It never changes the
+//     probability, never blocks save and never warns. See mixedEquilibrium.ts.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -263,6 +271,7 @@ export default function Settings() {
     try {
       const res = await pdUpdateConfig({
         strategies: cfg.strategies,
+        randomFirstMoveProbability: cfg.randomFirstMoveProbability,
         payoffs: cfg.payoffs,
         labels: cfg.labels,
         unit: cfg.unit,
@@ -422,6 +431,33 @@ export default function Settings() {
           random when they first open the game, and plays it for every round. They are
           never told which — inferring it from play is the exercise.
         </p>
+        {/* ── The Random opponent's bias, and the indifference hint beside it ── */}
+        <div style={{ ...row, marginBottom: '0.9rem', alignItems: 'flex-start' }}>
+          <Labelled label={`Random: chance of ${cfg.labels.C}`}>
+            <input
+              data-testid="pd-set-random-p" type="number" step="0.01" min="0" max="1"
+              style={numField}
+              value={cfg.randomFirstMoveProbability}
+              onChange={e => patch({ randomFirstMoveProbability: Number(e.target.value) })}
+            />
+          </Labelled>
+          <div style={{ flex: 1, minWidth: '18rem' }}>
+            <p style={{ ...hint, margin: 0 }}>
+              How often the <strong>Random</strong> opponent plays {cfg.labels.C}, from 0 to 1.
+              {' '}0 or 1 makes it constant. It applies only when Random is checked below,
+              and is kept either way.
+            </p>
+            {/* ⚠⚠ RECOMPUTED FROM THE FORM ON EVERY KEYSTROKE, like the payoff preview
+                and unlike the knowledge-check list before it was fixed. A stale hint
+                beside a live matrix is the same defect in a different place.
+                ⚠ INSTRUCTOR-FACING. No student surface renders this. */}
+            <p data-testid="pd-set-mixed-eq" style={{ ...hint, marginTop: '0.4rem' }}>
+              <strong>Indifference point:</strong>{' '}
+              {mixedEquilibriumText(cfg.payoffs, cfg.labels)}
+            </p>
+          </div>
+        </div>
+
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
           {cfg.strategyOptions.map(opt => {
             const checked = cfg.strategies.includes(opt.id)

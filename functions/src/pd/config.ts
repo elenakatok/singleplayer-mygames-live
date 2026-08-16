@@ -1,5 +1,8 @@
 import { DEFAULT_PAYOFFS, parsePayoffs, type PayoffConfig } from './payoff'
-import { STRATEGIES, DEFAULT_STRATEGY_POOL, isStrategy, type Strategy } from './strategy'
+import {
+  STRATEGIES, DEFAULT_STRATEGY_POOL, DEFAULT_RANDOM_FIRST_MOVE_PROBABILITY,
+  isStrategy, type Strategy,
+} from './strategy'
 import {
   parseAddedKcQuestion as parseSharedAddedKcQuestion,
   parseKcHidden, parseKcOrder, parseKcOverrides,
@@ -214,6 +217,18 @@ export interface PdConfig {
    * inferring it from play is the exercise (spec §5).
    */
   strategies: Strategy[]
+  /**
+   * P(FIRST move) for the `random` strategy, in [0, 1]. Default 0.5.
+   *
+   * ⚠ ONLY MEANINGFUL WHEN `random` IS IN THE POOL, and stored regardless. The settings
+   * page shows the input unconditionally rather than hiding or disabling it on the
+   * checkbox: a hidden setting that silently persists is worse than a visible inert one,
+   * because the instructor cannot see what the instance will do if they ever tick the box.
+   *
+   * ⚠ NOT A DIRECTION. It says nothing about which move is better — see §2; the game is
+   * direction-agnostic and this is a coin's bias, not a preference.
+   */
+  randomFirstMoveProbability: number
 }
 
 /** The shipped default unit. One word — it is rendered straight after a number. */
@@ -235,6 +250,7 @@ export const DEFAULT_PD_CONFIG: PdConfig = {
   debriefPrompt: DEFAULT_DEBRIEF_PROMPT,
   seed: null,
   strategies: [...DEFAULT_STRATEGY_POOL],
+  randomFirstMoveProbability: DEFAULT_RANDOM_FIRST_MOVE_PROBABILITY,
   kcHidden: {},
   kcOrder: {},
   kcOverrides: {},
@@ -302,6 +318,25 @@ export function parseStrategyPool(raw: unknown): Strategy[] {
   return out.length > 0 ? out : [...DEFAULT_STRATEGY_POOL]
 }
 
+/**
+ * P(first move) for `random`, defensively parsed.
+ *
+ * ⚠⚠ THE LAZY MIGRATION. An instance stored before this was configurable has no
+ * `random_first_move_probability` field and reads as 0.5 — exactly the constant
+ * `random` was hardcoded to — so it draws the same way it always did. Nothing is
+ * written back; an instance migrates only when an instructor next saves settings.
+ *
+ * Out of range, NaN, ±Infinity and non-numbers all fall back rather than throwing, the
+ * posture every parser here takes: a half-written config must never make a round
+ * unplayable. 0 and 1 are LEGAL — they make the bot constant, which is a coherent thing
+ * to configure.
+ */
+export function parseRandomFirstMoveProbability(raw: unknown): number {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 1
+    ? raw
+    : DEFAULT_RANDOM_FIRST_MOVE_PROBABILITY
+}
+
 /** Clamp + sanity-check a stored round range. Returns the shipped defaults when the
  *  stored pair is unusable, and never returns min > max. */
 export function parseRoundRange(rawMin: unknown, rawMax: unknown): { minRounds: number; maxRounds: number } {
@@ -330,6 +365,8 @@ export function loadPdConfig(configData: Record<string, unknown> | undefined): P
   return {
     payoffs: parsePayoffs(configData?.payoffs),
     strategies: parseStrategyPool(configData?.strategies),
+    randomFirstMoveProbability:
+      parseRandomFirstMoveProbability(configData?.random_first_move_probability),
     labels: {
       C: typeof labelsRaw.C === 'string' && labelsRaw.C.trim() ? labelsRaw.C : DEFAULT_MOVE_LABELS.C,
       D: typeof labelsRaw.D === 'string' && labelsRaw.D.trim() ? labelsRaw.D : DEFAULT_MOVE_LABELS.D,

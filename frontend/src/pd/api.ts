@@ -330,6 +330,8 @@ export type PdConfigResult = {
   ok: boolean
   /** The instance's pool — which strategies may be assigned. Never empty. */
   strategies: PdStrategy[]
+  /** P(FIRST move) for the Random opponent, in [0, 1]. Default 0.5. */
+  randomFirstMoveProbability: number
   /** Every id with its display name and reveal line, resolved against the STORED
    *  wording. The settings page relabels live from `strategyText.ts` as the
    *  instructor types; this is the load-time value and the drift reference. */
@@ -409,6 +411,8 @@ export const pdGetConfig = () => callFn<PdConfigResult>('pdGetConfig')
 export const pdUpdateConfig = (patch: Partial<{
   /** The opponent pool. ⚠ The callable REFUSES an empty array — see spec §5.3. */
   strategies: PdStrategy[]
+  /** P(first move) for Random. ⚠ The callable REFUSES anything outside [0, 1]. */
+  randomFirstMoveProbability: number
   payoffs: PdPayoffs
   labels: PdMoveLabels
   unit: string

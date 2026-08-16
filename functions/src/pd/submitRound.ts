@@ -103,7 +103,13 @@ export const pdSubmitRound = onCall({ cors: PD_CORS_ORIGINS }, async (request) =
     // strategy: `random`'s past moves are DRAWS, so a replay would rewrite an unseeded
     // student's history rather than describe it (spec §5).
     const bot = botMove(strategy, studentMoves(stored), botMoves(stored),
-      { seed: config.seed, participantId })
+      {
+        seed: config.seed,
+        participantId,
+        // ⚠ FROM THE INSTANCE, NOT A CONSTANT. `random` was 50/50 in code until this
+        // became configurable; an instance that never set it reads 0.5 (config.ts).
+        randomFirstMoveProbability: config.randomFirstMoveProbability,
+      })
     const { studentYears, botYears } = payoff(move, bot, config.payoffs)
 
     const record: StoredRound = {

@@ -161,7 +161,9 @@ export const pdGetReport = onCall({ cors: PD_CORS_ORIGINS }, async (request) => 
      */
     strategyText: Object.fromEntries(STRATEGIES.map(id => [id, {
       label: strategyDisplayName(id, config.labels),
-      reveal: strategyRevealLine(id, config.labels),
+      // ⚠ THE INSTANCE'S OWN p — the Random reveal states the real probability, and a
+      // default here would tell a student "equal probability" about a biased coin.
+      reveal: strategyRevealLine(id, config.labels, config.randomFirstMoveProbability),
     }])),
     debriefPrompt: debriefQuestion.prompt,
   }

@@ -28,6 +28,8 @@ import { strategyDisplayName, strategyRevealLine } from './strategyText'
 //              at serve and grade time, never stored as text (see questions.ts). They
 //              are RETURNED here read-only so the settings page can preview what the
 //              current matrix produces.
+//   editable   P(first move) for the Random opponent, in [0, 1], default 0.5. Shown
+//              whether or not Random is in the pool.
 //   editable   THE STRATEGY POOL — which opponent strategies this instance may assign.
 //              At least one must be checked; the callable refuses an empty pool.
 //              ⚠ Unchecking a strategy NEVER disturbs a student already assigned it
@@ -131,6 +133,24 @@ export const pdUpdateConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
     // Stored deduped and in STRATEGIES order, so the draw, the settings page and the
     // reports all see one canonical ordering.
     patch.strategies = STRATEGIES.filter(s => chosen.has(s))
+  }
+
+  // ── P(first move) for `random` — a number in [0, 1] ───────────────────────
+  //
+  // ⚠ 0 AND 1 ARE LEGAL. They make the bot constant, which is a coherent instance to
+  // run and is NOT the same thing as `always_first`/`always_second`: the student is
+  // still facing the strategy called Random, and the reveal line still says so.
+  //
+  // ⚠ NO CLAMPING. An out-of-range value is REFUSED, not silently pulled to the
+  // boundary — an instructor who typed 1.5 meant something, and quietly storing 1 would
+  // hide the mistake behind a plausible instance.
+  if (has(data, 'randomFirstMoveProbability')) {
+    const v = data.randomFirstMoveProbability
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1) {
+      throw new HttpsError('invalid-argument',
+        'The Random opponent\'s probability must be a number between 0 and 1.')
+    }
+    patch.random_first_move_probability = v
   }
 
   // ── Move labels — two non-empty strings ───────────────────────────────────
@@ -315,10 +335,11 @@ function configView(config: PdConfig, anyRoundsDrawn: boolean) {
      *  its display name resolved against THIS instance's wording, so the settings page
      *  renders the checkbox list without a second source for the ids. */
     strategies: config.strategies,
+    randomFirstMoveProbability: config.randomFirstMoveProbability,
     strategyOptions: STRATEGIES.map(id => ({
       id,
       label: strategyDisplayName(id, config.labels),
-      reveal: strategyRevealLine(id, config.labels),
+      reveal: strategyRevealLine(id, config.labels, config.randomFirstMoveProbability),
     })),
     kcEnabled: config.kcEnabled,
     addedKcQuestions: config.addedKcQuestions,

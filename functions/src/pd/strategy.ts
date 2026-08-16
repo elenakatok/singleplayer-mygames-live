@@ -114,10 +114,22 @@ export interface BotContext {
   /** The instance seed. null ⇒ real randomness. */
   seed: string | null
   participantId: string
+  /**
+   * P(first move) for `random`, in [0, 1]. Absent ⇒ the shipped default.
+   *
+   * ⚠ OPTIONAL SO EVERY EXISTING CALL SITE AND TEST STILL COMPILES AND STILL MEANS
+   * WHAT IT MEANT. Absent is not "unspecified", it is 0.5 — the value `random` was
+   * hardcoded to before it became configurable.
+   */
+  randomFirstMoveProbability?: number
 }
 
+/** The probability `random` plays the FIRST move when an instance has never set one.
+ *  ⚠ EXACTLY WHAT IT WAS HARDCODED TO, which is what makes the migration exact. */
+export const DEFAULT_RANDOM_FIRST_MOVE_PROBABILITY = 0.5
+
 /** FNV-1a + murmur3 fmix32. Same construction as init.ts's — the avalanche matters
- *  because the draw consumes the LOW BIT, and raw FNV-1a low bits are poorly mixed
+ *  because the draw consumed the LOW BIT, and raw FNV-1a low bits are poorly mixed
  *  for short, similar inputs (round numbers are exactly that). */
 function hash32(s: string): number {
   let h = 0x811c9dc5
@@ -131,6 +143,17 @@ function hash32(s: string): number {
   h = Math.imul(h, 0xc2b2ae35)
   h ^= h >>> 16
   return h >>> 0
+}
+
+/**
+ * Move the low bit of a 32-bit value to the top, shifting the rest down.
+ *
+ * A rotation, so it is a bijection on [0, 2^32) and preserves uniformity. Its only
+ * purpose is to make the threshold draw agree with the legacy parity draw at p = 0.5 —
+ * see the note in `botMove`'s `random` case.
+ */
+function rotateLowBitUp(h: number): number {
+  return (((h >>> 1) | ((h & 1) << 31)) >>> 0)
 }
 
 /**
@@ -214,12 +237,30 @@ export function botMove(
       if (ctx === undefined) {
         throw new Error('botMove(random) needs a BotContext — pass { seed, participantId }.')
       }
+      const p = ctx.randomFirstMoveProbability ?? DEFAULT_RANDOM_FIRST_MOVE_PROBABILITY
       // ⚠ THE ROUND IS IN THE HASH INPUT. Without it every round of one student's game
       // draws the same move, which is a constant strategy wearing a coin's name.
-      const bit = ctx.seed === null
-        ? (Math.random() < 0.5 ? 0 : 1)
-        : hash32(`${ctx.seed}:bot:${ctx.participantId}:${round}`) % 2
-      return bit === 0 ? 'C' : 'D'
+      //
+      // ⚠⚠ THE SEEDED DRAW IS A ROTATED HASH, AND THE ROTATION IS THE MIGRATION.
+      //
+      // The rule used to be `hash32(...) % 2 === 0 ⇒ C` — a PARITY test on the LOW bit.
+      // A probability needs a THRESHOLD test instead, and the natural `hash32(...)/2^32
+      // < p` reads the HIGH bits, so at p = 0.5 it would return a different sequence
+      // than parity does for the same seed. That is a behaviour change for any seeded
+      // instance, and "identical play" is the standard this migration is held to.
+      //
+      // Rotating the low bit up to the top fixes it exactly. `rotated < 0.5` is true iff
+      // the top bit of `rotated` is 0, iff the LOW bit of `h` is 0, iff `h % 2 === 0` —
+      // the legacy condition, character for character in outcome. And a bit rotation is
+      // a bijection on the 32-bit range, so the value stays uniform for every other p.
+      // `pdRandomProbability.test.ts` asserts the p = 0.5 sequence matches a verbatim
+      // transcription of the old parity rule over hundreds of draws.
+      const u = ctx.seed === null
+        ? Math.random()
+        : rotateLowBitUp(hash32(`${ctx.seed}:bot:${ctx.participantId}:${round}`)) / 0x100000000
+      // ⚠ STRICTLY `<`, so p = 0 NEVER plays the first move (u ≥ 0 always) and p = 1
+      // ALWAYS does (u < 1 always). Both endpoints are legal and give a constant bot.
+      return u < p ? 'C' : 'D'
     }
   }
 }
