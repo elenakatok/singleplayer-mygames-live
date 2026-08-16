@@ -100,8 +100,8 @@ export const pdSubmitRound = onCall({ cors: PD_CORS_ORIGINS }, async (request) =
     // History through t−1 only: `stored` does not yet contain this round.
     // ⚠⚠ BOTH HISTORIES COME FROM `stored` — the round records as written. `botMoves`
     // is the bot's own past moves read off the `bot_move` fields, NEVER a replay of the
-    // strategy: `random`'s past moves are draws and `match_stay` reads its own last
-    // move, so a replay would rewrite history rather than describe it (spec §5).
+    // strategy: `random`'s past moves are DRAWS, so a replay would rewrite an unseeded
+    // student's history rather than describe it (spec §5).
     const bot = botMove(strategy, studentMoves(stored), botMoves(stored),
       { seed: config.seed, participantId })
     const { studentYears, botYears } = payoff(move, bot, config.payoffs)

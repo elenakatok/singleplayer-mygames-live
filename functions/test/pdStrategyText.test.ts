@@ -24,14 +24,13 @@ describe('display names', () => {
       `Always ${OPERA}`,
       `Always ${BOXING}`,
       'Alternating',
-      'Match-and-stay',
     ])
   })
 
   it('every id has a name and no two share one', () => {
     const names = STRATEGIES.map(s => strategyDisplayName(s, LABELS))
-    expect(names.length).toBe(7)
-    expect(new Set(names).size).toBe(7)
+    expect(names.length).toBe(6)
+    expect(new Set(names).size).toBe(6)
     expect(names.every(n => n.trim().length > 0)).toBe(true)
   })
 })
@@ -73,7 +72,7 @@ describe('⚠ the wording fields are interpolated everywhere a move is named', (
 describe('the debrief reveal lines', () => {
   const reveal = (s: Parameters<typeof strategyRevealLine>[0]) => strategyRevealLine(s, LABELS)
 
-  it('the five new lines are exactly as specified', () => {
+  it('the four non-reactive lines are exactly as specified', () => {
     expect(reveal('random')).toBe(
       `This opponent chose ${OPERA} or ${BOXING} at random each round, with equal `
       + 'probability. Nothing you did changed what it played.')
@@ -84,15 +83,12 @@ describe('the debrief reveal lines', () => {
     expect(reveal('alternate')).toBe(
       `This opponent switched between ${OPERA} and ${BOXING} every round, starting `
       + `with ${OPERA}. It never reacted to your choices.`)
-    expect(reveal('match_stay')).toBe(
-      'This opponent repeated its own previous choice whenever the two of you had '
-      + 'chosen the same thing, and switched whenever you had chosen differently.')
   })
 
   it('every id has a reveal line, in the existing voice', () => {
     const lines = STRATEGIES.map(reveal)
-    expect(lines.length).toBe(7)
-    expect(new Set(lines).size).toBe(7)
+    expect(lines.length).toBe(6)
+    expect(new Set(lines).size).toBe(6)
     for (const l of lines) {
       expect(l.startsWith('This opponent ')).toBe(true)
       expect(l.endsWith('.')).toBe(true)

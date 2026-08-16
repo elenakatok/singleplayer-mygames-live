@@ -90,11 +90,10 @@ export function studentMoves(rounds: readonly StoredRound[]): Move[] {
  * The BOT's own moves, in round order, READ STRAIGHT OFF THE STORED RECORDS.
  *
  * ⚠⚠ THIS IS THE WHOLE POINT — the bot's past moves are DATA, not something to
- * recompute. `random` draws its move once and it is written here; `match_stay` reads
- * its own last move to decide the next. Replaying the strategy to reconstruct this
- * list would silently rewrite an unseeded random game's history, and would compound
- * from the first divergence for match_stay. There is exactly one source, and it is
- * the `bot_move` field of the round that was played.
+ * recompute. `random` draws its move once and it is written here; replaying the
+ * strategy to reconstruct this list would silently rewrite an unseeded random game's
+ * history. There is exactly one source, and it is the `bot_move` field of the round
+ * that was played.
  */
 export function botMoves(rounds: readonly StoredRound[]): Move[] {
   return rounds.map(r => r.bot_move)

@@ -26,8 +26,6 @@ export function strategyDisplayName(id: PdStrategy, labels: PdMoveLabels): strin
     case 'grim': return 'Grim'
     case 'random': return 'Random'
     case 'alternate': return 'Alternating'
-    // ⚠ NOT "Pavlov" — see functions/src/pd/strategy.ts for why the two rules differ.
-    case 'match_stay': return 'Match-and-stay'
     case 'always_first': return `Always ${labels.C}`
     case 'always_second': return `Always ${labels.D}`
   }
@@ -50,7 +48,5 @@ export function strategyRuleSummary(id: PdStrategy, labels: PdMoveLabels): strin
     case 'always_first': return `Plays ${first} every round.`
     case 'always_second': return `Plays ${second} every round.`
     case 'alternate': return `Starts with ${first} and switches every round. Ignores the student.`
-    case 'match_stay':
-      return 'Repeats its own last move when the two matched, switches when they differed.'
   }
 }

@@ -90,7 +90,7 @@ describe('purity + shared invariants', () => {
     // move is written to the round record and never recomputed (spec §5).
     const studentHistory = h('CDCDD')
     const botHistory = h('CCDDC')
-    expect(DETERMINISTIC.length).toBe(6)
+    expect(DETERMINISTIC.length).toBe(5)
     for (const s of DETERMINISTIC) {
       const first = botMove(s, studentHistory, botHistory)
       for (let i = 0; i < 50; i++) expect(botMove(s, studentHistory, botHistory)).toBe(first)
@@ -98,7 +98,7 @@ describe('purity + shared invariants', () => {
   })
 
   it('every strategy but always_second and random opens with the FIRST move', () => {
-    expect(OPENS_FIRST.length).toBe(5)
+    expect(OPENS_FIRST.length).toBe(4)
     for (const s of OPENS_FIRST) expect(botMove(s, [], [])).toBe('C')
     // ⚠ NAMED EXCEPTIONS, asserted rather than skipped: `always_second` opens with the
     // second move BY DEFINITION, and a test that quietly excluded it would not notice
@@ -109,11 +109,14 @@ describe('purity + shared invariants', () => {
 
   it('isStrategy accepts the library and rejects anything else', () => {
     expect(STRATEGIES).toEqual([
-      'tft', 'grim', 'random', 'always_first', 'always_second', 'alternate', 'match_stay',
+      'tft', 'grim', 'random', 'always_first', 'always_second', 'alternate',
     ])
-    expect(STRATEGIES.length).toBe(7)
+    expect(STRATEGIES.length).toBe(6)
     for (const s of STRATEGIES) expect(isStrategy(s)).toBe(true)
-    for (const bad of ['TFT', 'grim ', '', 'pavlov', 'always', null, undefined, 7, {}]) {
+    // ⚠ `match_stay` IS NOW AN UNKNOWN ID and must be rejected by the guard — it is
+    // handled separately, by `parseStoredStrategy`, which maps it to its exact
+    // equivalent. See pdRetiredStrategy.test.ts.
+    for (const bad of ['TFT', 'grim ', '', 'pavlov', 'match_stay', 'always', null, undefined, 7, {}]) {
       expect(isStrategy(bad)).toBe(false)
     }
   })

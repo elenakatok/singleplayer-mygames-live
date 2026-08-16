@@ -12,9 +12,9 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export type PdStrategy =
-  | 'tft' | 'grim' | 'random' | 'always_first' | 'always_second' | 'alternate' | 'match_stay'
+  | 'tft' | 'grim' | 'random' | 'always_first' | 'always_second' | 'alternate'
 
 /** Every id, in the order settings lists them and the reports group them. */
 export const PD_STRATEGIES: readonly PdStrategy[] = [
-  'tft', 'grim', 'random', 'always_first', 'always_second', 'alternate', 'match_stay',
+  'tft', 'grim', 'random', 'always_first', 'always_second', 'alternate',
 ] as const

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { CooperationChartSVG, runsOf } from './CooperationChartSVG'
 import { FirstMoveChartSVG } from './FirstMoveChartSVG'
 import type { PdCooperationPoint, PdFirstMoveOutcome, PdMoveLabels } from './api'
+import { STRATEGY_COLOR } from './strategyColors'
 
 // Static-markup tests for the two Tier-3 charts. Both are pure presentation (types-only
 // imports from api.ts), so renderToStaticMarkup reaches them without jsdom. The MATHS
@@ -259,7 +260,7 @@ describe('CooperationChartSVG — one series per assigned strategy', () => {
   const LABELS3: Record<string, string> = {
     tft: 'Tit-for-tat', grim: 'Grim', random: 'Random',
     always_first: 'Always Zarquon', always_second: 'Always Blorptide',
-    alternate: 'Alternating', match_stay: 'Match-and-stay',
+    alternate: 'Alternating',
   }
   const ALL: PdCooperationPoint['series'] = [
     { strategy: 'tft', rate: 1, n: 5 },
@@ -268,13 +269,12 @@ describe('CooperationChartSVG — one series per assigned strategy', () => {
     { strategy: 'always_first', rate: 0.8, n: 2 },
     { strategy: 'always_second', rate: 0.1, n: 6 },
     { strategy: 'alternate', rate: 0.6, n: 7 },
-    { strategy: 'match_stay', rate: 0.4, n: 1 },
   ]
 
-  it('draws all seven lines and seven legend entries', () => {
+  it('draws all six lines and six legend entries', () => {
     const html = renderToStaticMarkup(
       <CooperationChartSVG points={[ptOf(1, ALL), ptOf(2, ALL)]} strategyLabels={LABELS3} />)
-    expect(ALL.length).toBe(7)
+    expect(ALL.length).toBe(6)
     for (const s of ALL) {
       expect(html).toContain(`data-testid="pd-coop-line-${s.strategy}"`)
       expect(html).toContain(`data-testid="pd-coop-legend-${s.strategy}"`)
@@ -286,8 +286,8 @@ describe('CooperationChartSVG — one series per assigned strategy', () => {
       <CooperationChartSVG points={[ptOf(1, ALL)]} strategyLabels={LABELS3} />)
       .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
     // n taken from the fixture, not read back off the render.
-    expect(text).toContain('Match-and-stay (n=1)')
     expect(text).toContain('Alternating (n=7)')
+    expect(text).toContain('Always Blorptide (n=6)')
     expect(text).toContain('Tit-for-tat (n=5)')
   })
 
@@ -300,7 +300,7 @@ describe('CooperationChartSVG — one series per assigned strategy', () => {
       <CooperationChartSVG points={[ptOf(1, twoOnly), ptOf(2, twoOnly)]} strategyLabels={LABELS3} />)
     expect(html).toContain('data-testid="pd-coop-line-tft"')
     expect(html).toContain('data-testid="pd-coop-line-random"')
-    for (const absent of ['grim', 'always_first', 'always_second', 'alternate', 'match_stay']) {
+    for (const absent of ['grim', 'always_first', 'always_second', 'alternate']) {
       expect(html).not.toContain(`data-testid="pd-coop-line-${absent}"`)
       expect(html).not.toContain(`data-testid="pd-coop-legend-${absent}"`)
     }
@@ -346,5 +346,61 @@ describe('FirstMoveChartSVG — one bar per assigned strategy', () => {
     expect(html).toContain('data-testid="pd-firstmove-legend-random"')
     // …and a strategy nobody was assigned has no bar at all.
     expect(html).not.toContain('data-testid="pd-firstmove-bar-C-grim"')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠⚠ BOTH CHARTS READ FROM THE ONE SHARED PALETTE — ASSERTED BY RENDERING.
+//
+// Reading the import would only prove the module resolves. These assert the hex
+// actually reaches the SVG, so a chart that quietly reintroduced a per-file colour
+// constant fails here.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('the shared palette reaches both charts', () => {
+  const LABELS4 = { C: 'Zarquon', D: 'Blorptide' }
+
+  it('CooperationChartSVG strokes each series in its shared colour', () => {
+    const series: PdCooperationPoint['series'] = [
+      { strategy: 'tft', rate: 1, n: 2 },
+      { strategy: 'alternate', rate: 0.5, n: 2 },
+      { strategy: 'always_second', rate: 0.25, n: 2 },
+    ]
+    const html = renderToStaticMarkup(
+      <CooperationChartSVG points={[{ round: 1, series }, { round: 2, series }]} />)
+    expect(series.length).toBe(3)
+    for (const s of series) {
+      expect(html).toContain(STRATEGY_COLOR[s.strategy])
+    }
+    // ⚠ THE TEAL THAT WAS THE DEFECT must not appear anywhere in the markup.
+    expect(html).not.toContain('#0891b2')
+    // …and black really is drawn as a series stroke.
+    expect(html).toContain(`stroke="${STRATEGY_COLOR.always_second}"`)
+  })
+
+  it('FirstMoveChartSVG fills each bar in its shared colour', () => {
+    const html = renderToStaticMarkup(
+      <FirstMoveChartSVG
+        outcomes={[
+          { firstMove: 'C', strategy: 'tft', avgYearsPerRound: 1, n: 2 },
+          { firstMove: 'C', strategy: 'alternate', avgYearsPerRound: 2, n: 2 },
+          { firstMove: 'D', strategy: 'tft', avgYearsPerRound: 3, n: 1 },
+          { firstMove: 'D', strategy: 'alternate', avgYearsPerRound: 4, n: 1 },
+        ]}
+        labels={LABELS4} unit="points"
+      />)
+    expect(html).toContain(`fill="${STRATEGY_COLOR.tft}"`)
+    expect(html).toContain(`fill="${STRATEGY_COLOR.alternate}"`)
+    expect(html).not.toContain('#0891b2')
+  })
+
+  it('⚠ NEGATIVE CONTROL — a colour NOT in the palette is absent from the markup', () => {
+    // Without this, "contains the palette hex" could pass on a chart that emitted every
+    // colour it had ever known.
+    const html = renderToStaticMarkup(
+      <CooperationChartSVG points={[{ round: 1, series: [{ strategy: 'tft', rate: 1, n: 1 }] }]} />)
+    expect(html).toContain(STRATEGY_COLOR.tft)
+    expect(html).not.toContain(STRATEGY_COLOR.grim)
+    expect(html).not.toContain(STRATEGY_COLOR.alternate)
   })
 })

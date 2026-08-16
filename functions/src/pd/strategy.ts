@@ -38,12 +38,11 @@ export type Strategy =
   | 'always_first'
   | 'always_second'
   | 'alternate'
-  | 'match_stay'
 
 /** Every strategy id, in a stable order. Settings lists them in this order, the
  *  reports group in this order, and the assignment draw indexes into a subset of it. */
 export const STRATEGIES: readonly Strategy[] = [
-  'tft', 'grim', 'random', 'always_first', 'always_second', 'alternate', 'match_stay',
+  'tft', 'grim', 'random', 'always_first', 'always_second', 'alternate',
 ] as const
 
 /**
@@ -61,6 +60,47 @@ const STRATEGY_SET: ReadonlySet<string> = new Set(STRATEGIES)
 /** Type guard for a stored/config-supplied strategy id. */
 export function isStrategy(v: unknown): v is Strategy {
   return typeof v === 'string' && STRATEGY_SET.has(v)
+}
+
+/**
+ * ⚠⚠ RETIRED IDS, MAPPED TO THEIR SURVIVING EQUIVALENT AT READ TIME.
+ *
+ * `match_stay` was removed because it was never a distinct rule. Its condition —
+ * "repeat my own last move if the two of us matched, switch it if we differed" —
+ * collapses in a two-action game: matched means my last move WAS the student's, so
+ * repeating plays theirs; mismatched means flipping mine ALSO lands on theirs, because
+ * there is nowhere else to land. Either way the output is the student's previous move,
+ * which is tit-for-tat. Proven exhaustively over all 256 four-round histories before it
+ * was removed.
+ *
+ * ⚠ THE MAPPING IS EXACT, NOT APPROXIMATE. A participant whose truth document holds
+ * `match_stay` has been playing tit-for-tat all along by that equivalence, so reading it
+ * as `tft` changes nothing they have experienced and nothing already stored in their
+ * round records. Without this they would fail `isStrategy`, and `init.ts` would treat
+ * them as never-assigned and REDRAW mid-game — the one thing the once-only contract
+ * exists to prevent.
+ *
+ * ⚠ NO LIVE DOCUMENT HELD IT (checked in `singleplayer-mygames-live` before removal: 2
+ * pd instances, 13 truth documents, all `tft` or `grim`, and neither instance had a
+ * `config/main` at all). It is kept anyway because it costs two lines and removes the
+ * failure mode entirely.
+ */
+const RETIRED_STRATEGIES: Readonly<Record<string, Strategy>> = {
+  match_stay: 'tft',
+}
+
+/**
+ * A STORED strategy id, normalized. Returns null for anything unrecognisable.
+ *
+ * ⚠ EVERY READ OF A STORED `strategy` FIELD GOES THROUGH THIS, not through `isStrategy`
+ * directly — the play path (init.ts) and the reports (report.ts). `isStrategy` answers
+ * "is this a strategy this build can run"; this answers "what should a document that
+ * says this be played as", which is the question a reader actually has.
+ */
+export function parseStoredStrategy(v: unknown): Strategy | null {
+  if (isStrategy(v)) return v
+  if (typeof v === 'string' && v in RETIRED_STRATEGIES) return RETIRED_STRATEGIES[v]
+  return null
 }
 
 /**
@@ -103,18 +143,21 @@ function hash32(s: string): number {
  *                       ⚠⚠ READ FROM THE STORED ROUND RECORDS — see below.
  * @param ctx            seed + participant, for `random` only.
  *
- * ⚠⚠ THE SIGNATURE WIDENED, AND `botHistory` MUST COME FROM STORAGE. It used to take
- * the student's history alone, because every strategy was a function of it. Two are
- * not: `match_stay` reads the bot's own last move, and `random`'s past moves are
- * DRAWS. Replaying the strategy to reconstruct them would silently rewrite history —
- * for `random` on every unseeded instance, and for `match_stay` compounding from
- * whatever the first divergence was. `submitRound` therefore passes
- * `botMoves(storedRounds)`, straight off the stored `bot_move` fields, and
- * `pdStrategy.test.ts` asserts a stored move is read back rather than re-derived.
+ * ⚠⚠ THE SIGNATURE IS WIDE, AND `botHistory` MUST COME FROM STORAGE. It used to take
+ * the student's history alone, because every strategy was a function of it. `random`
+ * is not: its past moves are DRAWS, and replaying the strategy to reconstruct them
+ * would silently rewrite history on every unseeded instance. `submitRound` therefore
+ * passes `botMoves(storedRounds)`, straight off the stored `bot_move` fields, and
+ * `pdStrategyLibrary.test.ts` asserts a stored move is read back rather than
+ * re-derived.
+ *
+ * ⚠ `botHistory` IS KEPT THOUGH NO SURVIVING STRATEGY READS IT. The parameter is the
+ * seam a self-referential rule needs, and removing it would have to be undone by the
+ * next one; it is also what makes the read-from-storage discipline expressible at all.
+ * It is threaded from the real records at the one call site, so it cannot rot.
  *
  * ⚠ `botHistory` AND `ctx` ARE OPTIONAL, AND A STRATEGY THAT NEEDS ONE AND IS GIVEN
- * NOTHING THROWS. Optional keeps every history-only call site (and every pre-existing
- * test) compiling unchanged, which is the no-behaviour-change control for this pass;
+ * NOTHING THROWS. Optional keeps every history-only call site compiling unchanged;
  * throwing is what stops the optionality from becoming a silent wrong answer.
  *
  * Pure with respect to everything except `random`'s unseeded draw. Never mutates
@@ -159,50 +202,12 @@ export function botMove(
     case 'alternate':
       return round % 2 === 1 ? 'C' : 'D'
 
-    // MATCH-AND-STAY — first move on round 1. Thereafter: if the two players played the
-    // SAME action last round, repeat the bot's own last move; if they played DIFFERENT
-    // actions, switch it.
-    //
-    // ⚠⚠ THIS IS NOT PAVLOV, AND MUST NEVER BE CALLED PAVLOV — not here, not in the
-    // debrief, not in the spec. Pavlov (win-stay/lose-shift) switches on a PAYOFF
-    // aspiration level, which this game cannot have: it is direction-agnostic, so
-    // "win" is undefined. This switches on whether the two moves MATCHED, which is a
-    // property of the moves alone.
-    //
-    // ⚠⚠⚠ AND THAT MAKES IT PROVABLY IDENTICAL TO TIT-FOR-TAT HERE. With exactly two
-    // actions: if we matched, my last move WAS the student's last move, so repeating it
-    // plays their last move; if we mismatched, flipping my last move ALSO lands on their
-    // last move, because there is nowhere else to land. Either way the output is the
-    // student's previous move — which is tit-for-tat, for every sequence, with no
-    // exceptions. `pdStrategyLibrary.test.ts` proves it exhaustively over all 256
-    // sequences of length 8.
-    //
-    // This is a property of the RULE, not a defect in this code, and it is exactly why
-    // real Pavlov switches on the payoff: the payoff has four outcomes where the move
-    // has two, so Pavlov genuinely differs from tit-for-tat (it stays after (D,C)).
-    // Pavlov is not expressible in a payoff-blind library. Raised for Elena: shipping
-    // this id means shipping a second name for tit-for-tat.
-    case 'match_stay': {
-      if (studentHistory.length === 0) return 'C'
-      if (botHistory === undefined) {
-        throw new Error('botMove(match_stay) needs the bot\'s own history — pass botMoves(storedRounds).')
-      }
-      const myLast = botHistory[botHistory.length - 1]
-      const theirLast = studentHistory[studentHistory.length - 1]
-      if (myLast === undefined) {
-        throw new Error('botMove(match_stay): the bot history is shorter than the student history.')
-      }
-      const matched = myLast === theirLast
-      return matched ? myLast : (myLast === 'C' ? 'D' : 'C')
-    }
-
     // RANDOM — the first or the second move with equal probability, independently each
     // round. Nothing the student does changes it.
     //
     // ⚠⚠ THE DRAW IS WRITTEN WHEN DRAWN AND NEVER RECOMPUTED. This function produces a
     // move for the round being played; `submitRound` stores it in the round record and
-    // every later reader — the history table, the reports, `match_stay`'s own previous
-    // move — takes the STORED value. Unseeded, a recompute would return a different
+    // every later reader — the history table, the reports — takes the STORED value. Unseeded, a recompute would return a different
     // move and silently rewrite a student's history; the seeded path would agree by
     // luck of construction, which is exactly how such a bug survives a test suite.
     case 'random': {

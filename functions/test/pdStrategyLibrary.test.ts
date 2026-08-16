@@ -95,85 +95,6 @@ describe('alternate — a function of the ROUND INDEX alone', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MATCH-AND-STAY  (⚠ NOT Pavlov — see strategy.ts)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('match_stay — repeat when the two matched, switch when they differed', () => {
-  it('opens with the first move', () => {
-    expect(botMove('match_stay', [], [])).toBe('C')
-  })
-
-  it('a sequence containing both a match and a mismatch', () => {
-    // Hand-worked, round by round. Student plays C D D C C.
-    //  r1: no history                          → C   (student C, bot C → MATCH)
-    //  r2: matched, repeat own last C          → C   (student D, bot C → mismatch)
-    //  r3: mismatched, switch own last C → D   → D   (student D, bot D → MATCH)
-    //  r4: matched, repeat own last D          → D   (student C, bot D → mismatch)
-    //  r5: mismatched, switch own last D → C   → C
-    const out = drive('match_stay', h('CDDCC'))
-    expect(out.length).toBe(5)
-    expect(out.join('')).toBe('CCDDC')
-  })
-
-  /**
-   * ⚠⚠⚠ MATCH-AND-STAY IS PROVABLY IDENTICAL TO TIT-FOR-TAT IN A TWO-ACTION GAME.
-   *
-   * The rule is: repeat my last move if the two of us matched, switch it if we did not.
-   * With exactly two actions:
-   *   • matched     ⇒ bot_next = bot_last = student_last  (they were equal)
-   *   • mismatched  ⇒ bot_next = flip(bot_last) = student_last  (only two options)
-   * Either way bot_next = student_last, which IS tit-for-tat. There is no sequence that
-   * separates them, and no fixture could exist.
-   *
-   * ⚠ THIS IS NOT A BUG IN THE IMPLEMENTATION — it is a property of the rule as
-   * specified, and it is why real Pavlov switches on a PAYOFF aspiration rather than on
-   * a match: the payoff has four outcomes where the move has two, so Pavlov genuinely
-   * differs from tit-for-tat (it stays after (D,C)). This game is direction-agnostic
-   * and cannot read a payoff, so Pavlov is not expressible here.
-   *
-   * These tests PIN the equivalence rather than papering over it. Raised for Elena in
-   * the handoff: shipping match_stay means shipping a second name for tit-for-tat.
-   */
-  it('⚠⚠ IS PROVABLY TIT-FOR-TAT — no sequence separates them, and here is the proof', () => {
-    // Exhaustive over every student sequence of length 8 — 256 of them, the whole
-    // space. Derived from a DIFFERENT source than the implementation: tft's own output.
-    let checked = 0
-    for (let mask = 0; mask < 256; mask++) {
-      const seq: Move[] = Array.from({ length: 8 }, (_, i) => ((mask >> i) & 1) ? 'D' : 'C')
-      expect(drive('match_stay', seq)).toEqual(drive('tft', seq))
-      checked++
-    }
-    expect(checked).toBe(256)
-  })
-
-  it('the single-step rule, stated cell by cell', () => {
-    // All four (bot_last, student_last) cells, hand-written from the rule.
-    expect(botMove('match_stay', h('C'), h('C'))).toBe('C')  // MATCH    → repeat C
-    expect(botMove('match_stay', h('D'), h('D'))).toBe('D')  // MATCH    → repeat D
-    expect(botMove('match_stay', h('C'), h('D'))).toBe('C')  // mismatch → switch D→C
-    expect(botMove('match_stay', h('D'), h('C'))).toBe('D')  // mismatch → switch C→D
-  })
-
-  it('⚠ NEGATIVE CONTROL — the harness CAN separate two different rules', () => {
-    // Proof the equivalence test above is not vacuous: run it against grim, which is a
-    // genuinely different rule, and it fails to match tft.
-    const seq = h('CDCCCC')
-    expect(drive('grim', seq)).not.toEqual(drive('tft', seq))
-  })
-
-  it('⚠ NEEDS THE BOT HISTORY, and says so loudly rather than guessing', () => {
-    expect(() => botMove('match_stay', h('C'))).toThrow(/bot's own history/)
-  })
-
-  it('is never described as Pavlov', () => {
-    // Pavlov switches on a payoff aspiration level; this switches on whether the moves
-    // matched. Naming them the same thing would teach the wrong rule.
-    const src = botMove.toString()
-    expect(src.toLowerCase()).not.toContain('pavlov')
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // RANDOM
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -264,14 +185,12 @@ describe('the bot\'s past moves are READ FROM STORAGE, never re-derived', () => 
     expect(a).toEqual(b)
   })
 
-  it('match_stay threaded through STORED history plays its rule to completion', () => {
-    const stored = playAndStore('match_stay', h('CDDCC'))
+  it('alternate threaded through STORED history keeps its round-index rule', () => {
+    const stored = playAndStore('alternate', h('CDDCC'))
     expect(stored.length).toBe(5)
-    expect(stored.map(r => r.bot_move).join('')).toBe('CCDDC')
-    // …and the next move follows from the STORED pair, not from a replay.
-    const next = botMove('match_stay', studentMoves(stored), botMoves(stored))
-    // Round 5 was student C, bot C → MATCH → repeat C.
-    expect(next).toBe('C')
+    expect(stored.map(r => r.bot_move).join('')).toBe('CDCDC')
+    // …and the next move follows from the round count in the STORED history.
+    expect(botMove('alternate', studentMoves(stored), botMoves(stored))).toBe('D')
   })
 
   it('botMoves reads the bot_move field and studentMoves the student_move field', () => {
@@ -288,7 +207,7 @@ describe('the bot\'s past moves are READ FROM STORAGE, never re-derived', () => 
 
 describe('the library is complete and every id is driveable', () => {
   it('all seven ids produce a legal move for a mid-game position', () => {
-    expect(STRATEGIES.length).toBe(7)
+    expect(STRATEGIES.length).toBe(6)
     for (const s of STRATEGIES) {
       const m = botMove(s, h('CDC'), h('CCD'), { seed: 'z', participantId: 'p' })
       expect(['C', 'D']).toContain(m)

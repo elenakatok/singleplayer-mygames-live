@@ -1,6 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore'
 import { FieldValue } from 'firebase-admin/firestore'
-import { DEFAULT_STRATEGY_POOL, isStrategy, type Strategy } from './strategy'
+import { DEFAULT_STRATEGY_POOL, parseStoredStrategy, type Strategy } from './strategy'
 import {
   INSTANCES_COLLECTION, CONFIG_DOC, truthParticipantDoc,
   HARD_MIN_ROUNDS, loadPdConfig, type PdConfig,
@@ -194,11 +194,13 @@ export async function initPdParticipant(
     // and nothing downstream may assume otherwise. The play path takes the stored id
     // straight to `botMove`, and the reports read it back through `isStrategy` — never
     // through the pool. A pool edit reaches only students who have not yet launched.
-    const storedStrategy = studentTruth?.strategy
-    const strategyValid = isStrategy(storedStrategy)
-    const strategy = strategyValid
-      ? storedStrategy
-      : drawStrategy(config.seed, participantId, config.strategies)
+    // ⚠ READ THROUGH `parseStoredStrategy`, NOT `isStrategy`. A document holding a
+    // RETIRED id (`match_stay`) maps to its exact surviving equivalent (`tft`) rather
+    // than reading as absent — which would redraw a student mid-game. See strategy.ts.
+    const storedStrategy = parseStoredStrategy(studentTruth?.strategy)
+    const strategyValid = storedStrategy !== null
+    const strategy = storedStrategy
+      ?? drawStrategy(config.seed, participantId, config.strategies)
     const drewStrategy = !strategyValid
 
     // ── Writes: ONLY for what was actually missing. An existing value is never

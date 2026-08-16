@@ -25,9 +25,6 @@ export function strategyDisplayName(id: Strategy, labels: PdMoveLabels): string 
     case 'grim': return 'Grim'
     case 'random': return 'Random'
     case 'alternate': return 'Alternating'
-    // ⚠ NOT "Pavlov". See the note on the rule itself in strategy.ts — Pavlov switches
-    // on a payoff aspiration level, which a direction-agnostic game cannot have.
-    case 'match_stay': return 'Match-and-stay'
     case 'always_first': return `Always ${labels.C}`
     case 'always_second': return `Always ${labels.D}`
   }
@@ -61,8 +58,5 @@ export function strategyRevealLine(id: Strategy, labels: PdMoveLabels): string {
     case 'alternate':
       return `This opponent switched between ${first} and ${second} every round, starting `
         + `with ${first}. It never reacted to your choices.`
-    case 'match_stay':
-      return 'This opponent repeated its own previous choice whenever the two of you had '
-        + 'chosen the same thing, and switched whenever you had chosen differently.'
   }
 }

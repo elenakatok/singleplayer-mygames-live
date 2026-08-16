@@ -77,13 +77,13 @@ describe('cooperationByRound — Tier 3a, one series per ASSIGNED strategy', () 
     const withMore = [
       ...rows,
       row('r1', 'random', 'CDC', [1, 1, 1]),
-      row('m1', 'match_stay', 'CCC', [1, 1, 1]),
+      row('a1', 'alternate', 'CCC', [1, 1, 1]),
     ]
     const pts = cooperationByRound(withMore, 3)
     expect(pts.length).toBe(3)
-    // STRATEGIES order is tft, grim, random, always_first, always_second, alternate,
-    // match_stay — so the present four come out in that relative order.
-    expect(pts[0].series.map(s => s.strategy)).toEqual(['tft', 'grim', 'random', 'match_stay'])
+    // STRATEGIES order is tft, grim, random, always_first, always_second, alternate —
+    // so the present four come out in that relative order.
+    expect(pts[0].series.map(s => s.strategy)).toEqual(['tft', 'grim', 'random', 'alternate'])
   })
 
   it('pads out to the round count with empty points when nobody got that far', () => {

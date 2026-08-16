@@ -5,7 +5,7 @@ import {
   PD_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION, CONFIG_DOC,
   truthParticipantDoc, loadPdConfig,
 } from './config'
-import { STRATEGIES, isStrategy, type Strategy } from './strategy'
+import { STRATEGIES, parseStoredStrategy, type Strategy } from './strategy'
 import { strategyDisplayName, strategyRevealLine } from './strategyText'
 import { parseStoredRounds, totals } from './rounds'
 import { debriefQuestion } from './questions'
@@ -80,7 +80,9 @@ export const pdGetReport = onCall({ cors: PD_CORS_ORIGINS }, async (request) => 
   const strategyById = new Map<string, Strategy | null>()
   strategySnaps.forEach((snap, i) => {
     const raw = snap.data()?.strategy
-    strategyById.set(participantsSnap.docs[i].id, isStrategy(raw) ? raw : null)
+    // ⚠ Same normalizer the play path uses — a retired id reports as what it is
+    // actually played as, so the roster and the charts agree with the game.
+    strategyById.set(participantsSnap.docs[i].id, parseStoredStrategy(raw))
   })
 
   const gameRows: PdGameRow[] = []

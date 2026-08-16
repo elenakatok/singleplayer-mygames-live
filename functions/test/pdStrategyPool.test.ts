@@ -32,13 +32,28 @@ describe('parseStrategyPool — the lazy migration', () => {
   })
 
   it('is returned deduped and in library order, whatever order it was stored in', () => {
-    expect(parseStrategyPool(['match_stay', 'tft', 'tft', 'random']))
-      .toEqual(['tft', 'random', 'match_stay'])
+    expect(parseStrategyPool(['alternate', 'tft', 'tft', 'random']))
+      .toEqual(['tft', 'random', 'alternate'])
   })
 
   it('drops unknown ids rather than throwing', () => {
     expect(parseStrategyPool(['tft', 'pavlov', 'nonsense', 7, null]))
       .toEqual(['tft'])
+  })
+
+  it('⚠ A RETIRED ID IN A STORED POOL IS DROPPED, leaving the rest intact', () => {
+    // `match_stay` was removed after it shipped. An instructor could in principle have
+    // checked it between the deploy and the removal, so a config document could carry
+    // it. The parser already treats it as unknown — no special case needed here,
+    // because the pool is a MENU and a menu entry that no longer exists simply is not
+    // offered. (A stored ASSIGNMENT is different: see pdRetiredStrategy.test.ts.)
+    expect(parseStrategyPool(['tft', 'match_stay', 'random'])).toEqual(['tft', 'random'])
+  })
+
+  it('⚠⚠ A POOL OF ONLY RETIRED/UNKNOWN IDS FALLS BACK — never empty at assignment', () => {
+    // The one state that cannot be recovered from: first touch with nothing to draw.
+    expect(parseStrategyPool(['match_stay'])).toEqual(['tft', 'grim'])
+    expect(parseStrategyPool(['match_stay', 'pavlov'])).toEqual(['tft', 'grim'])
   })
 
   it('⚠ a pool that drops to EMPTY falls back — never an unplayable instance', () => {
@@ -87,7 +102,7 @@ describe('drawStrategy — uniform over the CHECKED set', () => {
   const pids = Array.from({ length: 3000 }, (_, i) => `p-${i}`)
 
   it('never draws a strategy outside the pool', () => {
-    const pool: Strategy[] = ['random', 'always_second', 'match_stay']
+    const pool: Strategy[] = ['random', 'always_second', 'alternate']
     const drawn = pids.map(p => drawStrategy('seed-U', p, pool))
     // ⚠ COUNT ASSERTED FIRST, so an empty loop cannot pass this test.
     expect(drawn.length).toBe(3000)
@@ -126,6 +141,6 @@ describe('drawStrategy — uniform over the CHECKED set', () => {
 
   it('every library id is reachable when the whole library is checked', () => {
     const drawn = new Set(pids.map(p => drawStrategy('seed-U', p, STRATEGIES)))
-    expect(drawn.size).toBe(7)
+    expect(drawn.size).toBe(6)
   })
 })

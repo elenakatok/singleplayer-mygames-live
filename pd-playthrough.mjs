@@ -1075,8 +1075,10 @@ async function main() {
   const psDoc0 = await getDoc(`pd_game_instances/${psGid}/config/main`)
   check(psDoc0?.strategies === undefined,
     '⚠ NO BACKFILL — reading an unconfigured instance writes no `strategies` field')
-  check((psCfg0.result?.strategyOptions ?? []).length === 7,
-    `the settings payload offers all seven ids (${(psCfg0.result?.strategyOptions ?? []).length})`)
+  check((psCfg0.result?.strategyOptions ?? []).length === 6,
+    `the settings payload offers all six ids (${(psCfg0.result?.strategyOptions ?? []).length})`)
+  check(!(psCfg0.result?.strategyOptions ?? []).some(o => o.id === 'match_stay'),
+    '⚠ …and the retired id is not among them')
 
   // ── ⚠ ZERO CHECKED IS A HARD BLOCK (and NOT the dilemma advisory's shape) ──
   const psEmpty = await callFn('pdUpdateConfig', { ...asDev(psGid), strategies: [] })
@@ -1093,7 +1095,7 @@ async function main() {
   // ⚠ THE SEED IS WRITTEN FIRST. `putDoc` is a whole-document PATCH, so writing it
   // AFTER the callable would wipe the `strategies` field the callable just stored —
   // which it did, on the first draft of this section.
-  const psPool = ['random', 'always_second', 'match_stay']
+  const psPool = ['random', 'always_second', 'alternate']
   await putDoc(`pd_game_instances/${psGid}/config/main`, { seed: { stringValue: 'pool-seed' } })
   await callFn('pdUpdateConfig', {
     ...asDev(psGid), strategies: psPool, minRounds: 3, maxRounds: 3,
@@ -1125,6 +1127,47 @@ async function main() {
   for (let i = 0; i < 5; i++) await callFn('pdGetState', asStudent(psGid, psPid))
   const psAfter = (await getDoc(`pd_game_instances/${psGid}/truth/participant_${psPid}`))?.strategy?.stringValue
   check(psBefore === psAfter, `⚠ five more launches did NOT redraw the strategy (${psBefore})`)
+
+  // ── ⚠⚠ A RETIRED STORED ASSIGNMENT PLAYS AS TIT-FOR-TAT ───────────────────
+  //
+  // `match_stay` was removed because it was provably tit-for-tat. No live document
+  // held it (checked in singleplayer-mygames-live before the removal), but a truth doc
+  // COULD have, so a stored assignment maps to `tft` at read time — exact, not
+  // approximate. Written straight into truth/ here, because no code path can produce
+  // it any more, and then played through the real callables.
+  const psrGid = `pd-retired-${stamp}`
+  const psrPid = 'retired-stu'
+  await callFn('pdUpdateConfig', { ...asDev(psrGid), strategies: ['alternate'], minRounds: 6, maxRounds: 6 })
+  await callFn('pdBootstrap', asStudent(psrGid, psrPid))
+  await putDoc(`pd_game_instances/${psrGid}/truth/participant_${psrPid}`, {
+    participant_id: { stringValue: psrPid },
+    strategy: { stringValue: 'match_stay' },
+    rounds: intVal(6),
+  })
+  const psrCheck = await getDoc(`pd_game_instances/${psrGid}/truth/participant_${psrPid}`)
+  check(psrCheck?.strategy?.stringValue === 'match_stay',
+    'the truth doc really holds the retired id (the premise of this check)')
+
+  const psrStu = ['C', 'D', 'D', 'C', 'D', 'C']
+  const psrBot = []
+  for (let n = 1; n <= 6; n++) {
+    const r = await callFn('pdSubmitRound', asStudent(psrGid, psrPid, { round: n, move: psrStu[n - 1] }))
+    if (!r.ok) { check(false, `round ${n} played on a retired assignment (${r.error})`); break }
+    psrBot.push(r.result.round.botMove)
+  }
+  check(psrBot.length === 6, `⚠⚠ A RETIRED STORED ASSIGNMENT PLAYS TO COMPLETION (${psrBot.length}/6)`)
+  // ⚠ EXPECTED FROM THE DEFINITION of tit-for-tat, computed here — not by asking the
+  // server for a tft game and comparing.
+  const psrWant = psrStu.map((_, i) => (i === 0 ? 'C' : psrStu[i - 1]))
+  check(psrWant.join('') === 'CCDDCD', `the tft oracle is what it should be (${psrWant.join('')})`)
+  check(psrBot.join('') === psrWant.join(''),
+    `⚠⚠ …AS TIT-FOR-TAT, exactly (want ${psrWant.join('')}, got ${psrBot.join('')})`)
+  check((await getDoc(`pd_game_instances/${psrGid}/truth/participant_${psrPid}`))?.strategy?.stringValue === 'match_stay',
+    '⚠ the stored id is NOT rewritten — the mapping is read-time only, no migration')
+  const psrReport = await callFn('pdGetReport', asDev(psrGid))
+  const psrRow = (psrReport.result?.participants ?? []).find(x => x.participant_id === psrPid)
+  check(psrRow?.strategy === 'tft',
+    `⚠ the roster reports it as what it is PLAYED as (${psrRow?.strategy})`)
 
   // ── ⚠⚠ RE-ENTRY DOES NOT REDRAW — ON AN **UNSEEDED** INSTANCE ─────────────
   //
@@ -1167,13 +1210,7 @@ async function main() {
     const bot = []
     for (let i = 0; i < stu.length; i++) {
       if (strategy === 'always_second') { bot.push('D'); continue }
-      if (strategy === 'match_stay') {
-        if (i === 0) { bot.push('C'); continue }
-        const mine = bot[i - 1]
-        const theirs = stu[i - 1]
-        bot.push(mine === theirs ? mine : (mine === 'C' ? 'D' : 'C'))
-        continue
-      }
+      if (strategy === 'alternate') { bot.push(i % 2 === 0 ? 'C' : 'D'); continue }
       bot.push(null)   // random — unpredictable by construction
     }
     return bot
@@ -1196,8 +1233,8 @@ async function main() {
   // ── THE REPORTS ───────────────────────────────────────────────────────────
   const psReport = await callFn('pdGetReport', asDev(psGid))
   check(psReport.ok, 'pdGetReport succeeds on the pooled instance')
-  check(Object.keys(psReport.result?.strategyText ?? {}).length === 7,
-    "the report carries all seven strategies' labels and reveal lines")
+  check(Object.keys(psReport.result?.strategyText ?? {}).length === 6,
+    "the report carries all six strategies' labels and reveal lines")
   check(String(psReport.result?.strategyText?.alternate?.reveal ?? '').includes('never reacted to your choices'),
     'the alternating reveal line is served')
   const psCoop = psReport.result?.charts?.cooperation ?? []
@@ -1381,10 +1418,19 @@ async function main() {
     // instructor roster columns.
     check(js.includes('Opponent faced') && js.includes('Available strategies'),
       'the strategy names in the bundle are accounted for by the instructor pages')
-    check(js.includes('Match-and-stay') && js.includes('Tit-for-tat'),
+    check(js.includes('Alternating') && js.includes('Tit-for-tat'),
       '…specifically by the settings checkbox list, which is instructor-only')
     check(!js.toLowerCase().includes('pavlov'),
-      '⚠ nothing in the shipped bundle calls match_stay "Pavlov"')
+      '⚠ nothing in the shipped bundle is called "Pavlov"')
+    // ⚠ THE RETIRED ID IS GONE FROM THE CLIENT ENTIRELY. `match_stay` was removed
+    // because it was provably tit-for-tat; the server still MAPS a stored assignment
+    // to `tft`, but nothing client-side may offer it as a choice again.
+    check(!js.includes('match_stay') && !js.includes('Match-and-stay'),
+      '⚠ the retired match_stay id appears nowhere in the shipped bundle')
+    // ⚠ AND NO TEAL. `alternate` was #0891b2, which merged with tit-for-tat's blue
+    // under a projector — the defect this palette pass exists to fix.
+    check(!js.includes('#0891b2'),
+      '⚠ the retired teal is gone from the bundle (it collided with blue on a projector)')
     check(!/rounds?\s+remaining|rounds?\s+left/i.test(js), 'the bundle has no rounds-remaining copy')
     check(!/round\s*\{?\s*\w*\s*\}?\s*of\s*\{/i.test(js), 'the bundle has no "round N of M" template')
   }

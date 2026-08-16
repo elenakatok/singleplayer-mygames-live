@@ -19,14 +19,13 @@ describe('DRIFT PIN — display names match the server byte for byte', () => {
       `Always ${OPERA}`,
       `Always ${BOXING}`,
       'Alternating',
-      'Match-and-stay',
     ])
   })
 
   it('the client library list matches the server\'s length and order', () => {
-    expect(PD_STRATEGIES.length).toBe(7)
+    expect(PD_STRATEGIES.length).toBe(6)
     expect([...PD_STRATEGIES]).toEqual([
-      'tft', 'grim', 'random', 'always_first', 'always_second', 'alternate', 'match_stay',
+      'tft', 'grim', 'random', 'always_first', 'always_second', 'alternate',
     ])
   })
 })
@@ -64,7 +63,7 @@ describe('⚠ the settings surface carries the INSTANCE wording and nothing else
 
   it('every id has a distinct rule summary', () => {
     const s = PD_STRATEGIES.map(x => strategyRuleSummary(x, LABELS))
-    expect(s.length).toBe(7)
-    expect(new Set(s).size).toBe(7)
+    expect(s.length).toBe(6)
+    expect(new Set(s).size).toBe(6)
   })
 })
