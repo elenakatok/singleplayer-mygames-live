@@ -513,13 +513,13 @@ describe('⚠⚠ added MC questions are shuffled per student', () => {
 
     const positions = new Set(
       Array.from({ length: 200 }, (_, i) =>
-        addedToClientKcQuestions(c, `stu-${i}`)[0].options.findIndex(o => o.value === 'o0')),
+        addedToClientKcQuestions(c, `stu-${i}`, 'pre')[0].options.findIndex(o => o.value === 'o0')),
     )
     expect(positions.size, 'the answer reaches every slot through the SERVE path').toBe(4)
 
     // …and the two questions still move independently through that path.
     const same = Array.from({ length: 60 }, (_, i) => {
-      const [a, b] = addedToClientKcQuestions(c, `stu-${i}`)
+      const [a, b] = addedToClientKcQuestions(c, `stu-${i}`, 'pre')
       return a.options.findIndex(o => o.value === 'o0') === b.options.findIndex(o => o.value === 'o0')
     })
     expect(same.every(Boolean)).toBe(false)
@@ -527,9 +527,9 @@ describe('⚠⚠ added MC questions are shuffled per student', () => {
 
   it('⚠ the serve path never ships an answer key', () => {
     const c = cfg({ addedKcQuestions: [addedMc('akc_a')] })
-    const json = JSON.stringify(addedToClientKcQuestions(c, 'stu-1'))
+    const json = JSON.stringify(addedToClientKcQuestions(c, 'stu-1', 'pre'))
     expect(json).not.toContain('correct_value')
-    expect(Object.keys(addedToClientKcQuestions(c, 'stu-1')[0]).sort())
+    expect(Object.keys(addedToClientKcQuestions(c, 'stu-1', 'pre')[0]).sort())
       .toEqual(['field', 'options', 'prompt', 'type'])
   })
 
@@ -538,7 +538,52 @@ describe('⚠⚠ added MC questions are shuffled per student', () => {
       addedKcQuestions: [addedMc('akc_a'), addedMc('akc_hidden')],
       kcHidden: { akc_hidden: true },
     })
-    expect(addedToClientKcQuestions(c, 'stu-1').map(q => q.field)).toEqual(['akc_a'])
+    expect(addedToClientKcQuestions(c, 'stu-1', 'pre').map(q => q.field)).toEqual(['akc_a'])
+  })
+
+  /**
+   * ⚠⚠ THE CASE THE `stage` ARGUMENT EXISTS FOR, AND THE ONE NOTHING WAS COVERING.
+   *
+   * Every call site above passed TWO arguments until 2026-08-16. `stage` has been
+   * REQUIRED since the post-play stage started accepting added questions — questions.ts
+   * says why: "dropping the argument at the call site silently served every after-play
+   * question BEFORE play — a mutation no unit test caught". Nothing compiled this
+   * directory, so the tests went on dropping exactly that argument, and
+   * `resolveAddedKcQuestions` reads `undefined` as EVERY STAGE. The assertions kept
+   * passing only because no fixture here had a post-stage question to leak.
+   *
+   * So the guard was defeated at five call sites AND the case it guards was untested.
+   * This pair fixes the second half.
+   */
+  it('⚠⚠ a POST-stage addition is NOT served before play', () => {
+    const c = cfg({
+      addedKcQuestions: [addedMc('akc_pre'), addedMc('akc_post', { stage: 'post' })],
+    })
+    const served = addedToClientKcQuestions(c, 'stu-1', 'pre')
+    expect(served.length).toBe(1)
+    expect(served.map(q => q.field)).toEqual(['akc_pre'])
+  })
+
+  it('⚠ NEGATIVE CONTROL — the SAME fixture DOES serve it at stage post', () => {
+    // Without this, the assertion above is satisfiable by a serve path that returns
+    // nothing at all, or that has lost the post question entirely.
+    const c = cfg({
+      addedKcQuestions: [addedMc('akc_pre'), addedMc('akc_post', { stage: 'post' })],
+    })
+    const served = addedToClientKcQuestions(c, 'stu-1', 'post')
+    expect(served.length).toBe(1)
+    expect(served.map(q => q.field)).toEqual(['akc_post'])
+  })
+
+  it('⚠ …and the two stages together account for every visible addition', () => {
+    // The partition is exhaustive: nothing is served twice, nothing is dropped.
+    const c = cfg({
+      addedKcQuestions: [addedMc('akc_pre'), addedMc('akc_post', { stage: 'post' })],
+    })
+    const pre = addedToClientKcQuestions(c, 'stu-1', 'pre').map(q => q.field)
+    const post = addedToClientKcQuestions(c, 'stu-1', 'post').map(q => q.field)
+    expect([...pre, ...post].sort()).toEqual(['akc_post', 'akc_pre'])
+    expect(pre.filter(f => post.includes(f))).toEqual([])
   })
 
   it('⚠ no option is dropped, duplicated or rewritten', () => {

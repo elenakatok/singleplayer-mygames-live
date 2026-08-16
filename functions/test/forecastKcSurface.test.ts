@@ -4,7 +4,7 @@ import {
   resolveForecastKc, resolveForecastKcUnordered, resolveAddedKcQuestions,
   forecastKcScoringSet, applyKcOverride, isGradedAdded, authoredToClient,
   addedToClientKcQuestions, forecastPreStage, forecastPostStage, stageToClient,
-  FORECAST_BUILT_IN_KC_IDS, DEBRIEF_ROW_ID, AUTHORED_KC_COUNT, forecastKcScoreFor,
+  DEBRIEF_ROW_ID, AUTHORED_KC_COUNT, forecastKcScoreFor,
 } from '../src/forecast/questions'
 import {
   DEFAULT_FORECAST_CONFIG, parseAddedKcQuestion, FORECAST_KC_ID_GUARD,

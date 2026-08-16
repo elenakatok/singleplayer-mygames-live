@@ -1,0 +1,30 @@
+// ⚠⚠ THE **EMITTING** CONFIG — what `npm run build` runs, and therefore what Firebase
+// deploys. It sees `src` ONLY.
+//
+// ⚠ DO NOT ADD `test` HERE. See the note in `tsconfig.json`: with `test` in the input
+// set the root dir moves up a level, `lib/index.js` becomes `lib/src/index.js` and the
+// deployed bundle loses its entry point while gaining 124 compiled test files.
+//
+// ⚠ `rootDir: "src"` IS EXPLICIT, so the emit layout is fixed by this file rather than
+// inferred from whatever happens to be in `include`.
+//
+// Mirrors `packages/game-server/tsconfig.build.json` and stage-engine's.
+//
+// ⚠ ONE DELIBERATE DIVERGENCE FROM THOSE TWO: `npm run build` here runs
+// `tsc --noEmit && tsc -p tsconfig.build.json` — the typecheck pass FIRST, then the
+// emit. game-server and stage-engine keep `build` and `typecheck` separate.
+//
+// The reason is `firebase.json`, whose functions predeploy hook runs
+// `npm --prefix functions run build`. Chaining puts `test/` inside the DEPLOY GATE
+// rather than in a script somebody has to remember. A gate nothing invokes
+// automatically is how this gap opened in the first place: `test/` was uncompiled for
+// the whole life of the game and a fixture went silently vacuous inside it.
+// Measured cost: 1.9s on top of a 1.7s emit.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib"
+  },
+  "include": ["src"]
+}

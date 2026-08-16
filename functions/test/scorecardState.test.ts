@@ -235,7 +235,7 @@ describe('⚠ T10 — screenId isolates periods AND contracts', () => {
 
 describe('the client whitelist (spec §8)', () => {
   it('⚠ clientParams carries NEITHER reliability, the schedule, nor the seed', () => {
-    const params = clientParams(config) as Record<string, unknown>
+    const params = clientParams(config) as unknown as Record<string, unknown>
     for (const forbidden of [
       'reliabilityHigh', 'reliabilityLow', 'reliabilitySchedule', 'labelHigh', 'labelLow',
       'seed', 'startsWith',

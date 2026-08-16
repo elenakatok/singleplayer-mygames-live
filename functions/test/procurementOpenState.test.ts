@@ -370,9 +370,18 @@ describe('the bot costs live in the rules-denied truth doc', () => {
   it('the settings the machine runs on carry costs, and the payload built from them '
     + 'does not', () => {
     const costs = [47, 88, 21, 63]
-    const s = openSettingsFor(config, costs, null, 'alice', 1)
+    // ⚠ THE PLAYER'S OWN COST IS A REQUIRED ARGUMENT — no bidder may bid below their
+    // own, and it drives auto-drop (openAuctionStore.ts). It was omitted here until
+    // 2026-08-16, which built an OpenSettings with `playerCost: undefined` — a state
+    // production cannot produce. Nothing compiled this directory, so nothing said so.
+    const PLAYER_COST = 55
+    const s = openSettingsFor(config, costs, null, 'alice', 1, PLAYER_COST)
     expect(s.bots.map(b => b.cost)).toEqual(costs)
+    expect(s.playerCost).toBe(PLAYER_COST)
     const view = toClientAuction(1, openAuction(s, 0), s) as unknown as Record<string, unknown>
+    // ⚠ AND THE PLAYER'S COST MUST NOT LEAK EITHER — it is now genuinely present in
+    // the settings, so this assertion finally has something to catch.
     expect(Object.keys(view).some(k => /cost/i.test(k))).toBe(false)
+    expect(JSON.stringify(view)).not.toContain(String(PLAYER_COST))
   })
 })

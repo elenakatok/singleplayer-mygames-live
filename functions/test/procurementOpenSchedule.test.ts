@@ -183,7 +183,7 @@ describe('§3 both schedules are read from the instance record', () => {
   it('⚠ `botDelayMs` is gone — a stored one is ignored, not carried', () => {
     // open §3 (2026-08-04) replaced the scalar pair with the band schedule. A stale key in
     // an old config doc must not resurrect it as a second source of pacing truth.
-    const config = loadProcurementConfig({ botDelayMs: [1000, 2000] }) as Record<string, unknown>
+    const config = loadProcurementConfig({ botDelayMs: [1000, 2000] }) as unknown as Record<string, unknown>
     expect('botDelayMs' in config).toBe(false)
     expect(config.delaySchedule).toEqual(DEFAULT_DELAY_SCHEDULE)
   })

@@ -1,9 +1,33 @@
+// ⚠⚠ THIS IS THE **TYPECHECK** CONFIG. IT INCLUDES `test`, AND IT DOES NOT BUILD.
+//
+// `npm run build` uses `tsconfig.build.json`, not this file. The two exist because a
+// single config cannot do both jobs here:
+//
+//   • Typechecking must see `test/`. It did not until 2026-08-16, and that made this
+//     the only test directory on the platform no command compiled. A fixture whose
+//     literals stopped matching a production type went SILENTLY VACUOUS — vitest
+//     strips types without checking them, so the assertions compared against
+//     `undefined` and passed. Found only when an unrelated change moved the shape.
+//
+//   • Emitting must NOT see `test/`. `outDir` is relative to the ROOT DIR, and with
+//     `test` in `include` the inferred root moves from `src/` up to `functions/` —
+//     measured, not assumed: `lib/index.js` becomes `lib/src/index.js` (breaking
+//     `package.json` `main`, and with it the deployed entry point) and 124 compiled
+//     test files land in `lib/test/`, inside the bundle Firebase deploys.
+//
+// ⚠ `rootDir` IS EXPLICIT IN BOTH FILES, and that is the load-bearing part. Left to
+// inference it is the common ancestor of the input set, so it moves silently whenever
+// `include` changes. Stating it makes the emit a decision instead of a side effect.
+//
+// This is exactly the layout `packages/game-server` and `packages/stage-engine`
+// already use, down to the file names and the script names.
 {
   "compilerOptions": {
     "module": "commonjs",
     "noImplicitReturns": true,
     "noUnusedLocals": true,
     "outDir": "lib",
+    "rootDir": ".",
     "sourceMap": true,
     "strict": true,
     "target": "es2017",
@@ -12,6 +36,7 @@
   },
   "compileOnSave": true,
   "include": [
-    "src"
+    "src",
+    "test"
   ]
 }

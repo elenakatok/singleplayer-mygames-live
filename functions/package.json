@@ -3,8 +3,9 @@
   "private": true,
   "scripts": {
     "prebuild": "node scripts/gen-build-info.mjs",
-    "build": "tsc",
-    "build:watch": "tsc --watch",
+    "build": "tsc --noEmit && tsc -p tsconfig.build.json",
+    "build:watch": "tsc -p tsconfig.build.json --watch",
+    "typecheck": "tsc --noEmit",
     "serve": "npm run build && firebase emulators:start --only functions",
     "logs": "firebase functions:log",
     "test": "vitest run",

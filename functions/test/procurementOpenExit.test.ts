@@ -5,7 +5,6 @@ import {
 } from '../src/procurement/auction/openAuction'
 import { perfectPlayProfit } from '../src/procurement/auction/perfectPlay'
 import { maxLegalBid, stepAt } from '../src/procurement/auction/schedule'
-import { makeRng } from '../src/procurement/auction/rng'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CP4b ITEM 1 — EXIT-PRICE CAPTURE and the PERFECT-PLAY BENCHMARK (open §7).

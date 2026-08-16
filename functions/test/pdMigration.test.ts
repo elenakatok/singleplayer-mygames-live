@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  payoff, yourPayoff, otherPayoff, parsePayoffs, DEFAULT_PAYOFFS, type PayoffConfig,
+  payoff, yourPayoff, otherPayoff, parsePayoffs, type PayoffConfig,
 } from '../src/pd/payoff'
 import { botMove, type Move, type Strategy } from '../src/pd/strategy'
 import { totals, toClientHistory, type StoredRound } from '../src/pd/rounds'
