@@ -150,8 +150,12 @@ export function payoff(studentMove: Move, botMove: Move, cfg: PayoffConfig): Rou
  */
 export function parsePayoffs(raw: unknown): PayoffConfig {
   const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  // ⚠ ANY FINITE NUMBER. Negatives and fractions are legal payoffs; only non-numbers,
+  // NaN and ±Infinity fall back. The old `v >= 0` was inherited from the shipped
+  // prison-years matrix ("all outcomes ≥ 0") and was never a rule of the game — it made
+  // losses inexpressible in a game whose unit is the instructor's word.
   const num = (v: unknown, fallback: number) =>
-    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fallback
+    typeof v === 'number' && Number.isFinite(v) ? v : fallback
 
   // ── The legacy four, read HERE AND NOWHERE ELSE. These are Y values. ──────────
   const yCC = num(r.both_cooperate, DEFAULT_PAYOFFS.you_cc)

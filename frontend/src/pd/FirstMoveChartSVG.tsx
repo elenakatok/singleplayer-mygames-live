@@ -40,10 +40,24 @@ export function FirstMoveChartSVG({
   const W = padL + plotW + padR
   const H = padT + plotH + padB
 
-  // Round the axis up to a sensible tick so the tallest bar never touches the top.
-  const maxVal = Math.max(...populated.map(o => o.avgYearsPerRound as number))
-  const axisMax = Math.max(1, Math.ceil(maxVal))
-  const yOf = (v: number) => padT + plotH - (v / axisMax) * plotH
+  // ⚠⚠ THE AXIS SPANS ZERO WHEN THE DATA DOES. Payoffs may be NEGATIVE (spec §2 — the
+  // "all outcomes ≥ 0" line was a property of the shipped matrix, never a rule), so a
+  // mean payoff per round can be below zero and the axis can no longer be assumed to
+  // start at 0.
+  //
+  // ⚠ THIS WAS A REAL BUG, NOT A TIDY-UP. The old scale was `yOf(v) = top + plotH -
+  // (v/axisMax)*plotH` with bars drawn as `height = baseline - yOf(v)`. A negative v put
+  // yOf BELOW the baseline and made `height` NEGATIVE — and an SVG <rect> with a
+  // negative height is invalid and simply does not render. The bar vanished silently:
+  // no error, no warning, just a missing bar with its value label floating under the
+  // axis. `charts.test.tsx` pins a negative bar's geometry.
+  const vals = populated.map(o => o.avgYearsPerRound as number)
+  const axisMax = Math.max(1, Math.ceil(Math.max(...vals)))
+  const axisMin = Math.min(0, Math.floor(Math.min(...vals)))
+  const span = axisMax - axisMin
+  const yOf = (v: number) => padT + plotH - ((v - axisMin) / span) * plotH
+  /** Where v = 0 sits. Bars grow from here, up or down. */
+  const yZero = yOf(0)
 
   const groups: { firstMove: 'C' | 'D'; label: string }[] = [
     { firstMove: 'C', label: `Opened with ${labels.C}` },
@@ -58,8 +72,10 @@ export function FirstMoveChartSVG({
   ]
 
   const yTicks: number[] = []
-  const step = axisMax <= 4 ? 1 : Math.ceil(axisMax / 5)
-  for (let v = 0; v <= axisMax; v += step) yTicks.push(v)
+  const step = span <= 4 ? 1 : Math.ceil(span / 5)
+  // ⚠ Walk from axisMin, not from 0 — otherwise a chart whose data is entirely below
+  // zero gets a single tick at the top and no gridlines at all.
+  for (let v = axisMin; v <= axisMax; v += step) yTicks.push(v)
 
   return (
     <figure style={{ margin: 0 }}>
@@ -87,6 +103,14 @@ export function FirstMoveChartSVG({
         ))}
         <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke="#ccc" />
         <line x1={padL} y1={padT + plotH} x2={padL + plotW} y2={padT + plotH} stroke="#ccc" />
+        {/* ⚠ THE ZERO LINE, drawn only when it is not already the baseline — with
+            negative values present the bars hang from here, not from the frame. */}
+        {axisMin < 0 && (
+          <line
+            data-testid="pd-firstmove-zeroline"
+            x1={padL} y1={yZero} x2={padL + plotW} y2={yZero} stroke="#999" strokeDasharray="3 3"
+          />
+        )}
 
         {/* Bars */}
         {groups.map((g, gi) => {
@@ -104,13 +128,19 @@ export function FirstMoveChartSVG({
                     </text>
                   )
                 }
+                // ⚠ ANCHORED AT ZERO, IN BOTH DIRECTIONS. `y` is the higher of the two
+                // edges and `height` is their absolute difference, so a negative value
+                // draws DOWNWARD from the zero line and the height is never negative.
+                const yTop = Math.min(yOf(v), yZero)
+                const yBot = Math.max(yOf(v), yZero)
                 return (
                   <g key={s.key}>
                     <rect
                       data-testid={`pd-firstmove-bar-${g.firstMove}-${s.key}`}
-                      x={x} y={yOf(v)} width={barW} height={padT + plotH - yOf(v)} fill={s.color}
+                      x={x} y={yTop} width={barW} height={yBot - yTop} fill={s.color}
                     />
-                    <text x={x + barW / 2} y={yOf(v) - 5} textAnchor="middle" fontSize="11" fill="#333">
+                    {/* The label sits clear of the bar on whichever side it grew. */}
+                    <text x={x + barW / 2} y={v < 0 ? yBot + 13 : yTop - 5} textAnchor="middle" fontSize="11" fill="#333">
                       {v.toFixed(1)}
                     </text>
                     <text x={x + barW / 2} y={padT + plotH + 14} textAnchor="middle" fontSize="10" fill="#999">

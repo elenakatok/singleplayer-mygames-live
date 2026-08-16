@@ -40,12 +40,17 @@ describe('PayoffMatrix — renders from config, in the split-cell layout', () =>
   })
 
   it('uses the instance’s move labels, not hardcoded words', () => {
+    // ⚠ THE TWO WORDS APPEAR NOWHERE ELSE IN THE CODEBASE, so a hit is never a
+    // coincidence — and BOTH shipped defaults are asserted ABSENT. Checking only that
+    // the new words are present passes against a surface showing both, which is the
+    // failure mode this guards (the matrix sits beside the KC questions).
     const custom = visibleText(renderToStaticMarkup(
-      <PayoffMatrix payoffs={PAYOFFS} labels={{ C: 'Stay silent', D: 'Confess' }} />,
+      <PayoffMatrix payoffs={PAYOFFS} labels={{ C: 'Zarquon', D: 'Blorptide' }} />,
     ))
-    expect(custom).toContain('Stay silent')
-    expect(custom).toContain('Confess')
+    expect(custom).toContain('Zarquon')
+    expect(custom).toContain('Blorptide')
     expect(custom).not.toContain('Cooperate')
+    expect(custom).not.toContain('Defect')
   })
 
   it('uses the instance’s numbers, not the shipped defaults', () => {

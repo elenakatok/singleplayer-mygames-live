@@ -153,3 +153,79 @@ describe('FirstMoveChartSVG — Tier 3b', () => {
     expect(out).not.toContain('<svg')
   })
 })
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ⚠ NEGATIVE BARS — payoffs may be negative (spec §2), so a mean payoff per round can
+// be below zero. The old scale was anchored at the frame's bottom edge, which made a
+// negative bar's `height` NEGATIVE — an invalid <rect> that browsers silently drop, so
+// the bar vanished with no error and its value label floated under the axis.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('FirstMoveChartSVG — a negative mean draws a real bar', () => {
+  const LABELS2 = { C: 'Zarquon', D: 'Blorptide' }
+
+  /** Every <rect> height in the markup, as numbers. */
+  const rectHeights = (html: string) =>
+    [...html.matchAll(/height="(-?[\d.]+)"/g)].map(m => Number(m[1]))
+
+  const MIXED: PdFirstMoveOutcome[] = [
+    { firstMove: 'C', strategy: 'tft', avgYearsPerRound: 2.5, n: 3 },
+    { firstMove: 'C', strategy: 'grim', avgYearsPerRound: -1.5, n: 2 },
+    { firstMove: 'D', strategy: 'tft', avgYearsPerRound: -3, n: 2 },
+    { firstMove: 'D', strategy: 'grim', avgYearsPerRound: 1, n: 4 },
+  ]
+
+  const html = renderToStaticMarkup(
+    <FirstMoveChartSVG outcomes={MIXED} labels={LABELS2} unit="points" />)
+
+  it('renders all four bars', () => {
+    for (const id of ['C-tft', 'C-grim', 'D-tft', 'D-grim']) {
+      expect(html).toContain(`data-testid="pd-firstmove-bar-${id}"`)
+    }
+  })
+
+  it('⚠⚠ NO RECT HAS A NEGATIVE HEIGHT — the failure mode was an invisible bar', () => {
+    const hs = rectHeights(html)
+    expect(hs.length).toBeGreaterThan(0)
+    expect(hs.every(h => h >= 0)).toBe(true)
+  })
+
+  it('a zero line is drawn, because the axis now spans zero', () => {
+    expect(html).toContain('data-testid="pd-firstmove-zeroline"')
+  })
+
+  it('negative and positive bars sit on OPPOSITE sides of the zero line', () => {
+    const yOfBar = (id: string) => {
+      const m = html.match(new RegExp(`data-testid="pd-firstmove-bar-${id}"[^>]*?y="([\\d.]+)"[^>]*?height="([\\d.]+)"`))
+      expect(m).not.toBeNull()
+      return { top: Number(m![1]), bottom: Number(m![1]) + Number(m![2]) }
+    }
+    const zero = Number(html.match(/pd-firstmove-zeroline"[^>]*?y1="([\d.]+)"/)![1])
+    const pos = yOfBar('C-tft')     // +2.5
+    const neg = yOfBar('D-tft')     // −3
+    // A positive bar's bottom rests on the zero line; a negative bar's top does.
+    expect(Math.abs(pos.bottom - zero)).toBeLessThan(0.001)
+    expect(Math.abs(neg.top - zero)).toBeLessThan(0.001)
+    expect(pos.top).toBeLessThan(zero)      // grows upward (SVG y increases downward)
+    expect(neg.bottom).toBeGreaterThan(zero) // grows downward
+  })
+
+  it('⚠ NEGATIVE CONTROL — an all-positive chart draws NO zero line and is unchanged', () => {
+    // The old code was correct for non-negative data, so a positive-only fixture cannot
+    // distinguish the fix. Asserting the zero line is ABSENT here proves the new branch
+    // is data-driven rather than always-on.
+    const positive = renderToStaticMarkup(
+      <FirstMoveChartSVG
+        outcomes={[
+          { firstMove: 'C', strategy: 'tft', avgYearsPerRound: 1, n: 3 },
+          { firstMove: 'C', strategy: 'grim', avgYearsPerRound: 2, n: 2 },
+          { firstMove: 'D', strategy: 'tft', avgYearsPerRound: 3, n: 2 },
+          { firstMove: 'D', strategy: 'grim', avgYearsPerRound: 4, n: 4 },
+        ]}
+        labels={LABELS2} unit="points"
+      />)
+    expect(positive).toContain('data-testid="pd-firstmove-bar-C-tft"')
+    expect(positive).not.toContain('pd-firstmove-zeroline')
+    expect(rectHeights(positive).every(h => h >= 0)).toBe(true)
+  })
+})

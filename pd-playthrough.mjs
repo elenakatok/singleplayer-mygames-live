@@ -827,9 +827,25 @@ async function main() {
     you_cc: yCC, you_cd: yCD, you_dc: yDC, you_dd: yDD,
     other_cc: oCC, other_cd: oCD, other_dc: oDC, other_dd: oDD,
   })
-  const badPayoff = await callFn('pdUpdateConfig',
+  // ⚠ A NEGATIVE PAYOFF IS LEGAL NOW. The `>= 0` floor came from the shipped
+  // prison-years matrix and was never a rule of the game — the unit is the
+  // instructor's word, so a payoff may be a cost. Only genuinely invalid input is
+  // refused, and the four checks below are what "invalid" still means.
+  const negOk = await callFn('pdUpdateConfig',
     { ...asDev(GIDS), payoffs: EIGHT(-1, 9, 0, 6, 1, 0, 9, 6) })
-  check(!badPayoff.ok, 'rejects a negative payoff')
+  check(negOk.ok, '⚠ ACCEPTS a negative payoff — no floor')
+  check(negOk.result?.payoffs?.you_cc === -1, '…and stores it with the sign intact')
+  for (const [label, bad] of [
+    ['NaN', Number.NaN], ['Infinity', Number.POSITIVE_INFINITY],
+    ['-Infinity', Number.NEGATIVE_INFINITY], ['an empty string', ''], ['text', 'twelve'],
+  ]) {
+    // ⚠ NaN and ±Infinity do not survive JSON, so they arrive as null / a string —
+    // which is exactly what a hand-made call or a broken form would send, and is the
+    // case the validator has to refuse either way.
+    const r = await callFn('pdUpdateConfig',
+      { ...asDev(GIDS), payoffs: { ...EIGHT(1, 9, 0, 6, 1, 0, 9, 6), you_cd: bad } })
+    check(!r.ok, `still rejects ${label} as a payoff`)
+  }
   // ⚠ ALL EIGHT ARE REQUIRED ON SAVE. The legacy four-key shape is accepted on READ
   // (migration) and refused on WRITE — a save carrying four would leave O stale.
   const shortPayoff = await callFn('pdUpdateConfig',
@@ -944,10 +960,94 @@ async function main() {
   // matrix so the rule is pinned rather than incidental.
   const flatSave = await callFn('pdUpdateConfig',
     { ...asDev(GIDAS), payoffs: EIGHT(5, 5, 5, 5, 5, 5, 5, 5) })
+  // (asymmetric + flat both saved; the BoS instance below is the third such matrix)
   check(flatSave.ok,
     '⚠ a matrix that is a dilemma under NEITHER reading SAVES — the warning informs, never blocks')
   check(flatSave.result?.payoffs?.you_cc === 5 && flatSave.result?.payoffs?.other_dd === 5,
     '…and it is stored verbatim, not corrected')
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // [14c] ⚠ BATTLE OF THE SEXES — the worked non-dilemma, end to end.
+  //
+  // Y = 2,0,0,1 / O = 1,0,0,2, moves renamed to two words that appear NOWHERE ELSE in
+  // this repo. It exercises three paths pd's own 1/15/0/10 default cannot reach: an
+  // asymmetric matrix, a THREE-value option ladder, and TWO questions sharing the
+  // correct answer 0. Settings save → KC serve → KC grade (all four) → a played round
+  // → history → reports.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n[14c] Battle of the Sexes — settings, KC, play, reports')
+  const GIDB = `pd-bos-${stamp}`
+  const BPID = 'pd-bos-stu'
+  const OPERA = 'Zarquon'
+  const BOXING = 'Blorptide'
+  const BOS = EIGHT(2, 0, 0, 1, 1, 0, 0, 2)
+
+  const bosSave = await callFn('pdUpdateConfig', {
+    ...asDev(GIDB), payoffs: BOS, labels: { C: OPERA, D: BOXING }, unit: 'points',
+    minRounds: 4, maxRounds: 4,
+  })
+  check(bosSave.ok, 'a Battle of the Sexes matrix saves')
+  check(JSON.stringify(bosSave.result?.payoffs) === JSON.stringify(BOS),
+    'all eight values stored verbatim')
+  // ⚠ The advisory fires for this matrix — it is a dilemma under NEITHER reading — and
+  // the save above still succeeded. Informs, never blocks.
+  check(bosSave.result?.derivedKcPreview?.length === 4, 'the four derived questions survive')
+  const bosLadder = bosSave.result?.derivedKcPreview?.[0]?.options ?? []
+  check(bosLadder.length === 3,
+    `⚠ THE LADDER IS THREE OPTIONS, not four (got ${bosLadder.length})`)
+  check(bosLadder.map(o => o.value).join(',') === '0,1,2',
+    `…and they are the distinct Y values ascending (${bosLadder.map(o => o.value).join(',')})`)
+  const bosKeys = (bosSave.result?.derivedKcPreview ?? []).map(q => q.correct_value)
+  check(bosKeys.join(',') === '2,0,0,1',
+    `⚠ TWO QUESTIONS SHARE the answer 0 (${bosKeys.join(',')})`)
+
+  await callFn('pdBootstrap', asStudent(GIDB, BPID))
+  const bosState = await callFn('pdGetState', asStudent(GIDB, BPID))
+  check(bosState.result?.labels?.C === OPERA && bosState.result?.labels?.D === BOXING,
+    'the student is served the renamed moves')
+
+  const bosQs = await callFn('pdGetQuestions', asStudent(GIDB, BPID))
+  const bosSurface = JSON.stringify(bosQs.result?.kc?.derived ?? [])
+  check(bosSurface.includes(OPERA) && bosSurface.includes(BOXING),
+    '⚠ the KC surface carries the INSTANCE wording')
+  check(!bosSurface.includes('Cooperate') && !bosSurface.includes('Defect'),
+    '⚠⚠ …and NEITHER shipped default word appears anywhere on it')
+  const served = bosQs.result?.kc?.derived ?? []
+  check(served.length === 4 && served.every(q => (q.options ?? []).length === 3),
+    'every served question offers exactly three options')
+
+  // Grade all four, INCLUDING both zero-answer questions.
+  const bosAnswers = { kc_cc: '2', kc_cd: '0', kc_dc: '0', kc_dd: '1' }
+  let bosGraded = 0
+  for (const [field, answer] of Object.entries(bosAnswers)) {
+    const r = await callFn('pdSubmitKcAnswer', asStudent(GIDB, BPID, { field, answer }))
+    if (r.ok && r.result.correct) bosGraded++
+    if (field === 'kc_dc') {
+      check(!String(r.result?.explanation ?? '').includes('Cooperate'),
+        '⚠ the earned explanation uses the instance wording, not the default')
+      check(String(r.result?.explanation ?? '').includes(BOXING),
+        `…and names the configured move (${r.result?.explanation})`)
+    }
+  }
+  check(bosGraded === 4,
+    `⚠ ALL FOUR graded correct, both zero-answer questions included (${bosGraded}/4)`)
+  const bosP = await getDoc(`pd_game_instances/${GIDB}/participants/${BPID}`)
+  check(Number(bosP?.knowledge_check_score?.doubleValue ?? bosP?.knowledge_check_score?.integerValue) === 1,
+    'the KC score is 1.0 over a denominator of four')
+
+  // A played round on the BoS matrix.
+  const bosR1 = await callFn('pdSubmitRound', asStudent(GIDB, BPID, { round: 1, move: 'C' }))
+  check(bosR1.ok && bosR1.result.round.botMove === 'C', 'round 1: the bot opened with the first move')
+  check(bosR1.result?.round?.studentYears === 2 && bosR1.result?.round?.botYears === 1,
+    `round 1 (C,C): Y=2 to the student, O=1 to the bot (got ${bosR1.result?.round?.studentYears}/${bosR1.result?.round?.botYears})`)
+  check(bosR1.result?.history?.[0]?.studentTotal === 2 && bosR1.result?.history?.[0]?.botTotal === 1,
+    'the history row carries the asymmetric pair')
+
+  const bosReport = await callFn('pdGetReport', asDev(GIDB))
+  check(bosReport.ok && bosReport.result.unit === 'points', 'the report is served in the instance unit')
+  check(bosReport.result?.labels?.C === OPERA, 'the report carries the renamed moves')
+  check(JSON.stringify(bosReport.result.payoffs) === JSON.stringify(BOS),
+    'the report carries all eight values')
 
   await callFn('pdUpdateConfig', { ...asDev(GIDS), minRounds: 15, maxRounds: 20 })
   await callFn('pdGetState', asStudent(GIDS, SPID))   // a touch that could have redrawn

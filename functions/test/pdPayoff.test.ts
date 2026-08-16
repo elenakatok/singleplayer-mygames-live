@@ -138,10 +138,17 @@ describe('parsePayoffs — defensive load', () => {
   })
 
   it('rejects invalid values rather than making a round unscoreable', () => {
+    // ⚠ −1 IS NO LONGER INVALID. Payoffs may be any finite number (spec §2); the old
+    // `>= 0` floor was inherited from the shipped prison-years matrix, never a rule.
+    // Only non-numbers, NaN and ±Infinity fall back — see pdNegativePayoffs.test.ts.
     const bad = parsePayoffs({
-      you_cc: -1, you_cd: NaN, you_dc: 'x', you_dd: null,
-      other_cc: -1, other_cd: NaN, other_dc: 'x', other_dd: null,
+      you_cc: NaN, you_cd: Infinity, you_dc: 'x', you_dd: null,
+      other_cc: -Infinity, other_cd: undefined, other_dc: {}, other_dd: [],
     })
     expect(bad).toEqual(DEFAULT_PAYOFFS)
+  })
+
+  it('…and a negative value is NOT one of them', () => {
+    expect(parsePayoffs({ you_cc: -1 }).you_cc).toBe(-1)
   })
 })

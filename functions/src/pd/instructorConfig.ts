@@ -86,8 +86,16 @@ export const pdUpdateConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
     const out: Record<string, number> = {}
     for (const key of PAYOFF_KEYS) {
       const v = p[key]
-      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
-        throw new HttpsError('invalid-argument', `Payoff "${key}" must be a number of 0 or more.`)
+      // ⚠ ANY FINITE NUMBER — no floor, no ceiling, no integer requirement. A payoff
+      // may be negative (a cost, a penalty, a loss) or fractional. Only non-numeric
+      // input, NaN and ±Infinity are refused, and the message says exactly that rather
+      // than asserting a range that does not exist.
+      //
+      // ⚠ THIS MUST AGREE WITH THE FORM. The settings page's number inputs carry no
+      // `min`, so a stricter rule here is how a value gets typed, accepted, and then
+      // rejected on save — which is how the `>= 0` floor was found.
+      if (typeof v !== 'number' || !Number.isFinite(v)) {
+        throw new HttpsError('invalid-argument', `Payoff "${key}" must be a number.`)
       }
       out[key] = v
     }

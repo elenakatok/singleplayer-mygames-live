@@ -11,6 +11,7 @@ import {
 } from './api'
 import { PayoffMatrix } from './PayoffMatrix'
 import { warnNotADilemma, NOT_A_DILEMMA_WARNING } from './dilemma'
+import { derivedKcRow } from './derivedKc'
 import {
   KnowledgeCheckSettings,
   type KcSettingsDraft, type KcSettingsQuestion, type KcSettingsStage,
@@ -177,9 +178,32 @@ export default function Settings() {
   const setLabel = (k: keyof PdMoveLabels, v: string) =>
     setCfg(c => (c ? { ...c, labels: { ...c.labels, [k]: v } } : c))
 
-  /** The server's inventory in the shared block's shape — the debrief row included. */
+  /**
+   * The server's inventory in the shared block's shape — the debrief row included.
+   *
+   * ⚠⚠ THE FOUR DERIVED ROWS ARE RE-RENDERED FROM THE LIVE FORM, not shown as the server
+   * last resolved them. That is the whole fix: `r.kc.builtIn` carries text resolved at
+   * the last load or save, so renaming the moves left the knowledge-check list saying
+   * "Cooperate"/"Defect" while the payoff preview two sections up had already switched to
+   * the new words. An instructor reading that concludes the KC does not follow the
+   * wording. It always did — server-side, on every serve and every grade — but only
+   * after a save round-trip, and the page never said so.
+   *
+   * ⚠ THE STUDENT-FACING TEXT IS STILL THE SERVER'S, ALWAYS. Nothing here is served or
+   * graded; `derivedKcRow` is a display mirror for unsaved form state, pinned against the
+   * server's strings by the paired tests named in derivedKc.ts.
+   *
+   * ⚠ ONLY `prompt`, `options` and `correctValue` are replaced. `locked`, `lockReason`,
+   * `graded`, `visible`, `order` and `originalPrompt` stay the server's — they are
+   * classifications, not text, and the lock in particular is MEASURED server-side and
+   * must not be second-guessed here.
+   */
   function kcQuestions(r: PdConfigResult): KcSettingsQuestion[] {
-    return [...r.kc.builtIn, ...r.kc.added, r.kc.debrief]
+    const live = (q: KcSettingsQuestion): KcSettingsQuestion => {
+      const d = derivedKcRow(q.id, r.payoffs, r.unit, r.labels)
+      return d === null ? q : { ...q, prompt: d.prompt, options: d.options, correctValue: d.correctValue }
+    }
+    return [...r.kc.builtIn.map(live), ...r.kc.added, r.kc.debrief]
   }
 
   /**
