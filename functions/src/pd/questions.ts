@@ -1,5 +1,5 @@
 import type { PrepTextQuestion } from '@mygames/game-server'
-import { yearsFor, type PayoffConfig } from './payoff'
+import { yourPayoff, otherPayoff, type PayoffConfig } from './payoff'
 import {
   DEFAULT_MOVE_LABELS, DEFAULT_UNIT, addedKcStage,
   type PdMoveLabels, type PdConfig, type PdAddedKcQuestion, type KcOverrideMap,
@@ -87,8 +87,11 @@ export function kcExplanation(
 ): string {
   const mine = cell.you === 'C' ? labels.C : labels.D
   const theirs = cell.other === 'C' ? labels.C : labels.D
-  const you = unitLabel(String(yearsFor(cell.you, cell.other, payoffs)), unit)
-  const them = unitLabel(String(yearsFor(cell.other, cell.you, payoffs)), unit)
+  // ⚠ BOTH FROM THE SAME CELL: Y(a,b) for the student, O(a,b) for the other player.
+  // This used to read `yearsFor(cell.other, cell.you, …)` for `them` — the symmetric
+  // derive, which silently swaps O(C,D) and O(D,C) on an asymmetric matrix.
+  const you = unitLabel(String(yourPayoff(cell.you, cell.other, payoffs)), unit)
+  const them = unitLabel(String(otherPayoff(cell.you, cell.other, payoffs)), unit)
   return cell.you === cell.other
     ? `When you both choose ${mine}, you each get ${you}.`
     : `Choosing ${mine} while they choose ${theirs} gets you ${you}; they get ${them}.`
@@ -178,8 +181,15 @@ export function resolveKcQuestions(
   unit: string = DEFAULT_UNIT,
   labels: PdMoveLabels = DEFAULT_MOVE_LABELS,
 ): PdKcQuestion[] {
+  // ⚠ THE OPTION LADDER IS THE FOUR **Y** VALUES, NOT ALL EIGHT. Every one of these
+  // questions asks "how many do YOU get?", so the four answers are exactly the Y values
+  // and the distractors should be the other three. Folding the O values in would add
+  // distractors that answer a question nobody was asked — and, on a migrated legacy
+  // instance (where O is the transpose of Y), would change nothing at all while
+  // changing everything on an asymmetric one. Keeping it to Y also makes the migration
+  // identity exact: the ladder a legacy instance offers is byte-identical to before.
   const distinct = [...new Set([
-    payoffs.both_cooperate, payoffs.sucker, payoffs.temptation, payoffs.both_defect,
+    payoffs.you_cc, payoffs.you_cd, payoffs.you_dc, payoffs.you_dd,
   ])].sort((a, b) => a - b)
   const options = distinct.map(v => ({ value: String(v), label: unitLabel(String(v), unit) }))
 
@@ -187,7 +197,7 @@ export function resolveKcQuestions(
     ...q,
     prompt: kcPrompt(q.cell, labels, unit),
     options,
-    correct_value: String(yearsFor(q.cell.you, q.cell.other, payoffs)),
+    correct_value: String(yourPayoff(q.cell.you, q.cell.other, payoffs)),
     explanation: kcExplanation(q.cell, payoffs, labels, unit),
   }))
 }

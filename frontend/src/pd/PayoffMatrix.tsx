@@ -4,9 +4,14 @@ import type { PdMoveLabels, PdPayoffs } from './api'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // The payoff matrix (spec §2), rendered FROM CONFIG. Every number on screen comes
-// from the instance's four payoff values and every word from its two move labels —
+// from the instance's EIGHT payoff values and every word from its two move labels —
 // nothing here is hardcoded, so an instructor who changes the matrix changes what
 // students read, with no code change.
+//
+// ⚠ THE RENDERING IS UNCHANGED by the four→eight pass. It always drew both payoffs per
+// cell — blue lower-left for you, red upper-right for the other player — because the
+// grid needs both numbers whether or not they are independent. Only the DATA SOURCE
+// moved, from a symmetric derive to the eight stored values (see `payoffCells`).
 //
 // LAYOUT — the classic split-cell game-theory grid:
 //
@@ -52,20 +57,26 @@ export interface MatrixCell {
 /**
  * The four cells, in reading order (CC, CD, DC, DD).
  *
- * Pure, exported, and unit-tested: this is the only place the four config values are
- * mapped onto the grid, so a transposed cell is caught by a test rather than by a
- * student misreading the matrix mid-game. The matrix is SYMMETRIC — what a player
- * suffers depends only on (own move, other's move) — which is why `theirYears` is the
- * same lookup with the moves swapped, and cannot drift from `yourYears`.
+ * Pure, exported, and unit-tested: this is the only place the config values are mapped
+ * onto the grid, so a transposed cell is caught by a test rather than by a student
+ * misreading the matrix mid-game.
+ *
+ * ⚠ BOTH NUMBERS COME FROM THE SAME CELL — `you_ab` and `other_ab`. This used to read
+ * `theirYears: years(other, you)`, the SYMMETRIC DERIVE, because the matrix was four
+ * values and the other player's payoff had to be inferred. It is eight values now, so
+ * the derive is not merely redundant, it is WRONG on an asymmetric matrix: it swaps
+ * O(C,D) with O(D,C). `PayoffMatrix.test.ts` pins that with eight distinct values.
  */
 export function payoffCells(p: PdPayoffs): MatrixCell[] {
-  const years = (own: 'C' | 'D', other: 'C' | 'D') =>
-    own === 'C' ? (other === 'C' ? p.both_cooperate : p.sucker)
-      : (other === 'C' ? p.temptation : p.both_defect)
-
+  const key = (a: 'C' | 'D', b: 'C' | 'D') => `${a === 'C' ? 'c' : 'd'}${b === 'C' ? 'c' : 'd'}`
   const moves: ('C' | 'D')[] = ['C', 'D']
   return moves.flatMap(you =>
-    moves.map(other => ({ you, other, yourYears: years(you, other), theirYears: years(other, you) })),
+    moves.map(other => ({
+      you,
+      other,
+      yourYears: p[`you_${key(you, other)}` as keyof PdPayoffs],
+      theirYears: p[`other_${key(you, other)}` as keyof PdPayoffs],
+    })),
   )
 }
 

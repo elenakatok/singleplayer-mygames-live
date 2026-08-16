@@ -12,6 +12,7 @@ import {
   PD_BUILT_IN_KC_IDS, PD_KC_STAGES,
 } from './questions'
 import { lockedKcQuestionIds, validateKcOverrides, KC_LOCK_REASON } from './kcLock'
+import { PAYOFF_KEYS } from './payoff'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PD settings callables (Slice 5). pdGetConfig returns the whole editable config for
@@ -19,8 +20,8 @@ import { lockedKcQuestionIds, validateKcOverrides, KC_LOCK_REASON } from './kcLo
 // poll's instructorConfig pair.
 //
 // WHAT IS AND IS NOT EDITABLE:
-//   editable   payoff matrix, move labels, unit, round RANGE, KC on/off, added KC
-//              questions, debrief on/off + prompt
+//   editable   payoff matrix (EIGHT values — Y and O per cell), move labels, unit,
+//              round RANGE, KC on/off, added KC questions, debrief on/off + prompt
 //   derived    the four matrix-comprehension KC questions — computed from the matrix
 //              at serve and grade time, never stored as text (see questions.ts). They
 //              are RETURNED here read-only so the settings page can preview what the
@@ -68,11 +69,22 @@ export const pdUpdateConfig = onCall({ cors: PD_CORS_ORIGINS }, async (request) 
 
   const patch: Record<string, unknown> = {}
 
-  // ── Payoff matrix — four finite, non-negative numbers ─────────────────────
+  // ── Payoff matrix — EIGHT finite, non-negative numbers ────────────────────
+  //
+  // ⚠ ALL EIGHT ARE REQUIRED ON SAVE, and the save writes all eight (spec §2). There is
+  // no half-migration: an instance still storing the legacy four is normalized to eight
+  // when it is READ (payoff.ts `parsePayoffs`), the settings page therefore renders
+  // eight, and the first instructor save stores eight. Nothing backfills an instance
+  // nobody has saved.
+  //
+  // ⚠ NO DILEMMA CHECK HERE, DELIBERATELY. Whether the numbers form a prisoner's
+  // dilemma is ADVISORY — the settings page warns and the save still succeeds (spec §2).
+  // A matrix that is not a dilemma is a legitimate thing to run; it is just not the
+  // lecture's example.
   if (has(data, 'payoffs')) {
     const p = (typeof data.payoffs === 'object' && data.payoffs !== null ? data.payoffs : {}) as Record<string, unknown>
     const out: Record<string, number> = {}
-    for (const key of ['both_cooperate', 'sucker', 'temptation', 'both_defect']) {
+    for (const key of PAYOFF_KEYS) {
       const v = p[key]
       if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
         throw new HttpsError('invalid-argument', `Payoff "${key}" must be a number of 0 or more.`)

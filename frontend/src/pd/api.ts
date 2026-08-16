@@ -61,13 +61,31 @@ export const pdBootstrap = (args: StudentBootstrapArgs) =>
 /** A move. C = Cooperate (stay silent), D = Defect (confess). */
 export type Move = 'C' | 'D'
 
-/** The four payoff values, counted in the instance's configured `unit`. The game is
- *  DIRECTION-AGNOSTIC — nothing here says whether a bigger number is better. */
+/**
+ * The EIGHT payoff values, counted in the instance's configured `unit`.
+ *
+ *   Y(a,b) = `you_ab`   your payoff when YOU play a and the OTHER player plays b
+ *   O(a,b) = `other_ab` the other player's payoff in that SAME cell
+ *
+ * a, b ∈ { C = first move, D = second move } — abstract actions. "Cooperate" and
+ * "Defect" are instructor-set WORDING (`PdMoveLabels`), never identifiers.
+ *
+ * ⚠ THE SERVER ALWAYS SENDS EIGHT. An instance created before this shape existed
+ * stores four; `parsePayoffs` server-side normalizes it on every read (O = the
+ * transpose of Y, which is what the old symmetric derive computed), so nothing on the
+ * client ever sees the legacy shape and no client code may fall back to it.
+ *
+ * The game is DIRECTION-AGNOSTIC — nothing here says whether a bigger number is better.
+ */
 export type PdPayoffs = {
-  both_cooperate: number
-  sucker: number
-  temptation: number
-  both_defect: number
+  you_cc: number
+  you_cd: number
+  you_dc: number
+  you_dd: number
+  other_cc: number
+  other_cd: number
+  other_dc: number
+  other_dd: number
 }
 
 /** Display labels for the two moves (instructor-configurable, spec §2). */

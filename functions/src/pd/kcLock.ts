@@ -43,11 +43,17 @@ function probeSet(
   shift: number,
 ): PdKcQuestion[] {
   return resolveKcQuestions(
+    // ⚠ ALL EIGHT ARE PERTURBED, each by a different multiple, so no two cells can
+    // collide onto the same number and make a question look static by coincidence.
     {
-      both_cooperate: config.payoffs.both_cooperate + shift,
-      sucker: config.payoffs.sucker + shift * 2,
-      temptation: config.payoffs.temptation + shift * 3,
-      both_defect: config.payoffs.both_defect + shift * 5,
+      you_cc: config.payoffs.you_cc + shift,
+      you_cd: config.payoffs.you_cd + shift * 2,
+      you_dc: config.payoffs.you_dc + shift * 3,
+      you_dd: config.payoffs.you_dd + shift * 5,
+      other_cc: config.payoffs.other_cc + shift * 7,
+      other_cd: config.payoffs.other_cd + shift * 11,
+      other_dc: config.payoffs.other_dc + shift * 13,
+      other_dd: config.payoffs.other_dd + shift * 17,
     },
     `${config.unit}${tag}`,
     { C: `${config.labels.C}${tag}`, D: `${config.labels.D}${tag}` },

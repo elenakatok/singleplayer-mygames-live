@@ -78,6 +78,18 @@ async function putDoc(docPath, fields) {
 }
 
 const intVal = (n) => ({ integerValue: String(n) })
+/**
+ * ⚠⚠ SEEDS THE **LEGACY FOUR-VALUE** SHAPE, DELIBERATELY AND PERMANENTLY.
+ *
+ * The matrix is eight values now (Y and O per cell). Every instance this harness opens
+ * is seeded in the OLD shape on purpose: that makes the whole playthrough below a live
+ * migration test. The server must normalize four → eight on read (O = the transpose of
+ * Y) and produce byte-for-byte the play it produced before the change — which is what
+ * `expectedYears`, still written as the old symmetric lookup, asserts round by round.
+ *
+ * If this is ever "modernized" to write eight, the migration path stops being exercised
+ * end to end. Add a second instance instead; §14b does exactly that.
+ */
 const payoffFields = (p) => ({ mapValue: { fields: {
   both_cooperate: intVal(p.both_cooperate), sucker: intVal(p.sucker),
   temptation: intVal(p.temptation), both_defect: intVal(p.both_defect),
@@ -137,7 +149,15 @@ function expectedBotMove(strategy, priorMoves) {
   throw new Error(`unknown strategy ${strategy}`)
 }
 
-/** Years served by a player who played `own` against `other`. Spec §2. */
+/**
+ * Years served by a player who played `own` against `other`, under the LEGACY four-value
+ * matrix. Spec §2, as it stood before the matrix became eight values.
+ *
+ * ⚠ THIS IS THE MIGRATION ORACLE AND IT MUST STAY LEGACY. The instances it is used
+ * against are seeded four-value (see `payoffFields`), so "the server still produces
+ * exactly this" is the end-to-end statement that a pre-existing instance plays
+ * identically after the change. The asymmetric case has its own oracle in §14b.
+ */
 function expectedYears(own, other, p) {
   if (own === 'C') return other === 'C' ? p.both_cooperate : p.sucker
   return other === 'C' ? p.temptation : p.both_defect
@@ -289,8 +309,21 @@ async function main() {
   const s0 = opened.state.result
   check(Array.isArray(s0.history) && s0.history.length === 0, 'a new student has an empty history')
   check(s0.gameOver === false, 'a new student is not game-over')
-  check(s0.payoffs?.sucker === PAYOFFS.sucker && s0.payoffs?.both_defect === PAYOFFS.both_defect,
+  check(s0.payoffs?.you_cd === PAYOFFS.sucker && s0.payoffs?.you_dd === PAYOFFS.both_defect,
     'returns the INSTANCE payoff values (config-driven, not the shipped defaults)')
+  // ⚠ THE LAZY MIGRATION, OBSERVED END TO END. config/main holds the LEGACY four; the
+  // student is served EIGHT, with O the transpose of Y — exactly what the old symmetric
+  // derive computed. Nothing is written back: the doc still has four keys and no more.
+  check(s0.payoffs?.you_cc === PAYOFFS.both_cooperate && s0.payoffs?.you_dc === PAYOFFS.temptation,
+    'a LEGACY four-value instance is normalized to the eight-value shape on read')
+  check(s0.payoffs?.other_cc === PAYOFFS.both_cooperate
+    && s0.payoffs?.other_cd === PAYOFFS.temptation
+    && s0.payoffs?.other_dc === PAYOFFS.sucker
+    && s0.payoffs?.other_dd === PAYOFFS.both_defect,
+    '…and the O values are the TRANSPOSE of the Y values — O(C,D)=Y(D,C), O(D,C)=Y(C,D)')
+  const cfgDocAfterRead = await getDoc(`pd_game_instances/${GID2}/config/main`)
+  check(cfgDocAfterRead?.payoffs?.mapValue?.fields?.you_cc === undefined,
+    '⚠ NO BACKFILL — reading a legacy instance does not write the eight values to it')
   check(s0.labels?.C === 'Cooperate' && s0.labels?.D === 'Defect', 'returns the move labels')
 
   // A second call must not redraw anything — once-only is the whole init contract.
@@ -491,7 +524,8 @@ async function main() {
   // stripping the two declared bounds and sweeping what is left.
   const ALLOWED_STATE_KEYS = ['ok', 'labels', 'payoffs', 'history', 'gameOver',
     'unit', 'minRounds', 'maxRounds',
-    'C', 'D', 'both_cooperate', 'sucker', 'temptation', 'both_defect',
+    'C', 'D',
+    'you_cc', 'you_cd', 'you_dc', 'you_dd', 'other_cc', 'other_cd', 'other_dc', 'other_dd',
     'round', 'studentMove', 'botMove', 'studentYears', 'botYears', 'studentTotal', 'botTotal']
   const ALLOWED_SUBMIT_KEYS = ['ok', 'round', 'history', 'gameOver',
     'studentMove', 'botMove', 'studentYears', 'botYears', 'studentTotal', 'botTotal']
@@ -789,8 +823,21 @@ async function main() {
   check(!badMin.ok, 'rejects a minimum below 1')
   const badFloat = await callFn('pdUpdateConfig', { ...asDev(GIDS), minRounds: 2.5, maxRounds: 4 })
   check(!badFloat.ok, 'rejects a non-integer bound')
-  const badPayoff = await callFn('pdUpdateConfig', { ...asDev(GIDS), payoffs: { both_cooperate: -1, sucker: 9, temptation: 0, both_defect: 6 } })
+  const EIGHT = (yCC, yCD, yDC, yDD, oCC, oCD, oDC, oDD) => ({
+    you_cc: yCC, you_cd: yCD, you_dc: yDC, you_dd: yDD,
+    other_cc: oCC, other_cd: oCD, other_dc: oDC, other_dd: oDD,
+  })
+  const badPayoff = await callFn('pdUpdateConfig',
+    { ...asDev(GIDS), payoffs: EIGHT(-1, 9, 0, 6, 1, 0, 9, 6) })
   check(!badPayoff.ok, 'rejects a negative payoff')
+  // ⚠ ALL EIGHT ARE REQUIRED ON SAVE. The legacy four-key shape is accepted on READ
+  // (migration) and refused on WRITE — a save carrying four would leave O stale.
+  const shortPayoff = await callFn('pdUpdateConfig',
+    { ...asDev(GIDS), payoffs: { both_cooperate: 1, sucker: 9, temptation: 0, both_defect: 6 } })
+  check(!shortPayoff.ok, '⚠ rejects a LEGACY four-value payload on save — all eight or nothing')
+  const missingO = await callFn('pdUpdateConfig',
+    { ...asDev(GIDS), payoffs: { you_cc: 1, you_cd: 9, you_dc: 0, you_dd: 6 } })
+  check(!missingO.ok, 'rejects a payload with the Y values but no O values')
   const badLabel = await callFn('pdUpdateConfig', { ...asDev(GIDS), labels: { C: '', D: 'Defect' } })
   check(!badLabel.ok, 'rejects an empty move label')
   const badUnit = await callFn('pdUpdateConfig', { ...asDev(GIDS), unit: '  ' })
@@ -804,7 +851,7 @@ async function main() {
   // ── A real edit, and its effect on the DERIVED four ───────────────────────
   const saved = await callFn('pdUpdateConfig', {
     ...asDev(GIDS),
-    payoffs: { both_cooperate: 2, sucker: 8, temptation: 1, both_defect: 5 },
+    payoffs: EIGHT(2, 8, 1, 5, 2, 1, 8, 5),
     labels: { C: 'Share', D: 'Take' },
     unit: 'points',
     minRounds: 3,
@@ -827,7 +874,8 @@ async function main() {
   const sState = await callFn('pdGetState', asStudent(GIDS, SPID))
   check(sState.result.unit === 'points', 'the student is served the new unit')
   check(sState.result.minRounds === 3 && sState.result.maxRounds === 4, 'the student is served the new RANGE')
-  check(sState.result.payoffs.sucker === 8, 'the student is served the new matrix')
+  check(sState.result.payoffs.you_cd === 8 && sState.result.payoffs.other_dc === 8,
+    'the student is served the new matrix')
   check(sState.result.labels.C === 'Share', 'the student is served the new labels')
   const sQs = await callFn('pdGetQuestions', asStudent(GIDS, SPID))
   check(sQs.result.kc.derived[0].prompt.includes('Share'), 'the student\'s KC uses the new labels')
@@ -842,6 +890,64 @@ async function main() {
   check(drawn >= 3 && drawn <= 4, `the draw used the configured range (${drawn} ∈ [3,4])`)
   const cfgAfterDraw = await callFn('pdGetConfig', asDev(GIDS))
   check(cfgAfterDraw.result.anyRoundsDrawn === true, 'settings now reports that someone has started')
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // [14b] ⚠ THE ASYMMETRIC MATRIX — the thing four values could not express.
+  //
+  // Eight PAIRWISE-DISTINCT payoffs saved through the real callable, then real rounds
+  // played against them. Under the old symmetric derive the bot's number would have been
+  // Y of the TRANSPOSED cell; it must now be O of the SAME cell. On any symmetric or
+  // migrated matrix those two agree, which is exactly why this instance is asymmetric —
+  // it is the only shape where that bug has anywhere to show.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n[14b] An ASYMMETRIC eight-value matrix, saved and played')
+  const GIDAS = `pd-asym-${stamp}`
+  const ASPID = 'pd-asym-stu'
+  // Y(C,C)=11 Y(C,D)=12 Y(D,C)=13 Y(D,D)=14 / O(C,C)=21 O(C,D)=22 O(D,C)=23 O(D,D)=24
+  const ASYM = EIGHT(11, 12, 13, 14, 21, 22, 23, 24)
+  const asymSave = await callFn('pdUpdateConfig', {
+    ...asDev(GIDAS), payoffs: ASYM, minRounds: 4, maxRounds: 4,
+  })
+  check(asymSave.ok, 'an asymmetric eight-value matrix saves')
+  check(JSON.stringify(asymSave.result?.payoffs) === JSON.stringify(ASYM),
+    'the save returns all eight values, unaltered and unsymmetrized')
+  const asymDoc = await getDoc(`pd_game_instances/${GIDAS}/config/main`)
+  const asymStored = asymDoc?.payoffs?.mapValue?.fields ?? {}
+  check(Object.keys(asymStored).length === 8 && asymStored.other_cd?.integerValue === '22',
+    'all eight landed in config/main')
+
+  await callFn('pdBootstrap', asStudent(GIDAS, ASPID))
+  await callFn('pdGetState', asStudent(GIDAS, ASPID))
+  // Round 1: both strategies open with the FIRST move, so the cell is (student's move, C)
+  // whichever bot this student drew. Play the SECOND move to land in (D,C) — the cell
+  // whose O value a transposition would have replaced with O(C,D).
+  const asymR1 = await callFn('pdSubmitRound', asStudent(GIDAS, ASPID, { round: 1, move: 'D' }))
+  check(asymR1.ok && asymR1.result?.round?.botMove === 'C',
+    'round 1: the bot opened with the first move')
+  check(asymR1.result?.round?.studentYears === 13,
+    `round 1: the student got Y(D,C)=13 (got ${asymR1.result?.round?.studentYears})`)
+  check(asymR1.result?.round?.botYears === 23,
+    `⚠ round 1: the bot got O(D,C)=23, NOT O(C,D)=22 and NOT Y(C,D)=12 (got ${asymR1.result?.round?.botYears})`)
+  // Round 2 lands in (C,C) against TFT-after-D? No — TFT mirrors the D, GRIM has flipped.
+  // Either way the bot plays D, so the cell is (C,D). Assert the pair comes from ONE cell.
+  const asymR2 = await callFn('pdSubmitRound', asStudent(GIDAS, ASPID, { round: 2, move: 'C' }))
+  const ASYM_CELL = { CC: [11, 21], CD: [12, 22], DC: [13, 23], DD: [14, 24] }
+  const want2 = ASYM_CELL[`C${asymR2.result?.round?.botMove}`] ?? []
+  check(asymR2.ok && asymR2.result?.round?.studentYears === want2[0]
+    && asymR2.result?.round?.botYears === want2[1],
+    `round 2: both numbers came from the SAME cell C${asymR2.result?.round?.botMove} `
+    + `(want ${want2.join('/')}, got ${asymR2.result?.round?.studentYears}/${asymR2.result?.round?.botYears})`)
+
+  // ── ⚠ THE NOT-A-DILEMMA WARNING NEVER BLOCKS SAVE ─────────────────────────
+  // ASYM above is a dilemma under NEITHER reading — the settings page shows its advisory
+  // notice for exactly that matrix — and the save succeeded. Stated again with a flat
+  // matrix so the rule is pinned rather than incidental.
+  const flatSave = await callFn('pdUpdateConfig',
+    { ...asDev(GIDAS), payoffs: EIGHT(5, 5, 5, 5, 5, 5, 5, 5) })
+  check(flatSave.ok,
+    '⚠ a matrix that is a dilemma under NEITHER reading SAVES — the warning informs, never blocks')
+  check(flatSave.result?.payoffs?.you_cc === 5 && flatSave.result?.payoffs?.other_dd === 5,
+    '…and it is stored verbatim, not corrected')
 
   await callFn('pdUpdateConfig', { ...asDev(GIDS), minRounds: 15, maxRounds: 20 })
   await callFn('pdGetState', asStudent(GIDS, SPID))   // a touch that could have redrawn

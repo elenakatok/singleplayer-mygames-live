@@ -10,7 +10,10 @@ import type { PdHistoryRow, PdMoveLabels, PdPayoffs } from './api'
 // actually matters: the numbers land in the right cells, and nothing the student must
 // not see is in the output.
 
-const PAYOFFS: PdPayoffs = { both_cooperate: 1, sucker: 15, temptation: 0, both_defect: 10 }
+const PAYOFFS: PdPayoffs = {
+  you_cc: 1, you_cd: 15, you_dc: 0, you_dd: 10,
+  other_cc: 1, other_cd: 0, other_dc: 15, other_dd: 10,
+}
 const LABELS: PdMoveLabels = { C: 'Cooperate', D: 'Defect' }
 
 /** The VISIBLE text of a testid'd element (tags stripped, whitespace collapsed).
@@ -47,7 +50,13 @@ describe('PayoffMatrix — renders from config, in the split-cell layout', () =>
 
   it('uses the instance’s numbers, not the shipped defaults', () => {
     const custom = renderToStaticMarkup(
-      <PayoffMatrix payoffs={{ both_cooperate: 2, sucker: 9, temptation: 1, both_defect: 6 }} labels={LABELS} />,
+      <PayoffMatrix
+        payoffs={{
+          you_cc: 2, you_cd: 9, you_dc: 1, you_dd: 6,
+          other_cc: 2, other_cd: 1, other_dc: 9, other_dd: 6,
+        }}
+        labels={LABELS}
+      />,
     )
     expect(textOf(custom, 'pd-matrix-CD')).toBe('1 9')
     expect(visibleText(custom)).not.toContain('15')
@@ -67,6 +76,26 @@ describe('PayoffMatrix — renders from config, in the split-cell layout', () =>
     const text = visibleText(html)
     expect(text).toContain('blue number (lower left)')
     expect(text).toContain('red number (upper right)')
+  })
+
+  it('⚠ RENDERS AN ASYMMETRIC MATRIX — eight independent numbers reach the grid', () => {
+    // The rendering did not change in the four→eight pass; its DATA SOURCE did. This is
+    // the assertion that proves the derive is gone: under it, the CD cell would have
+    // shown the DC cell's "your" number as its "their" number.
+    const asym = renderToStaticMarkup(
+      <PayoffMatrix
+        payoffs={{
+          you_cc: 11, you_cd: 12, you_dc: 13, you_dd: 14,
+          other_cc: 21, other_cd: 22, other_dc: 23, other_dd: 24,
+        }}
+        labels={LABELS}
+      />,
+    )
+    // Markup order per cell is [theirs] then [yours].
+    expect(textOf(asym, 'pd-matrix-CC')).toBe('21 11')
+    expect(textOf(asym, 'pd-matrix-CD')).toBe('22 12')
+    expect(textOf(asym, 'pd-matrix-DC')).toBe('23 13')
+    expect(textOf(asym, 'pd-matrix-DD')).toBe('24 14')
   })
 
   it('renders the configured unit in the cell-reading explanation', () => {

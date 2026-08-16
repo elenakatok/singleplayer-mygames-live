@@ -334,7 +334,10 @@ describe('⚠⚠ which of pd\'s questions are locked, pinned one by one', () => 
     const otherLabels = resolveKcQuestions(DEFAULT_PD_CONFIG.payoffs, 'years', { C: 'Stay quiet', D: 'Talk' })
     const otherUnit = resolveKcQuestions(DEFAULT_PD_CONFIG.payoffs, 'months', { C: 'Cooperate', D: 'Defect' })
     const otherPayoffs = resolveKcQuestions(
-      { both_cooperate: 2, sucker: 9, temptation: 4, both_defect: 6 }, 'years',
+      {
+        you_cc: 2, you_cd: 9, you_dc: 4, you_dd: 6,
+        other_cc: 2, other_cd: 4, other_dc: 9, other_dd: 6,
+      }, 'years',
       { C: 'Cooperate', D: 'Defect' },
     )
     expect(base[0].prompt).not.toBe(otherLabels[0].prompt)              // move labels
@@ -347,7 +350,10 @@ describe('⚠⚠ which of pd\'s questions are locked, pinned one by one', () => 
     // payoff-only edit moves the OPTIONS and the EXPLANATION while the stem stands still.
     const a = resolveKcQuestions(DEFAULT_PD_CONFIG.payoffs, 'years', DEFAULT_PD_CONFIG.labels)[0]
     const b = resolveKcQuestions(
-      { both_cooperate: 2, sucker: 9, temptation: 4, both_defect: 6 }, 'years', DEFAULT_PD_CONFIG.labels,
+      {
+        you_cc: 2, you_cd: 9, you_dc: 4, you_dd: 6,
+        other_cc: 2, other_cd: 4, other_dc: 9, other_dd: 6,
+      }, 'years', DEFAULT_PD_CONFIG.labels,
     )[0]
     expect(a.prompt).toBe(b.prompt)                    // the stem alone does NOT move…
     expect(a.explanation).not.toBe(b.explanation)      // …but the explanation does

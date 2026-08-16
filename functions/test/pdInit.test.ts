@@ -170,10 +170,23 @@ describe('loadPdConfig — stored over defaults', () => {
     expect(loadPdConfig({ labels: { C: '  ' } }).labels).toEqual(DEFAULT_MOVE_LABELS)
   })
 
-  it('carries the payoff matrix through from config', () => {
+  it('carries the EIGHT-value payoff matrix through from config', () => {
+    const c = loadPdConfig({ payoffs: { you_cc: 3, other_cd: 4 } })
+    expect(c.payoffs.you_cc).toBe(3)
+    expect(c.payoffs.other_cd).toBe(4)
+    expect(c.payoffs.you_cd).toBe(DEFAULT_PAYOFFS.you_cd)
+  })
+
+  it('normalizes a LEGACY four-value matrix on the way through (lazy migration)', () => {
+    // `both_cooperate: 3` is the legacy Y(C,C); the other three Y values default, and
+    // every O value is the transpose of a Y — which is what the old symmetric derive
+    // computed. Nothing is written back; this is read-time only.
     const c = loadPdConfig({ payoffs: { both_cooperate: 3 } })
-    expect(c.payoffs.both_cooperate).toBe(3)
-    expect(c.payoffs.sucker).toBe(DEFAULT_PAYOFFS.sucker)
+    expect(c.payoffs.you_cc).toBe(3)
+    expect(c.payoffs.other_cc).toBe(3)
+    expect(c.payoffs.you_cd).toBe(DEFAULT_PAYOFFS.you_cd)
+    // O(C,D) = Y(D,C) = the legacy `temptation`, defaulting to 0 — NOT Y(C,D) = 15.
+    expect(c.payoffs.other_cd).toBe(DEFAULT_PAYOFFS.you_dc)
   })
 })
 

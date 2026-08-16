@@ -10,6 +10,7 @@ import {
   type PdConfigResult, type PdPayoffs, type PdMoveLabels,
 } from './api'
 import { PayoffMatrix } from './PayoffMatrix'
+import { warnNotADilemma, NOT_A_DILEMMA_WARNING } from './dilemma'
 import {
   KnowledgeCheckSettings,
   type KcSettingsDraft, type KcSettingsQuestion, type KcSettingsStage,
@@ -21,9 +22,19 @@ import {
 //
 // WHAT IS EDITABLE, AND WHAT DELIBERATELY IS NOT:
 //
-//   • The payoff matrix, the move labels, and the UNIT. The live preview below is the
-//     same PayoffMatrix component the students see, fed from the form, so the
-//     instructor reads their edit exactly as the class will.
+//   • The payoff matrix — EIGHT values, four columns × two rows. One column per action
+//     combination in the order (C,C) (C,D) (D,C) (D,D); the top row is Y (what YOU get)
+//     and the second is O (what the OTHER player gets in that same cell). Both header
+//     rows interpolate the wording fields, so nothing on this page hardcodes
+//     “Cooperate” or “Defect” — they are the instructor's words, not identifiers.
+//     ⚠ IT USED TO BE FOUR BOXES, with the other player's payoff DERIVED as the
+//     transpose. That made every configurable matrix symmetric. The live preview below
+//     is the same PayoffMatrix component the students see and its RENDERING is
+//     unchanged — only its data source moved.
+//     An advisory NOT-A-DILEMMA notice appears under the grid when the numbers are a
+//     dilemma under neither reading (see dilemma.ts). It NEVER blocks Save.
+//
+//   • The move labels and the UNIT.
 //
 //   • The round-count RANGE. Not the count — that is drawn once per instance and
 //     lives rules-denied in truth/; this page never receives it, only WHETHER it has
@@ -96,6 +107,29 @@ const legend: CSSProperties = {
 }
 const hint: CSSProperties = { fontSize: '0.8rem', color: colors.textSecondary, margin: '0.35rem 0 0', lineHeight: 1.5 }
 const row: CSSProperties = { display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'flex-end' }
+
+// ── The eight-value payoff grid ────────────────────────────────────────────────
+//
+// ⚠ THE COLUMN ORDER IS THE CONTRACT: (C,C) (C,D) (D,C) (D,D), read as
+// (your move, the other player's move). The two header rows above the grid say the same
+// thing in the instructor's own wording, and these two key lists must stay in that
+// order or a header will name a different cell than the box beneath it.
+const PAYOFF_ROWS: { who: 'You' | 'Other'; keys: (keyof PdPayoffs)[] }[] = [
+  { who: 'You', keys: ['you_cc', 'you_cd', 'you_dc', 'you_dd'] },
+  { who: 'Other', keys: ['other_cc', 'other_cd', 'other_dc', 'other_dd'] },
+]
+
+const payoffGrid: CSSProperties = { borderCollapse: 'collapse' }
+const gridCorner: CSSProperties = { padding: '0.2rem 0.5rem' }
+const gridHead: CSSProperties = {
+  padding: '0.15rem 0.5rem', fontSize: '0.78rem', fontWeight: 600,
+  color: colors.fieldLabelColor, textAlign: 'center', whiteSpace: 'nowrap',
+}
+const gridRowHead: CSSProperties = {
+  padding: '0.2rem 0.6rem 0.2rem 0', fontSize: '0.85rem', fontWeight: 600,
+  color: colors.fieldLabelColor, textAlign: 'right', whiteSpace: 'nowrap',
+}
+const gridCell: CSSProperties = { padding: '0.15rem 0.25rem', textAlign: 'center' }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return <section style={sectionStyle}><h2 style={legend}>{title}</h2>{children}</section>
@@ -240,42 +274,63 @@ export default function Settings() {
           name what editing THAT section does, which this cannot. */}
       <StartedBanner started={cfg.anyRoundsDrawn} testIdPrefix="pd" />
 
-      {/* ── Payoffs ─────────────────────────────────────────────────────────── */}
+      {/* ── Payoffs — EIGHT values, four cells × two players ─────────────────
+          Column order is the action combination (C,C) (C,D) (D,C) (D,D); the two header
+          rows spell out whose move is whose, in the instructor's OWN wording. */}
       <Section title="Payoff matrix">
-        <div style={row}>
-          <Labelled label={`Both choose ${cfg.labels.C}`}>
-            <input
-              data-testid="pd-set-both_cooperate" type="number" style={numField}
-              value={cfg.payoffs.both_cooperate}
-              onChange={e => setPayoff('both_cooperate', Number(e.target.value))}
-            />
-          </Labelled>
-          <Labelled label={`You ${cfg.labels.C}, they ${cfg.labels.D}`}>
-            <input
-              data-testid="pd-set-sucker" type="number" style={numField}
-              value={cfg.payoffs.sucker}
-              onChange={e => setPayoff('sucker', Number(e.target.value))}
-            />
-          </Labelled>
-          <Labelled label={`You ${cfg.labels.D}, they ${cfg.labels.C}`}>
-            <input
-              data-testid="pd-set-temptation" type="number" style={numField}
-              value={cfg.payoffs.temptation}
-              onChange={e => setPayoff('temptation', Number(e.target.value))}
-            />
-          </Labelled>
-          <Labelled label={`Both choose ${cfg.labels.D}`}>
-            <input
-              data-testid="pd-set-both_defect" type="number" style={numField}
-              value={cfg.payoffs.both_defect}
-              onChange={e => setPayoff('both_defect', Number(e.target.value))}
-            />
-          </Labelled>
+        <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
+          <table style={payoffGrid}>
+            <thead>
+              {/* ⚠ BOTH HEADER ROWS INTERPOLATE THE WORDING FIELDS. Nothing here says
+                  "Cooperate" or "Defect" — those are just what labels.C / labels.D
+                  happen to be on a fresh instance. */}
+              <tr>
+                <th style={gridCorner} />
+                <th style={gridHead}>You: {cfg.labels.C}</th>
+                <th style={gridHead}>You: {cfg.labels.C}</th>
+                <th style={gridHead}>You: {cfg.labels.D}</th>
+                <th style={gridHead}>You: {cfg.labels.D}</th>
+              </tr>
+              <tr>
+                <th style={gridCorner} />
+                <th style={gridHead}>Other: {cfg.labels.C}</th>
+                <th style={gridHead}>Other: {cfg.labels.D}</th>
+                <th style={gridHead}>Other: {cfg.labels.C}</th>
+                <th style={gridHead}>Other: {cfg.labels.D}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {PAYOFF_ROWS.map(r => (
+                <tr key={r.who}>
+                  <th style={gridRowHead}>{r.who} get</th>
+                  {r.keys.map(k => (
+                    <td key={k} style={gridCell}>
+                      <input
+                        data-testid={`pd-set-${k}`} type="number" style={numField}
+                        aria-label={`${r.who} get, ${k}`}
+                        value={cfg.payoffs[k]}
+                        onChange={e => setPayoff(k, Number(e.target.value))}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
         <p style={hint}>
-          Each value is what <strong>you</strong> get in that cell, in the unit set below.
-          The game states no direction — whether a bigger number is better is yours to frame.
+          The top row is what <strong>you</strong> get in that cell; the second row is what
+          the <strong>other player</strong> gets in the same cell. They do not have to
+          mirror each other — an asymmetric matrix is a legitimate thing to run.
+          The game states no direction: whether a bigger number is better is yours to frame.
         </p>
+
+        {/* ⚠ ADVISORY ONLY, AND IT NEVER BLOCKS SAVE. See dilemma.ts. */}
+        {warnNotADilemma(cfg.payoffs) && (
+          <p data-testid="pd-set-not-a-dilemma" style={{ ...hint, color: colors.warnBannerText }}>
+            ⚠ {NOT_A_DILEMMA_WARNING}
+          </p>
+        )}
 
         <div style={{ marginTop: '1rem' }}>
           <p style={{ ...hint, marginBottom: '0.5rem' }}>Preview — exactly what students see:</p>

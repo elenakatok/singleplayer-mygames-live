@@ -74,7 +74,10 @@ describe('resolveKcQuestions — options and answers come from the INSTANCE matr
   })
 
   it('FOLLOWS a changed matrix — a student is never graded against a matrix they were not shown', () => {
-    const custom = { both_cooperate: 2, sucker: 9, temptation: 1, both_defect: 6 }
+    const custom = {
+      you_cc: 2, you_cd: 9, you_dc: 1, you_dd: 6,
+      other_cc: 2, other_cd: 1, other_dc: 9, other_dd: 6,
+    }
     const resolved = resolveKcQuestions(custom)
     expect(resolved.map(q => q.correct_value)).toEqual(['2', '9', '1', '6'])
     for (const q of resolved) {
@@ -83,7 +86,12 @@ describe('resolveKcQuestions — options and answers come from the INSTANCE matr
   })
 
   it('collapses duplicate values into one option rather than offering the same answer twice', () => {
-    const flat = { both_cooperate: 5, sucker: 5, temptation: 5, both_defect: 5 }
+    const flat = {
+      you_cc: 5, you_cd: 5, you_dc: 5, you_dd: 5,
+      // ⚠ The O values are DELIBERATELY different: the option ladder is the four Y
+      // values only, so a flat Y row collapses to one option however varied O is.
+      other_cc: 1, other_cd: 2, other_dc: 3, other_dd: 4,
+    }
     const [q] = resolveKcQuestions(flat)
     expect((q.options ?? []).map(o => o.value)).toEqual(['5'])
   })

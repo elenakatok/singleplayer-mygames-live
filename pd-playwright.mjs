@@ -561,7 +561,9 @@ async function main() {
       // stripping the framing sentence that carries the bounds.
       pdGetState: ['ok', 'labels', 'payoffs', 'history', 'gameOver', 'C', 'D',
         'unit', 'minRounds', 'maxRounds',
-        'both_cooperate', 'sucker', 'temptation', 'both_defect',
+        // ⚠ EIGHT payoff keys now. The instance is still seeded four-value (see above),
+        // so this list is also the assertion that the server normalizes on read.
+        'you_cc', 'you_cd', 'you_dc', 'you_dd', 'other_cc', 'other_cd', 'other_dc', 'other_dd',
         'round', 'studentMove', 'botMove', 'studentYears', 'botYears', 'studentTotal', 'botTotal'],
       pdSubmitRound: ['ok', 'round', 'history', 'gameOver', 'studentMove', 'botMove',
         'studentYears', 'botYears', 'studentTotal', 'botTotal'],
@@ -712,10 +714,17 @@ async function main() {
 
     // Edit the matrix, labels, unit and range, and save.
     const setNum = async (tid, v) => { await pageS.fill(`[data-testid="${tid}"]`, String(v)) }
-    await setNum('pd-set-both_cooperate', 2)
-    await setNum('pd-set-sucker', 8)
-    await setNum('pd-set-temptation', 1)
-    await setNum('pd-set-both_defect', 5)
+    // ⚠ EIGHT BOXES NOW — Y then O, in the column order (C,C) (C,D) (D,C) (D,D).
+    // These values keep the previous symmetric matrix (O = the transpose of Y), so every
+    // assertion further down that reads the preview grid still expects the same numbers.
+    await setNum('pd-set-you_cc', 2)
+    await setNum('pd-set-you_cd', 8)
+    await setNum('pd-set-you_dc', 1)
+    await setNum('pd-set-you_dd', 5)
+    await setNum('pd-set-other_cc', 2)
+    await setNum('pd-set-other_cd', 1)
+    await setNum('pd-set-other_dc', 8)
+    await setNum('pd-set-other_dd', 5)
     await pageS.fill('[data-testid="pd-set-label-c"]', 'Share')
     await pageS.fill('[data-testid="pd-set-label-d"]', 'Take')
     await pageS.fill('[data-testid="pd-set-unit"]', 'points')
