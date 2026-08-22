@@ -231,6 +231,58 @@ async function main() {
   const sA = (repA.result?.participants ?? []).find(p => p.participant_id === S)
   check(sA && sA.bid === 5, 'instance A still holds its own $5 bid (isolation is two-way)')
 
+  // ── Scenario 7 — REVERSE (supplier / cost) auction ──────────────────────────
+  // ONE game, TWO modes on a flag. reverse=true: LOWEST bid wins, profit = bid − cost,
+  // true cost = penny_count × penny_value. The student enters dollars; the client's
+  // shorthand-multiply + confirmation are UI-side, so the harness sends dollars directly.
+  console.log('\n[7] Reverse auction: lowest bid wins, profit = bid − (penny_count × penny_value)')
+  const GIR = `pt-rev-${stamp}`
+  // penny_count 300 × penny_value $1,000 = $300,000 true cost.
+  const updR = await callFn('penniesUpdateConfig', {
+    ...asDev(GIR), reverse: true, penny_value: 1000, penny_count: 300, jar_image: '/jarofpennies.jpg',
+  })
+  check(updR.ok, 'reverse penniesUpdateConfig set reverse + penny_value + penny_count')
+
+  for (const pid of ['sup-a', 'sup-b', 'sup-c']) {
+    await callFn('penniesBootstrap', { _test: { participant_id: pid, game_instance_id: GIR } })
+  }
+
+  // getScreen reflects the mode + multiplier, serves the reverse prompts, leaks no cost.
+  const scrR = await callFn('penniesGetScreen', asStudent(GIR, 'sup-a'))
+  check(scrR.ok && scrR.result.reverse === true, 'reverse getScreen: reverse=true')
+  check(scrR.ok && scrR.result.penny_value === 1000, 'reverse getScreen: penny_value=1000')
+  check(scrR.ok && !('true_value' in scrR.result) && !('penny_count' in scrR.result), 'reverse getScreen leaks neither true_value nor penny_count')
+  const rq = scrR.ok ? Object.fromEntries(scrR.result.questions.map(q => [q.field, q.prompt])) : {}
+  check(rq.estimate === 'Estimate Your Cost' && rq.bid === 'Place Your Bid', 'reverse getScreen serves the supplier prompts')
+
+  // Suppliers bid DOLLARS. sup-b is the lowest → winner. All below/around the $300k cost.
+  check((await callFn('penniesSubmit', asStudent(GIR, 'sup-a', { estimate: 305_000, bid: 310_000 }))).ok, 'sup-a submit $310,000')
+  check((await callFn('penniesSubmit', asStudent(GIR, 'sup-b', { estimate: 295_000, bid: 290_000 }))).ok, 'sup-b submit $290,000 (lowest)')
+  check((await callFn('penniesSubmit', asStudent(GIR, 'sup-c', { estimate: 300_000, bid: 305_000 }))).ok, 'sup-c submit $305,000')
+
+  const scR = await callFn('penniesScoreAndRecord', asDev(GIR))
+  check(scR.ok && scR.result.winner === 'sup-b', 'reverse winner is sup-b (LOWEST bid $290,000)')
+
+  const repR = await callFn('penniesGetReport', asDev(GIR))
+  const rbById = Object.fromEntries((repR.result?.participants ?? []).map(p => [p.participant_id, p]))
+  check(repR.ok && repR.result.reverse === true, 'reverse report: reverse=true')
+  check(repR.result.true_value === 300_000, 'reverse report: true_value = penny_count × penny_value = $300,000')
+  check(Math.abs(rbById['sup-b'].profit - (290_000 - 300_000)) < 1e-9, 'reverse winner profit = bid − cost = −$10,000 (below-cost curse)')
+  check(rbById['sup-a'].profit === 0 && rbById['sup-c'].profit === 0, 'reverse non-winners profit 0')
+  check(Math.abs(repR.result.stats.winningBid - 290_000) < 1e-9, 'reverse stats winningBid = MIN = $290,000')
+
+  // A profitable win: a supplier bidding ABOVE cost keeps the difference.
+  const GIR2 = `pt-rev2-${stamp}`
+  await callFn('penniesUpdateConfig', { ...asDev(GIR2), reverse: true, penny_value: 1000, penny_count: 300 })
+  await callFn('penniesBootstrap', { _test: { participant_id: 'w', game_instance_id: GIR2 } })
+  await callFn('penniesBootstrap', { _test: { participant_id: 'l', game_instance_id: GIR2 } })
+  await callFn('penniesSubmit', asStudent(GIR2, 'w', { estimate: 300_000, bid: 340_000 }))
+  await callFn('penniesSubmit', asStudent(GIR2, 'l', { estimate: 300_000, bid: 360_000 }))
+  await callFn('penniesScoreAndRecord', asDev(GIR2))
+  const repR2 = await callFn('penniesGetReport', asDev(GIR2))
+  const w = (repR2.result?.participants ?? []).find(p => p.participant_id === 'w')
+  check(w && Math.abs(w.profit - 40_000) < 1e-9, 'reverse: winning bid ABOVE cost is a real +$40,000 profit')
+
   console.log(`\n${failed === 0 ? '✅' : '❌'} pennies harness: ${passed} passed, ${failed} failed`)
   callbackServer.close(); rosterServer.close()
   process.exit(failed === 0 ? 0 : 1)

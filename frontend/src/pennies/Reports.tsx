@@ -55,12 +55,12 @@ type BidSortKey = 'name' | 'bid' | 'estimate' | 'truth' | 'status' | 'profit'
  */
 const tie = (a: ReportParticipant, b: ReportParticipant) => compareByLastName(a.name ?? '', b.name ?? '')
 
-function bidColumns(trueValue: number): readonly SortableColumn<ReportParticipant, BidSortKey>[] {
+function bidColumns(trueValue: number, reverse: boolean): readonly SortableColumn<ReportParticipant, BidSortKey>[] {
   return [
     { key: 'name', label: 'Name', render: r => r.name ?? '—', compare: (a, b) => compareByLastName(a.name ?? '', b.name ?? '') },
     { key: 'bid', label: 'Bid', render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(r.bid)}</span>, nullsLast: true, isNull: r => r.bid == null, compare: (a, b) => (a.bid ?? 0) - (b.bid ?? 0) || tie(a, b) },
     { key: 'estimate', label: 'Estimate', render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(r.estimate)}</span>, nullsLast: true, isNull: r => r.estimate == null, compare: (a, b) => (a.estimate ?? 0) - (b.estimate ?? 0) || tie(a, b) },
-    { key: 'truth', label: 'True Value', render: () => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(trueValue)}</span>, compare: () => 0 },
+    { key: 'truth', label: reverse ? 'True Cost' : 'True Value', render: () => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(trueValue)}</span>, compare: () => 0 },
     { key: 'status', label: 'Winning Status', render: r => (r.won ? 'Won' : 'Did not win'), compare: (a, b) => Number(a.won) - Number(b.won) || tie(a, b) },
     { key: 'profit', label: 'Profit', render: r => <span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(r.profit ?? (r.submitted ? 0 : null))}</span>, nullsLast: true, isNull: r => r.profit == null && !r.submitted, compare: (a, b) => (a.profit ?? 0) - (b.profit ?? 0) || tie(a, b) },
   ]
@@ -154,14 +154,14 @@ export default function Reports() {
               <div style={{ padding: '0.75rem' }}>
                 {showTruth ? (
                   <div data-testid="pennies-true-value-reveal" style={{ fontWeight: 700 }}>
-                    True value: <span style={{ color: '#137333' }}>{money(data.true_value)}</span>
+                    {data.reverse ? 'True cost' : 'True value'}: <span style={{ color: '#137333' }}>{money(data.true_value)}</span>
                   </div>
                 ) : (
                   <button
                     onClick={() => setShowTruth(true)}
                     style={{ padding: '0.5rem 1rem', fontWeight: 600, cursor: 'pointer', background: colors.text, color: colors.white, border: 'none', borderRadius: 6 }}
                   >
-                    Show true value
+                    {data.reverse ? 'Show true cost' : 'Show true value'}
                   </button>
                 )}
               </div>
@@ -174,10 +174,11 @@ export default function Reports() {
         <Modal title="Class Bids" onClose={() => setActive(null)}>
           <SortableTable<ReportParticipant, BidSortKey>
             rows={submitters}
-            columns={bidColumns(data.true_value)}
+            columns={bidColumns(data.true_value, data.reverse)}
             getRowKey={r => r.participant_id}
             initialSortKey="bid"
-            initialSortDir="desc"
+            // Reverse: the winner is the LOWEST bid, so ascending puts them on top.
+            initialSortDir={data.reverse ? 'asc' : 'desc'}
             emptyMessage="No bids yet."
           />
         </Modal>

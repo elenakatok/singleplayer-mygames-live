@@ -15,7 +15,10 @@ import { penniesGetConfig, penniesUpdateConfig, penniesInstructorSession, CLASSR
 
 export default function Settings() {
   const session = useInstructorSession(penniesInstructorSession)
+  const [reverse, setReverse] = useState(false)
   const [trueValue, setTrueValue] = useState('')
+  const [pennyValue, setPennyValue] = useState('')
+  const [pennyCount, setPennyCount] = useState('')
   const [jarImage, setJarImage] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -26,7 +29,10 @@ export default function Settings() {
     if (session.kind !== 'ready') return
     penniesGetConfig()
       .then(cfg => {
+        setReverse(cfg.reverse)
         setTrueValue(String(cfg.true_value))
+        setPennyValue(String(cfg.penny_value))
+        setPennyCount(String(cfg.penny_count))
         setJarImage(cfg.jar_image)
         setLoaded(true)
       })
@@ -34,12 +40,30 @@ export default function Settings() {
   }, [session.kind])
 
   const handleSave = async () => {
-    const tv = Number(trueValue)
-    if (!Number.isFinite(tv) || tv < 0) { setErr('True value must be a number of $0 or more.'); return }
     if (!jarImage.trim()) { setErr('Jar image path is required.'); return }
+    const tv = Number(trueValue)
+    const pv = Number(pennyValue)
+    const pc = Number(pennyCount)
+    // Only the ACTIVE mode's fields are required; the other mode's stored values are kept.
+    if (reverse) {
+      if (!Number.isFinite(pv) || pv <= 0) { setErr('Dollars per penny must be a positive number.'); return }
+      if (!Number.isInteger(pc) || pc < 0) { setErr('Penny count must be a whole number of 0 or more.'); return }
+    } else {
+      if (!Number.isFinite(tv) || tv < 0) { setErr('True value must be a number of $0 or more.'); return }
+    }
+    // Send reverse + jar_image always, plus every numeric field that parses — so toggling
+    // modes never silently drops the other mode's saved number.
+    const patch: {
+      reverse: boolean; jar_image: string
+      true_value?: number; penny_value?: number; penny_count?: number
+    } = { reverse, jar_image: jarImage.trim() }
+    if (Number.isFinite(tv) && tv >= 0) patch.true_value = tv
+    if (Number.isFinite(pv) && pv > 0) patch.penny_value = pv
+    if (Number.isInteger(pc) && pc >= 0) patch.penny_count = pc
+
     setSaving(true); setErr(null); setMsg(null)
     try {
-      await penniesUpdateConfig({ true_value: tv, jar_image: jarImage.trim() })
+      await penniesUpdateConfig(patch)
       setMsg('Saved.')
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Save failed.')
@@ -74,17 +98,77 @@ export default function Settings() {
         <>
           <div style={{ marginBottom: '1.25rem' }}>
             <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.35rem', color: colors.text }}>
-              True value (USD)
+              Auction type
             </label>
-            <input
-              data-testid="pennies-true-value"
-              type="number" min="0" step="0.01" value={trueValue}
-              onChange={e => setTrueValue(e.target.value)} style={fieldStyle}
-            />
+            <select
+              data-testid="pennies-mode"
+              value={reverse ? 'reverse' : 'forward'}
+              onChange={e => setReverse(e.target.value === 'reverse')}
+              style={fieldStyle}
+            >
+              <option value="forward">Forward — bidders guess the jar’s value (highest bid wins)</option>
+              <option value="reverse">Reverse — suppliers bid to supply (lowest bid wins)</option>
+            </select>
             <p style={{ margin: '0.35rem 0 0', fontSize: '0.85rem', color: colors.textSecondary, lineHeight: 1.4 }}>
-              The actual amount in the jar. Stored securely and never shown to students.
+              {reverse
+                ? 'Each penny represents a dollar cost. The lowest bidder wins the contract and earns their bid minus the true cost.'
+                : 'Students bid on the money in the jar. The highest bidder wins and earns the true value minus their bid.'}
             </p>
           </div>
+
+          {reverse ? (
+            <>
+              <div style={{ marginBottom: '1.25rem' }}>
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.35rem', color: colors.text }}>
+                  Dollars per penny
+                </label>
+                <input
+                  data-testid="pennies-penny-value"
+                  type="number" min="0" step="1" value={pennyValue}
+                  onChange={e => setPennyValue(e.target.value)} style={fieldStyle}
+                />
+                <p style={{ margin: '0.35rem 0 0', fontSize: '0.85rem', color: colors.textSecondary, lineHeight: 1.4 }}>
+                  What each penny in the jar is worth. Shown to students (“each penny represents ${pennyValue || '…'}”)
+                  and used to read shorthand entries — a bid below this is read as that many pennies.
+                </p>
+              </div>
+              <div style={{ marginBottom: '1.25rem' }}>
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.35rem', color: colors.text }}>
+                  Penny count (secret)
+                </label>
+                <input
+                  data-testid="pennies-penny-count"
+                  type="number" min="0" step="1" value={pennyCount}
+                  onChange={e => setPennyCount(e.target.value)} style={fieldStyle}
+                />
+                <p style={{ margin: '0.35rem 0 0', fontSize: '0.85rem', color: colors.textSecondary, lineHeight: 1.4 }}>
+                  The jar’s actual number of pennies — the secret suppliers estimate. True cost ={' '}
+                  <strong>
+                    {(() => {
+                      const pc = Number(pennyCount), pv = Number(pennyValue)
+                      return Number.isFinite(pc) && Number.isFinite(pv)
+                        ? '$' + (pc * pv).toLocaleString('en-US')
+                        : '—'
+                    })()}
+                  </strong>. Stored securely and never shown to students.
+                </p>
+              </div>
+            </>
+          ) : (
+            <div style={{ marginBottom: '1.25rem' }}>
+              <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.35rem', color: colors.text }}>
+                True value (USD)
+              </label>
+              <input
+                data-testid="pennies-true-value"
+                type="number" min="0" step="0.01" value={trueValue}
+                onChange={e => setTrueValue(e.target.value)} style={fieldStyle}
+              />
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.85rem', color: colors.textSecondary, lineHeight: 1.4 }}>
+                The actual amount in the jar. Stored securely and never shown to students.
+              </p>
+            </div>
+          )}
 
           <div style={{ marginBottom: '1.5rem' }}>
             <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.35rem', color: colors.text }}>

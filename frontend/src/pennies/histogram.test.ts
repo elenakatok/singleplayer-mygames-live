@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeHistogram, plotWidth, tickStep } from './histogram'
+import { computeHistogram, plotWidth, tickStep, niceBinWidth, dollarLabel } from './histogram'
 
 // Regression: the Class Analysis histogram dropped the top bar when the largest value
 // fell exactly on a whole dollar (ceil(max) === max → bins 0..max-1, missing bin max).
@@ -54,6 +54,52 @@ describe('computeHistogram — top-bin inclusion', () => {
     expect(h.binCount).toBe(1)
     expect(h.bidCounts[0]).toBe(1)
     expect(h.estCounts[0]).toBe(1)
+  })
+
+  it('forward-scale data keeps whole-dollar bins (binWidth 1, unchanged)', () => {
+    const h = computeHistogram([12, 4, 3], [15, 8])
+    expect(h.binWidth).toBe(1)
+    expect(h.binCount).toBe(16)
+  })
+})
+
+describe('adaptive binning for reverse (six-figure) ranges', () => {
+  it('niceBinWidth stays 1 for small ranges, steps up for large ones', () => {
+    expect(niceBinWidth(25)).toBe(1)      // forward game — unchanged
+    expect(niceBinWidth(40)).toBe(1)      // still whole-dollar at the threshold
+    expect(niceBinWidth(320_000)).toBe(10_000)
+    expect(niceBinWidth(1_000_000)).toBe(25_000)
+  })
+
+  it('a six-figure reverse spread produces a BOUNDED bin count (no 300k rects)', () => {
+    const bids = [280_000, 300_000, 320_000, 305_000, 295_000]
+    const estimates = [290_000, 310_000, 285_000]
+    const h = computeHistogram(bids, estimates)
+    expect(h.binWidth).toBe(10_000)
+    expect(h.binCount).toBeLessThanOrEqual(50)     // NOT 320_001
+    // Every value still lands in a bin (nothing dropped).
+    const total = h.bidCounts.reduce((s, c) => s + c, 0) + h.estCounts.reduce((s, c) => s + c, 0)
+    expect(total).toBe(bids.length + estimates.length)
+    // The top value ($320k → bin 32 at width 10k) exists and is counted.
+    expect(h.bidCounts[32]).toBe(1)
+  })
+
+  it('dollarLabel abbreviates only at/above $1,000 (forward labels unchanged)', () => {
+    expect(dollarLabel(0)).toBe('$0')
+    expect(dollarLabel(23)).toBe('$23')
+    expect(dollarLabel(10_000)).toBe('$10k')
+    expect(dollarLabel(2_500)).toBe('$2.5k')
+    expect(dollarLabel(1_200_000)).toBe('$1.2m')
+  })
+
+  it('tickStep never overlaps labels even with wide six-figure labels', () => {
+    // width 10k, 33 bins → widest label "$320k". Whatever step it picks must clear it.
+    const binWidth = 10_000
+    const binCount = 33
+    const step = tickStep(binCount, binWidth)
+    const binW = plotWidth(binCount) / binCount
+    const widest = dollarLabel((binCount - 1) * binWidth).length * 6
+    expect(step * binW).toBeGreaterThanOrEqual(widest + 8)
   })
 })
 

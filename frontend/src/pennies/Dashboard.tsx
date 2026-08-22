@@ -69,6 +69,7 @@ export default function Dashboard() {
   const session = useInstructorSession(penniesInstructorSession)
   const navigate = useNavigate()
   const [rows, setRows] = useState<ReportParticipant[] | null>(null)
+  const [reverse, setReverse] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [scoring, setScoring] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -76,7 +77,7 @@ export default function Dashboard() {
 
   const load = useCallback(() => {
     penniesGetReport()
-      .then(res => setRows(res.participants))
+      .then(res => { setRows(res.participants); setReverse(res.reverse) })
       .catch(err => setLoadError(err instanceof Error ? err.message : 'Failed to load roster.'))
   }, [])
 
@@ -187,7 +188,8 @@ export default function Dashboard() {
           columns={columns}
           getRowKey={r => r.participant_id}
           initialSortKey="bid"
-          initialSortDir="desc"
+          // Reverse: lowest bid is the winner, so ascending surfaces them first.
+          initialSortDir={reverse ? 'asc' : 'desc'}
           emptyMessage="No students on the roster yet — open the dashboard from the classroom to sync it."
         />
       )}

@@ -64,6 +64,11 @@ export type JarQuestion = {
 export type GetScreenResult = {
   ok: boolean
   jar_image: string
+  /** false = forward (value auction), true = reverse (supplier/cost auction). */
+  reverse: boolean
+  /** Dollars per penny — drives the reverse copy, the "= $X" conversions and the
+   *  shorthand-entry rule. Meaningless in forward mode. */
+  penny_value: number
   already_submitted: boolean
   questions: JarQuestion[]
 }
@@ -84,11 +89,24 @@ export const penniesInstructorSession = (args: InstructorSessionArgs) =>
 
 // ── Instructor: config / settings ───────────────────────────────────────────────
 
-export type ConfigData = { ok: boolean; true_value: number; jar_image: string }
+export type ConfigData = {
+  ok: boolean
+  true_value: number
+  jar_image: string
+  reverse: boolean
+  penny_value: number
+  penny_count: number
+}
 
 export const penniesGetConfig = () => callFn<ConfigData>('penniesGetConfig', {})
 
-export const penniesUpdateConfig = (patch: { true_value?: number; jar_image?: string }) =>
+export const penniesUpdateConfig = (patch: {
+  true_value?: number
+  jar_image?: string
+  reverse?: boolean
+  penny_value?: number
+  penny_count?: number
+}) =>
   callFn<{ ok: boolean }>('penniesUpdateConfig', patch)
 
 // ── Instructor: scoring + reports ─────────────────────────────────────────────
@@ -120,6 +138,11 @@ export type ReportParticipant = {
 export type ReportData = {
   ok: boolean
   scored: boolean
+  /** false = forward (value auction), true = reverse (supplier/cost auction). Drives the
+   *  report labels ("True Value" vs "True Cost") and the winning-bid direction. */
+  reverse: boolean
+  penny_value: number
+  /** Forward: the jar's value. Reverse: the true cost (penny_count × penny_value). */
   true_value: number
   participants: ReportParticipant[]
   stats: {

@@ -3,7 +3,8 @@ import * as admin from 'firebase-admin'
 import { extractInstructorGameId } from '@mygames/game-server'
 import {
   PENNIES_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION,
-  TRUTH_DOC, DEFAULT_TRUE_VALUE,
+  TRUTH_DOC, CONFIG_DOC, DEFAULT_TRUE_VALUE, DEFAULT_REVERSE, DEFAULT_PENNY_VALUE,
+  DEFAULT_PENNY_COUNT, resolveTrueValue,
 } from './config'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -36,13 +37,25 @@ export const penniesGetReport = onCall({ cors: PENNIES_CORS_ORIGINS }, async (re
   const db = admin.firestore()
   const instanceRef = db.collection(INSTANCES_COLLECTION).doc(gameInstanceId)
 
-  const [participantsSnap, truthSnap, instanceSnap] = await Promise.all([
+  const [participantsSnap, truthSnap, instanceSnap, configSnap] = await Promise.all([
     instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).get(),
     instanceRef.collection('truth').doc(TRUTH_DOC).get(),
     instanceRef.get(),
+    instanceRef.collection('config').doc(CONFIG_DOC).get(),
   ])
 
-  const trueValue = (truthSnap.data()?.true_value as number | undefined) ?? DEFAULT_TRUE_VALUE
+  const cfg = configSnap.data() ?? {}
+  const reverse = cfg.reverse === true ? true : DEFAULT_REVERSE
+  const pennyValue = typeof cfg.penny_value === 'number' ? cfg.penny_value : DEFAULT_PENNY_VALUE
+  const truth = truthSnap.data() ?? {}
+  // Value (forward) or cost = penny_count × penny_value (reverse) — the same one-place
+  // derivation the scorer uses, so the report can never disagree with the profits it shows.
+  const trueValue = resolveTrueValue({
+    reverse,
+    trueValue: typeof truth.true_value === 'number' ? truth.true_value : DEFAULT_TRUE_VALUE,
+    pennyCount: typeof truth.penny_count === 'number' ? truth.penny_count : DEFAULT_PENNY_COUNT,
+    pennyValue,
+  })
   const scored = instanceSnap.data()?.finalized === true
 
   const participants: ReportParticipant[] = participantsSnap.docs.map(d => {
@@ -65,11 +78,16 @@ export const penniesGetReport = onCall({ cors: PENNIES_CORS_ORIGINS }, async (re
   const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0)
   const avgEstimate = responses > 0 ? sum(submitters.map(p => p.estimate ?? 0)) / responses : null
   const avgBid = responses > 0 ? sum(submitters.map(p => p.bid as number)) / responses : null
-  const winningBid = responses > 0 ? Math.max(...submitters.map(p => p.bid as number)) : null
+  // The winning bid follows the mechanism: highest (forward) vs lowest (reverse).
+  const winningBid = responses > 0
+    ? (reverse ? Math.min(...submitters.map(p => p.bid as number)) : Math.max(...submitters.map(p => p.bid as number)))
+    : null
 
   return {
     ok: true as const,
     scored,
+    reverse,
+    penny_value: pennyValue,
     true_value: trueValue,
     participants,
     stats: { responses, avgEstimate, avgBid, winningBid },

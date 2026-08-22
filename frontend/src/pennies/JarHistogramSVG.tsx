@@ -6,7 +6,7 @@
 // distinct series with a legend.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { computeHistogram, plotWidth, tickStep } from './histogram'
+import { computeHistogram, plotWidth, tickStep, dollarLabel } from './histogram'
 
 const BID_COLOR = '#2563eb'      // blue
 const ESTIMATE_COLOR = '#f59e0b' // amber
@@ -14,7 +14,7 @@ const ESTIMATE_COLOR = '#f59e0b' // amber
 export function JarHistogramSVG({ bids, estimates }: { bids: number[]; estimates: number[] }) {
   // Bins 0..floor(max) inclusive — the top whole-dollar bar is always included (see
   // histogram.ts; ceil(max) used to drop a value that fell exactly on a whole dollar).
-  const { bins, bidCounts, estCounts, maxCount } = computeHistogram(bids, estimates)
+  const { bins, binWidth, bidCounts, estCounts, maxCount } = computeHistogram(bids, estimates)
 
   // Layout — plot width is bounded (see plotWidth), so wide ranges pack tighter.
   const padL = 40, padR = 16, padT = 28, padB = 46
@@ -36,7 +36,7 @@ export function JarHistogramSVG({ bids, estimates }: { bids: number[]; estimates
   // X tick density — adaptive: label EVERY whole-dollar bin when they fit, thinning to
   // 2/5/10 only when adjacent labels would collide (see tickStep). Typical $0–$25 ranges
   // stay every-bin; only much wider ranges thin.
-  const xEvery = tickStep(bins.length)
+  const xEvery = tickStep(bins.length, binWidth)
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: W, fontFamily: 'inherit' }} role="img" aria-label="Histogram of bids and estimates">
@@ -62,7 +62,7 @@ export function JarHistogramSVG({ bids, estimates }: { bids: number[]; estimates
           <rect x={xOf(k) + 3} y={yOf(bidCounts[k])} width={barW} height={padT + plotH - yOf(bidCounts[k])} fill={BID_COLOR} />
           <rect x={xOf(k) + 3 + barW} y={yOf(estCounts[k])} width={barW} height={padT + plotH - yOf(estCounts[k])} fill={ESTIMATE_COLOR} />
           {k % xEvery === 0 && (
-            <text x={xOf(k) + binW / 2} y={padT + plotH + 16} textAnchor="middle" fontSize="10" fill="#888">${k}</text>
+            <text x={xOf(k) + binW / 2} y={padT + plotH + 16} textAnchor="middle" fontSize="10" fill="#888">{dollarLabel(k * binWidth)}</text>
           )}
         </g>
       ))}
@@ -70,7 +70,9 @@ export function JarHistogramSVG({ bids, estimates }: { bids: number[]; estimates
       {/* Axes */}
       <line x1={padL} y1={padT + plotH} x2={padL + plotW} y2={padT + plotH} stroke="#999" />
       <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke="#999" />
-      <text x={padL + plotW / 2} y={H - 8} textAnchor="middle" fontSize="11" fill="#666">Dollars (whole-dollar bins)</text>
+      <text x={padL + plotW / 2} y={H - 8} textAnchor="middle" fontSize="11" fill="#666">
+        {binWidth === 1 ? 'Dollars (whole-dollar bins)' : `Dollars (bins of ${dollarLabel(binWidth)})`}
+      </text>
     </svg>
   )
 }

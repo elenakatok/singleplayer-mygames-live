@@ -47,5 +47,31 @@ export const bidQuestion: JarQuestion = {
   helper: 'Bid in USD',
 }
 
-/** The jar screen's fields, in order. */
+/** The jar screen's fields, in order — FORWARD (value auction) mode. */
 export const penniesQuestions: JarQuestion[] = [estimateQuestion, bidQuestion]
+
+// ── Reverse (supplier / cost auction) variants ─────────────────────────────────
+// Same two fields, reframed for a supplier: they estimate the COST and place a bid,
+// both in dollars. The "each penny = $X" context and the shorthand-entry rule live in
+// the copy the client renders (JarScreen) from the mode + penny_value, not here.
+
+export const estimateQuestionReverse: JarQuestion = {
+  ...base,
+  field:  'estimate',
+  order:  1,
+  prompt: 'Estimate Your Cost',
+  helper: 'Your best guess of the actual cost, in dollars. This does not affect who wins — it is for your own reasoning.',
+}
+
+export const bidQuestionReverse: JarQuestion = {
+  ...base,
+  field:  'bid',
+  order:  2,
+  prompt: 'Place Your Bid',
+  helper: 'The price you will supply at, in dollars. The lowest bid wins the contract.',
+}
+
+/** The jar screen's fields for the given mode. */
+export function penniesQuestionsFor(reverse: boolean): JarQuestion[] {
+  return reverse ? [estimateQuestionReverse, bidQuestionReverse] : penniesQuestions
+}

@@ -17,7 +17,7 @@ import type { BootstrapArgs } from '@mygames/game-ui'
 type Screen =
   | { name: 'loading' }
   | { name: 'error'; message: string }
-  | { name: 'form'; jarImage: string; questions: JarQuestion[] }
+  | { name: 'form'; jarImage: string; questions: JarQuestion[]; reverse: boolean; pennyValue: number }
   | { name: 'confirmation' }
 
 function Confirmation() {
@@ -60,7 +60,7 @@ export default function Play() {
       .then(res => {
         if (cancelled) return
         if (res.already_submitted) setScreen({ name: 'confirmation' })
-        else setScreen({ name: 'form', jarImage: res.jar_image, questions: res.questions })
+        else setScreen({ name: 'form', jarImage: res.jar_image, questions: res.questions, reverse: res.reverse, pennyValue: res.penny_value })
       })
       .catch(err => {
         if (!cancelled) setScreen({ name: 'error', message: err instanceof Error ? err.message : 'Failed to load the game.' })
@@ -117,7 +117,13 @@ export default function Play() {
             {
               id: 'jar',
               render: ({ onDone }) => (
-                <JarScreen jarImage={screen.jarImage} questions={screen.questions} onDone={onDone} />
+                <JarScreen
+                  jarImage={screen.jarImage}
+                  questions={screen.questions}
+                  reverse={screen.reverse}
+                  pennyValue={screen.pennyValue}
+                  onDone={onDone}
+                />
               ),
             },
           ]}

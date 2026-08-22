@@ -45,15 +45,56 @@ describe('scoreClass — winner, profit, grading', () => {
 describe('scoreClass — tie break + idempotency', () => {
   it('ties broken by injected rng (deterministic under test)', () => {
     const tied = [P('a', 5), P('b', 5), P('c', 5)]
-    expect(scoreClass(tied, 3.5, () => 0).winnerId).toBe('a')     // floor(0*3)=0
-    expect(scoreClass(tied, 3.5, () => 0.99).winnerId).toBe('c')  // floor(0.99*3)=2
+    expect(scoreClass(tied, 3.5, false, () => 0).winnerId).toBe('a')     // floor(0*3)=0
+    expect(scoreClass(tied, 3.5, false, () => 0.99).winnerId).toBe('c')  // floor(0.99*3)=2
   })
 
   it('a prior winner among the tied high bidders is preserved (idempotent re-run)', () => {
     const tied = [P('a', 5), P('b', 5, true, true), P('c', 5)]
     // Even with rng pointing at 'a', the prior winner 'b' is kept.
-    const r = scoreClass(tied, 3.5, () => 0)
+    const r = scoreClass(tied, 3.5, false, () => 0)
     expect(r.winnerId).toBe('b')
     expect(r.results.b.won).toBe(true)
+  })
+})
+
+describe('scoreClass — reverse (supplier / cost auction) mode', () => {
+  it('LOWEST bid wins; winner profit = bid − true_cost; others profit 0', () => {
+    // trueValue here is the COST. Bids are prices; the cheapest supplier wins.
+    const r = scoreClass([P('a', 300_000), P('b', 280_000), P('c', 320_000)], 300_000, true)
+    expect(r.winnerId).toBe('b')
+    expect(r.results.b.won).toBe(true)
+    expect(r.results.b.profit).toBeCloseTo(280_000 - 300_000) // −20,000: bid below cost (curse)
+    expect(r.results.a.won).toBe(false)
+    expect(r.results.a.profit).toBe(0)
+    expect(r.results.c.profit).toBe(0)
+  })
+
+  it('a winning bid ABOVE cost is a real profit', () => {
+    const r = scoreClass([P('a', 340_000), P('b', 360_000)], 300_000, true)
+    expect(r.winnerId).toBe('a')                       // lowest of the two
+    expect(r.results.a.profit).toBeCloseTo(40_000)     // 340k − 300k
+  })
+
+  it('reverse flips the winner vs forward on the same bids', () => {
+    const bids = [P('a', 300_000), P('b', 280_000), P('c', 320_000)]
+    expect(scoreClass(bids, 300_000, false).winnerId).toBe('c') // forward: highest
+    expect(scoreClass(bids, 300_000, true).winnerId).toBe('b')  // reverse: lowest
+  })
+
+  it('reverse ties break by rng and preserve a prior winner (idempotent)', () => {
+    const tied = [P('a', 100), P('b', 100), P('c', 100)]
+    expect(scoreClass(tied, 90, true, () => 0).winnerId).toBe('a')
+    const prior = [P('a', 100), P('b', 100, true, true), P('c', 100)]
+    expect(scoreClass(prior, 90, true, () => 0).winnerId).toBe('b') // prior winner kept
+  })
+
+  it('participation scoring is identical in reverse (raw 1, normalized 0; no-show −2)', () => {
+    const r = scoreClass([P('a', 280_000), P('b', 320_000), P('x', null, false)], 300_000, true)
+    expect(r.results.a.raw_score).toBe(1)
+    expect(r.results.a.normalized_score).toBe(0)
+    expect(r.results.x.raw_score).toBeNull()
+    expect(r.results.x.normalized_score).toBe(-2)
+    expect(r.results.x.profit).toBeNull()
   })
 })

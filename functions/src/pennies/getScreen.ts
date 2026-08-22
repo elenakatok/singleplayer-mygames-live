@@ -3,9 +3,9 @@ import * as admin from 'firebase-admin'
 import { extractStudentOnCallIds } from '@mygames/game-server'
 import {
   PENNIES_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION,
-  CONFIG_DOC, DEFAULT_JAR_IMAGE,
+  CONFIG_DOC, DEFAULT_JAR_IMAGE, DEFAULT_REVERSE, DEFAULT_PENNY_VALUE,
 } from './config'
-import { penniesQuestions } from './questions'
+import { penniesQuestionsFor } from './questions'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // penniesGetScreen (student) — returns the jar image path and the two question
@@ -35,13 +35,20 @@ export const penniesGetScreen = onCall({ cors: PENNIES_CORS_ORIGINS }, async (re
     instanceRef.collection(PARTICIPANTS_SUBCOLLECTION).doc(participantId).get(),
   ])
 
-  const jarImage = (configSnap.data()?.jar_image as string | undefined) ?? DEFAULT_JAR_IMAGE
+  const cfg = configSnap.data() ?? {}
+  const jarImage = (cfg.jar_image as string | undefined) ?? DEFAULT_JAR_IMAGE
+  // Mode + multiplier are non-secret (the student is told which game they play and that
+  // each penny is worth $X); they never expose the true value/cost, which stays in truth/.
+  const reverse = cfg.reverse === true ? true : DEFAULT_REVERSE
+  const pennyValue = typeof cfg.penny_value === 'number' ? cfg.penny_value : DEFAULT_PENNY_VALUE
   const alreadySubmitted = participantSnap.data()?.submitted_at != null
 
   return {
     ok: true as const,
     jar_image: jarImage,
+    reverse,
+    penny_value: pennyValue,
     already_submitted: alreadySubmitted,
-    questions: penniesQuestions,
+    questions: penniesQuestionsFor(reverse),
   }
 })

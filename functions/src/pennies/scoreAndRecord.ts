@@ -5,7 +5,8 @@ import { FieldValue } from 'firebase-admin/firestore'
 import { extractInstructorGameId, toGameResult, dispatchResults, type PushSummary } from '@mygames/game-server'
 import {
   PENNIES_CORS_ORIGINS, INSTANCES_COLLECTION, PARTICIPANTS_SUBCOLLECTION,
-  TRUTH_DOC, DEFAULT_TRUE_VALUE,
+  TRUTH_DOC, CONFIG_DOC, DEFAULT_TRUE_VALUE, DEFAULT_REVERSE, DEFAULT_PENNY_VALUE,
+  DEFAULT_PENNY_COUNT, resolveTrueValue,
 } from './config'
 import { scoreClass, type ParticipantInput } from './scoring'
 
@@ -50,12 +51,24 @@ export const penniesScoreAndRecord = onCall(
     const participantsRef = instanceRef.collection(PARTICIPANTS_SUBCOLLECTION)
 
     // 1–2. Read this instance's participants (its own subcollection — no cross-instance
-    // filter needed) + the true value (truth/main).
-    const [participantsSnap, truthSnap] = await Promise.all([
+    // filter needed) + the truth (true_value / penny_count) and config (mode, penny_value).
+    const [participantsSnap, truthSnap, configSnap] = await Promise.all([
       participantsRef.get(),
       instanceRef.collection('truth').doc(TRUTH_DOC).get(),
+      instanceRef.collection('config').doc(CONFIG_DOC).get(),
     ])
-    const trueValue = (truthSnap.data()?.true_value as number | undefined) ?? DEFAULT_TRUE_VALUE
+    const cfg = configSnap.data() ?? {}
+    const reverse = cfg.reverse === true ? true : DEFAULT_REVERSE
+    const pennyValue = typeof cfg.penny_value === 'number' ? cfg.penny_value : DEFAULT_PENNY_VALUE
+    const truth = truthSnap.data() ?? {}
+    // The one dollar figure every profit is measured against — value (forward) or
+    // cost = penny_count × penny_value (reverse). Derived in ONE place (config.ts).
+    const trueValue = resolveTrueValue({
+      reverse,
+      trueValue: typeof truth.true_value === 'number' ? truth.true_value : DEFAULT_TRUE_VALUE,
+      pennyCount: typeof truth.penny_count === 'number' ? truth.penny_count : DEFAULT_PENNY_COUNT,
+      pennyValue,
+    })
 
     const inputs: ParticipantInput[] = participantsSnap.docs.map(d => {
       const p = d.data()
@@ -68,7 +81,7 @@ export const penniesScoreAndRecord = onCall(
     })
 
     // 3–7. Compute winner (random tie-break, idempotency-aware), profits, grades.
-    const scored = scoreClass(inputs, trueValue)
+    const scored = scoreClass(inputs, trueValue, reverse)
 
     const nameById = new Map(participantsSnap.docs.map(d => [d.id, (d.data().name as string | undefined) ?? null]))
 

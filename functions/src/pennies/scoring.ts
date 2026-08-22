@@ -25,7 +25,8 @@ export interface ParticipantInput {
 
 export interface ScoredParticipant {
   won: boolean
-  /** Winner: true_value − bid (typically negative). Other submitters: 0. Non-submitters: null. */
+  /** Winner: forward `true_value − bid`, reverse `bid − true_cost` (both typically
+   *  negative — the winner's curse). Other submitters: 0. Non-submitters: null. */
   profit: number | null
   /** Participation: 1 for submitters, null for non-submitters (no-show). */
   raw_score: number | null
@@ -43,22 +44,30 @@ export interface ClassScore {
  * Scores an entire instance. `rng` is injectable so the random tie-break is
  * deterministic under test; defaults to Math.random in production.
  *
+ * `reverse` mirrors the mechanism (config.ts): forward (default) picks the HIGHEST bid
+ * and pays `true_value − bid`; reverse picks the LOWEST bid (the winning supplier) and
+ * pays `bid − true_cost`. `trueValue` carries the value in forward and the COST in
+ * reverse — the caller resolves which via config.resolveTrueValue, so this stays one rule.
+ *
  * Idempotency (spec §6): the tie-break is random on the FIRST run, but if a tied
- * high bidder already carries won===true from a prior run, that winner is kept —
+ * winning bidder already carries won===true from a prior run, that winner is kept —
  * so re-running produces the same winner. A non-tie always reproduces exactly.
  */
 export function scoreClass(
   participants: ParticipantInput[],
   trueValue: number,
+  reverse = false,
   rng: () => number = Math.random,
 ): ClassScore {
   const submitters = participants.filter(p => p.submitted && p.bid != null)
 
-  // Winner among submitters — highest bid, ties broken randomly (idempotency-aware).
+  // Winner among submitters — the best bid FOR THE MECHANISM (forward: highest; reverse:
+  // lowest), ties broken randomly (idempotency-aware).
   let winnerId: string | null = null
   if (submitters.length > 0) {
-    const maxBid = Math.max(...submitters.map(p => p.bid as number))
-    const tied = submitters.filter(p => p.bid === maxBid)
+    const bids = submitters.map(p => p.bid as number)
+    const winBid = reverse ? Math.min(...bids) : Math.max(...bids)
+    const tied = submitters.filter(p => p.bid === winBid)
     const priorWinner = tied.find(p => p.priorWon)
     const winner = priorWinner ?? tied[Math.floor(rng() * tied.length)]
     winnerId = winner.participant_id
@@ -74,7 +83,9 @@ export function scoreClass(
       const won = p.participant_id === winnerId
       results[p.participant_id] = {
         won,
-        profit: won ? trueValue - p.bid : 0,
+        // Forward: value − bid. Reverse: bid − cost. The mirror is the whole point of
+        // the mode; both are usually negative for the winner (the winner's curse).
+        profit: won ? (reverse ? p.bid - trueValue : trueValue - p.bid) : 0,
         raw_score: 1,
         normalized_score: submitterZ[zi] ?? 0,
       }
