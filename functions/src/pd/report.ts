@@ -10,8 +10,8 @@ import { strategyDisplayName, strategyRevealLine } from './strategyText'
 import { parseStoredRounds, totals } from './rounds'
 import { debriefQuestion } from './questions'
 import {
-  cooperationByRound, outcomeByFirstMove, cooperationRate, avgYearsPerRound,
-  type PdGameRow, type CooperationPoint, type FirstMoveOutcome,
+  cooperationByRound, outcomeByFirstMove, firstRoundChoices, cooperationRate, avgYearsPerRound,
+  type PdGameRow, type CooperationPoint, type FirstMoveOutcome, type FirstRoundSlice,
 } from './reportStats'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -130,9 +130,15 @@ export const pdGetReport = onCall({ cors: PD_CORS_ORIGINS }, async (request) => 
    */
   const maxRoundsPlayed = gameRows.reduce((max, r) => Math.max(max, r.moves.length), 0)
 
-  const charts: { cooperation: CooperationPoint[]; firstMove: FirstMoveOutcome[] } = {
+  const charts: {
+    cooperation: CooperationPoint[]
+    firstMove: FirstMoveOutcome[]
+    firstRound: FirstRoundSlice[]
+  } = {
     cooperation: cooperationByRound(gameRows, maxRoundsPlayed),
     firstMove: outcomeByFirstMove(gameRows),
+    /** Tier 3c — the class's round-1 split, pooled across strategies on purpose. */
+    firstRound: firstRoundChoices(gameRows),
   }
 
   return {

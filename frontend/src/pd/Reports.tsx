@@ -10,6 +10,7 @@ import {
 } from './api'
 import { CooperationChartSVG } from './CooperationChartSVG'
 import { FirstMoveChartSVG } from './FirstMoveChartSVG'
+import { FirstRoundPieSVG } from './FirstRoundPieSVG'
 import { compareByLastName } from '../shared/sortName'
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -214,6 +215,18 @@ export default function Reports() {
     return PD_STRATEGIES.filter(s => faced.has(s)).map(s => nameOf(d.strategyText, s))
   }
 
+  /**
+   * The round-1 split as one line for the tile face, e.g. "12 Cooperate / 5 Defect".
+   *
+   * ⚠ DERIVED FROM `charts.firstRound`, THE SAME ARRAY THE MODAL RENDERS — not
+   * recounted from `participants`. Two counts of the same thing is two chances to
+   * disagree, and the tile is the number Elena reads at a glance.
+   */
+  const firstRoundSummary = (d: PdReportData): string => {
+    const name = (m: 'C' | 'D') => (m === 'C' ? d.labels.C : d.labels.D)
+    return d.charts.firstRound.map(s => `${s.n} ${name(s.move)}`).join(' / ')
+  }
+
   /** strategy id → display name, for the two charts. */
   const labelsOf = (d: PdReportData): Record<string, string> =>
     Object.fromEntries(Object.entries(d.strategyText).map(([k, v]) => [k, v.label]))
@@ -250,6 +263,17 @@ export default function Reports() {
       onOpen: () => setActive('cooperation'),
     },
     {
+      id: 'firstround',
+      title: 'Round 1 choices',
+      disabled: played.length === 0,
+      preview: played.length === 0
+        ? <span style={{ color: '#94a3b8' }}>No rounds played yet.</span>
+        // ⚠ The counts, in the instance's own wording. Read straight off the chart
+        // data so the tile and the modal can never disagree.
+        : <span>{firstRoundSummary(data)}</span>,
+      onOpen: () => setActive('firstround'),
+    },
+    {
       id: 'firstmove',
       title: 'Outcome by first decision',
       disabled: played.length === 0,
@@ -277,6 +301,11 @@ export default function Reports() {
       {active === 'cooperation' && (
         <Modal title={`Cooperation rate by round — ${assignedNames(data).join(' vs ')}`} onClose={() => setActive(null)}>
           <CooperationChartSVG points={data.charts.cooperation} strategyLabels={labelsOf(data)} />
+        </Modal>
+      )}
+      {active === 'firstround' && (
+        <Modal title="Round 1 choices — before anyone had seen their opponent" onClose={() => setActive(null)}>
+          <FirstRoundPieSVG slices={data.charts.firstRound} labels={data.labels} />
         </Modal>
       )}
       {active === 'firstmove' && (

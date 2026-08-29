@@ -1269,6 +1269,16 @@ async function main() {
   check(psFm.length > 0 && psFm.every(o => psDrawn.includes(o.strategy)),
     'Tier 3b cells cover the assigned strategies only')
 
+  // ── Tier 3c — the round-1 split ───────────────────────────────────────────
+  const psFr = psReport.result?.charts?.firstRound ?? []
+  check(psFr.length === 2 && psFr.map(x => x.move).join(',') === 'C,D',
+    `⚠ Tier 3c returns BOTH moves in a stable order (${psFr.map(x => x.move).join(',')})`)
+  // ⚠ THE DENOMINATOR, checked against a DIFFERENT source than the chart: the roster's
+  // own count of students with at least one round played.
+  const psPlayed = (psReport.result?.participants ?? []).filter(x => x.rounds_played > 0).length
+  check(psFr.reduce((a, x) => a + x.n, 0) === psPlayed,
+    `⚠ …and the two slices total the students who actually played (${psFr.reduce((a, x) => a + x.n, 0)} vs ${psPlayed})`)
+
   // ═══════════════════════════════════════════════════════════════════════════
   // [14e] ⚠ P(first move) REACHES REAL PLAY, and the reveal line tells the truth.
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1309,6 +1319,44 @@ async function main() {
   check(!prReveal.includes('equal probability'),
     '⚠⚠ the reveal line does NOT claim equal probability at p = 0')
   check(prReveal.includes('every time'), `…it states what actually happened (${prReveal.slice(0, 60)}…)`)
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // [14f] ⚠ TIER 3c — the round-1 split, driven to a split this harness KNOWS.
+  // ═══════════════════════════════════════════════════════════════════════════
+  console.log('\n[14f] Round 1 choices — the Tier 3c split')
+  const frGid = `pd-firstround-${stamp}`
+  await callFn('pdUpdateConfig', {
+    ...asDev(frGid), strategies: ['always_first'], minRounds: 2, maxRounds: 2,
+  })
+  // Five students: three open with the FIRST move, two with the second. Written here,
+  // so the expected split is a fact about this loop and not a read of the response.
+  const frOpeners = ['C', 'C', 'C', 'D', 'D']
+  for (let i = 0; i < frOpeners.length; i++) {
+    const pid = `fr-stu-${i}`
+    await callFn('pdBootstrap', asStudent(frGid, pid))
+    await callFn('pdGetState', asStudent(frGid, pid))
+    await callFn('pdSubmitRound', asStudent(frGid, pid, { round: 1, move: frOpeners[i] }))
+    // ⚠ A SECOND ROUND, DELIBERATELY, AND EVERY STUDENT PLAYS THE OPPOSITE MOVE IN IT.
+    // If Tier 3c ever counted all rounds instead of the first, the split would come
+    // back 5/5 instead of 3/2 and this check would catch it.
+    await callFn('pdSubmitRound', asStudent(frGid, pid,
+      { round: 2, move: frOpeners[i] === 'C' ? 'D' : 'C' }))
+  }
+  // One student who never played at all — must not appear in the denominator.
+  await callFn('pdBootstrap', asStudent(frGid, 'fr-noshow'))
+  await callFn('pdGetState', asStudent(frGid, 'fr-noshow'))
+
+  const frReport = await callFn('pdGetReport', asDev(frGid))
+  const frSlices = frReport.result?.charts?.firstRound ?? []
+  check(frSlices.length === 2, `Tier 3c returns two slices (${frSlices.length})`)
+  check(JSON.stringify(frSlices) === JSON.stringify([{ move: 'C', n: 3 }, { move: 'D', n: 2 }]),
+    `⚠⚠ THE SPLIT IS 3 / 2 — round 1 only (${JSON.stringify(frSlices)})`)
+  check(frSlices.reduce((a, x) => a + x.n, 0) === 5,
+    '⚠ the never-launched student is NOT in the denominator')
+  // …and the roster agrees, from its own independent field.
+  const frFirsts = (frReport.result?.participants ?? []).map(x => x.first_move)
+  check(frFirsts.filter(m => m === 'C').length === 3 && frFirsts.filter(m => m === 'D').length === 2,
+    '⚠ the roster\'s own first_move column agrees with the chart')
 
   // ── ⚠ THE EQUILIBRIUM HINT IS INSTRUCTOR-ONLY ─────────────────────────────
   // It is computed CLIENT-SIDE on the settings page and has no server surface at

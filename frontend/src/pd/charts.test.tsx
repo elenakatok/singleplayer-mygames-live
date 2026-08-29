@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { CooperationChartSVG, runsOf } from './CooperationChartSVG'
 import { FirstMoveChartSVG } from './FirstMoveChartSVG'
+import { FirstRoundPieSVG, sharePct } from './FirstRoundPieSVG'
 import type { PdCooperationPoint, PdFirstMoveOutcome, PdMoveLabels } from './api'
 import { STRATEGY_COLOR } from './strategyColors'
 
@@ -402,5 +403,114 @@ describe('the shared palette reaches both charts', () => {
     expect(html).toContain(STRATEGY_COLOR.tft)
     expect(html).not.toContain(STRATEGY_COLOR.grim)
     expect(html).not.toContain(STRATEGY_COLOR.alternate)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Tier 3c — the round-1 donut.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('FirstRoundPieSVG — the class\'s round 1 choices', () => {
+  // ⚠ Two words that appear nowhere else in the repo, the standard used since the KC
+  // label fix — so a hit is never a coincidence and the absence check has teeth.
+  const LABELS5 = { C: 'Zarquon', D: 'Blorptide' }
+  const slices = (c: number, d: number) => [
+    { move: 'C' as const, n: c }, { move: 'D' as const, n: d },
+  ]
+  const vis = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+
+  it('draws one slice per move, with the counts and shares', () => {
+    const html = renderToStaticMarkup(<FirstRoundPieSVG slices={slices(12, 4)} labels={LABELS5} />)
+    expect(html).toContain('data-testid="pd-firstround-slice-C"')
+    expect(html).toContain('data-testid="pd-firstround-slice-D"')
+    const text = vis(html)
+    // 12 of 16 = 75%, 4 of 16 = 25%. Worked by hand, not read off the render.
+    expect(text).toContain('16')
+    expect(text).toContain('75%')
+    expect(text).toContain('25%')
+    expect(text).toContain('students')
+  })
+
+  it('⚠ names the moves in the INSTANCE wording, and neither shipped default', () => {
+    const text = vis(renderToStaticMarkup(<FirstRoundPieSVG slices={slices(3, 1)} labels={LABELS5} />))
+    expect(text).toContain('Zarquon')
+    expect(text).toContain('Blorptide')
+    expect(text).not.toContain('Cooperate')
+    expect(text).not.toContain('Defect')
+  })
+
+  it('⚠⚠ EVERY STUDENT CHOOSING THE SAME STILL RENDERS — the 360° arc trap', () => {
+    // An arc of exactly 360° has identical start and end points, so the path command
+    // draws NOTHING and the chart silently goes blank — exactly when the finding is
+    // strongest. Drawn as a <circle> instead.
+    const html = renderToStaticMarkup(<FirstRoundPieSVG slices={slices(9, 0)} labels={LABELS5} />)
+    expect(html).toContain('data-testid="pd-firstround-slice-C"')
+    // It is a circle, not a degenerate path.
+    expect(html).toMatch(/<circle[^>]*data-testid="pd-firstround-slice-C"/)
+    expect(html).not.toContain('data-testid="pd-firstround-slice-D"')
+    const text = vis(html)
+    expect(text).toContain('100%')
+    expect(text).toContain('0%')
+  })
+
+  it('…and the same holds when everyone chooses the OTHER move', () => {
+    const html = renderToStaticMarkup(<FirstRoundPieSVG slices={slices(0, 7)} labels={LABELS5} />)
+    expect(html).toMatch(/<circle[^>]*data-testid="pd-firstround-slice-D"/)
+    expect(html).not.toContain('data-testid="pd-firstround-slice-C"')
+  })
+
+  it('⚠ NEGATIVE CONTROL — a genuine split draws PATHS, not circles', () => {
+    // Without this, "renders a circle" would pass on an implementation that drew a
+    // circle for every input and never produced a real slice at all.
+    const html = renderToStaticMarkup(<FirstRoundPieSVG slices={slices(5, 5)} labels={LABELS5} />)
+    expect(html).toMatch(/<path[^>]*data-testid="pd-firstround-slice-C"/)
+    expect(html).toMatch(/<path[^>]*data-testid="pd-firstround-slice-D"/)
+    expect(html).not.toMatch(/<circle[^>]*data-testid="pd-firstround-slice-/)
+  })
+
+  it('a zero slice is in the legend but not in the ring', () => {
+    const html = renderToStaticMarkup(<FirstRoundPieSVG slices={slices(4, 0)} labels={LABELS5} />)
+    expect(html).toContain('data-testid="pd-firstround-legend-D"')
+    expect(vis(html)).toContain('Blorptide')
+  })
+
+  it('nobody has played → a sentence, not an empty chart', () => {
+    const html = renderToStaticMarkup(<FirstRoundPieSVG slices={slices(0, 0)} labels={LABELS5} />)
+    expect(vis(html)).toContain('Nobody has played a round yet')
+    expect(html).not.toContain('pd-firstround-slice-')
+  })
+
+  it('one student reads "student", not "students"', () => {
+    expect(vis(renderToStaticMarkup(<FirstRoundPieSVG slices={slices(1, 0)} labels={LABELS5} />)))
+      .toContain('1 student')
+  })
+
+  it('⚠ NO RED AND NO GREEN — the colours must not assert a direction', () => {
+    // The game does not state whether a bigger payoff is better (spec §2), and the two
+    // moves are positions with instructor-set wording. A green slice and a red slice
+    // would make a verdict the software refuses to make everywhere else.
+    const html = renderToStaticMarkup(<FirstRoundPieSVG slices={slices(3, 2)} labels={LABELS5} />)
+    const fills = [...html.matchAll(/fill="(#[0-9a-f]{6})"/gi)].map(m => m[1].toLowerCase())
+    expect(fills.length).toBeGreaterThan(0)
+    const hue = (hex: string) => {
+      const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+      const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min
+      if (d === 0) return null
+      const hv = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4
+      return ((hv * 60) + 360) % 360
+    }
+    const hues = fills.map(hue).filter((h): h is number => h !== null)
+    expect(hues.length).toBeGreaterThan(0)
+    // Red is ~0°/360°, green ~90°–160°. Neither may appear.
+    expect(hues.filter(h => h < 15 || h > 345)).toEqual([])
+    expect(hues.filter(h => h >= 90 && h <= 160)).toEqual([])
+  })
+
+  it('sharePct rounds, and says nothing at all when there is nothing', () => {
+    expect(sharePct(1, 3)).toBe('33%')
+    expect(sharePct(2, 3)).toBe('67%')
+    expect(sharePct(0, 4)).toBe('0%')
+    expect(sharePct(4, 4)).toBe('100%')
+    expect(sharePct(0, 0)).toBe('—')
   })
 })

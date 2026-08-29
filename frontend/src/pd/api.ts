@@ -272,6 +272,13 @@ export type PdFirstMoveOutcome = {
   n: number
 }
 
+/** Tier 3c — how many students opened with each move. Both moves always present,
+ *  in ['C','D'] order, even at n = 0, so the chart's slices never swap places. */
+export type PdFirstRoundSlice = {
+  move: Move
+  n: number
+}
+
 export type PdReportData = {
   ok: boolean
   scored: boolean
@@ -284,7 +291,11 @@ export type PdReportData = {
    *  way the students' screens did. */
   unit: string
   participants: PdReportParticipant[]
-  charts: { cooperation: PdCooperationPoint[]; firstMove: PdFirstMoveOutcome[] }
+  charts: {
+    cooperation: PdCooperationPoint[]
+    firstMove: PdFirstMoveOutcome[]
+    firstRound: PdFirstRoundSlice[]
+  }
   /** ⚠ Every strategy's display name and debrief reveal line, resolved SERVER-SIDE
    *  against this instance's wording. The reports render these as given and hold no
    *  label map of their own. */

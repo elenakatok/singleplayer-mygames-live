@@ -53,6 +53,13 @@ export interface CooperationPoint {
   series: CooperationSeriesPoint[]
 }
 
+/** How many students opened with one move (Tier 3c). */
+export interface FirstRoundSlice {
+  move: Move
+  /** Students whose ROUND 1 choice was this move. */
+  n: number
+}
+
 /** Average outcome for one (first move × strategy) cell (Tier 3b). */
 export interface FirstMoveOutcome {
   firstMove: Move
@@ -125,6 +132,36 @@ export function cooperationByRound(rows: readonly PdGameRow[], roundCount: numbe
 export function assignedStrategies(rows: readonly PdGameRow[]): Strategy[] {
   const seen = new Set(rows.map(r => r.strategy).filter((s): s is Strategy => s !== null))
   return STRATEGIES.filter(s => seen.has(s))
+}
+
+/**
+ * Tier 3c — the class's ROUND 1 choice, as a split.
+ *
+ * ⚠⚠ DELIBERATELY POOLED ACROSS STRATEGIES, AND THAT IS WHAT MAKES IT WORTH A REPORT.
+ * Round 1 is the ONE round every student plays with zero information about their
+ * opponent: the bot has not moved, the framing names no strategy, and inferring it
+ * from play is the whole exercise (spec §5). So a student's first choice cannot have
+ * been influenced by the strategy they were assigned, and splitting by strategy here
+ * would carve one population into arbitrary subsets and invite reading noise as an
+ * effect. Tier 3b already does the split, for the rounds where it means something.
+ *
+ * This is prior disposition — what the class walked in believing — which is exactly
+ * the thing the lecture's one-shot dominance argument is about.
+ *
+ * ⚠ BOTH MOVES ARE ALWAYS RETURNED, in ['C','D'] order, even at n = 0. The chart's
+ * slice order, colours and legend rows are then fixed regardless of the data, so they
+ * never move between refreshes during a live class.
+ *
+ * ⚠ THE DENOMINATOR IS STUDENTS WHO PLAYED ROUND 1, not the roster. A student who
+ * never launched made no choice, and counting them as anything would be an invention.
+ */
+export function firstRoundChoices(rows: readonly PdGameRow[]): FirstRoundSlice[] {
+  const moves: Move[] = ['C', 'D']
+  return moves.map(move => ({
+    move,
+    // `moves[0]` only — a student's LATER rounds say nothing about their first.
+    n: rows.filter(r => r.moves.length > 0 && r.moves[0] === move).length,
+  }))
 }
 
 /**

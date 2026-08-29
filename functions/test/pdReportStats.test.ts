@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  cooperationByRound, outcomeByFirstMove, cooperationRate, avgYearsPerRound, type PdGameRow,
+  cooperationByRound, outcomeByFirstMove, firstRoundChoices, cooperationRate,
+  avgYearsPerRound, type PdGameRow,
 } from '../src/pd/reportStats'
 import type { Move, Strategy } from '../src/pd/strategy'
 
@@ -165,5 +166,99 @@ describe('outcomeByFirstMove — Tier 3b, grouped bars', () => {
   it('excludes students who never played from every cell', () => {
     const out = outcomeByFirstMove([...rows, row('never', 'tft', '', [])])
     expect(out.reduce((a, o) => a + o.n, 0)).toBe(4)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Tier 3c — the class's ROUND 1 split (spec §9).
+//
+// ⚠ POOLED ACROSS STRATEGIES ON PURPOSE. Round 1 is played with zero information
+// about the opponent, so the assignment cannot have influenced it — see the note on
+// `firstRoundChoices`. These tests pin that pooling rather than treating it as an
+// omission somebody should later "fix".
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('firstRoundChoices — Tier 3c', () => {
+  it('counts each move, from the FIRST round only', () => {
+    // Hand-counted from the fixture: first moves are C, C, D, D, D → 2 and 3.
+    const rows = [
+      row('a', 'tft', 'CDD', [1, 1, 1]),
+      row('b', 'grim', 'CCC', [1, 1, 1]),
+      row('c', 'tft', 'DCC', [1, 1, 1]),
+      row('d', 'random', 'D', [1]),
+      row('e', 'alternate', 'DDDD', [1, 1, 1, 1]),
+    ]
+    const out = firstRoundChoices(rows)
+    expect(out.length).toBe(2)
+    expect(out).toEqual([{ move: 'C', n: 2 }, { move: 'D', n: 3 }])
+  })
+
+  it('⚠ LATER ROUNDS DO NOT COUNT — only moves[0]', () => {
+    // Every student opens with C and then defects for the rest of the game. A count
+    // over all moves would say 1 and 5; over round 1 it says 2 and 0.
+    const rows = [
+      row('a', 'tft', 'CDDD', [1, 1, 1, 1]),
+      row('b', 'grim', 'CDD', [1, 1, 1]),
+    ]
+    const out = firstRoundChoices(rows)
+    expect(out).toEqual([{ move: 'C', n: 2 }, { move: 'D', n: 0 }])
+    // …and the fixture really does contain later D moves, so the assertion is not vacuous.
+    expect(rows.flatMap(r => [...r.moves]).filter(m => m === 'D').length).toBe(5)
+  })
+
+  it('⚠ THE DENOMINATOR IS STUDENTS WHO PLAYED — a no-show counts as nothing', () => {
+    const rows = [
+      row('played', 'tft', 'C', [1]),
+      row('never', 'grim', '', []),
+      row('no-strategy-either', null, '', []),
+    ]
+    const out = firstRoundChoices(rows)
+    expect(out.reduce((a, s) => a + s.n, 0)).toBe(1)
+    expect(out).toEqual([{ move: 'C', n: 1 }, { move: 'D', n: 0 }])
+  })
+
+  it('⚠ POOLS ACROSS STRATEGIES — the split does not depend on who faced what', () => {
+    // The same five first moves, reassigned to completely different strategies. Round 1
+    // is played before the opponent has moved, so the totals must be identical.
+    const moves = ['C', 'C', 'D', 'D', 'D']
+    const asOne = moves.map((m, i) => row(`s${i}`, 'tft', m, [1]))
+    const asMany = moves.map((m, i) =>
+      row(`s${i}`, (['tft', 'grim', 'random', 'always_first', 'alternate'] as const)[i], m, [1]))
+    expect(asOne.length).toBe(5)
+    expect(firstRoundChoices(asMany)).toEqual(firstRoundChoices(asOne))
+    expect(firstRoundChoices(asMany)).toEqual([{ move: 'C', n: 2 }, { move: 'D', n: 3 }])
+  })
+
+  it('⚠ BOTH MOVES ARE ALWAYS RETURNED, in a stable order, even at zero', () => {
+    // The chart's slice order, colours and legend rows are fixed by this, so they never
+    // move between refreshes during a live class.
+    for (const rows of [[], [row('a', 'tft', 'C', [1])], [row('b', 'tft', 'D', [1])]]) {
+      const out = firstRoundChoices(rows)
+      expect(out.length).toBe(2)
+      expect(out.map(s => s.move)).toEqual(['C', 'D'])
+    }
+  })
+
+  it('an empty roster is two zeros, not an empty list', () => {
+    expect(firstRoundChoices([])).toEqual([{ move: 'C', n: 0 }, { move: 'D', n: 0 }])
+  })
+
+  it('⚠ NEGATIVE CONTROL — the counts DO move when the first moves move', () => {
+    // Without this, "always two slices in this order" is satisfiable by a constant.
+    const allC = [row('a', 'tft', 'C', [1]), row('b', 'tft', 'C', [1])]
+    const allD = [row('a', 'tft', 'D', [1]), row('b', 'tft', 'D', [1])]
+    expect(firstRoundChoices(allC)).toEqual([{ move: 'C', n: 2 }, { move: 'D', n: 0 }])
+    expect(firstRoundChoices(allD)).toEqual([{ move: 'C', n: 0 }, { move: 'D', n: 2 }])
+    expect(firstRoundChoices(allC)).not.toEqual(firstRoundChoices(allD))
+  })
+
+  it('the total always equals the number of students who played a round', () => {
+    const rows = [
+      row('a', 'tft', 'CDD', [1, 1, 1]), row('b', 'grim', 'D', [1]),
+      row('c', 'random', 'CC', [1, 1]), row('d', 'tft', '', []),
+    ]
+    const played = rows.filter(r => r.moves.length > 0).length
+    expect(played).toBe(3)
+    expect(firstRoundChoices(rows).reduce((a, s) => a + s.n, 0)).toBe(played)
   })
 })
