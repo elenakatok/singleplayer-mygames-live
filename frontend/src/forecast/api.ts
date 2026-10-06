@@ -481,6 +481,8 @@ export type ForecastReportParticipant = {
   participation_score: number | null
   debrief: string | null
   months: ForecastStudentMonth[]
+  /** Instructor corrections to typed forecasts (forecastCorrectForecast), oldest first. */
+  corrections: ForecastCorrectionClient[]
   /**
    * ⚠ THE BELOW-FLOOR FLAG (spec §5b) — INSTRUCTOR-ONLY, informational, no score effect.
    *
@@ -554,6 +556,31 @@ export type ForecastReportData = {
 }
 
 export const forecastGetReport = () => callFn<ForecastReportData>('forecastGetReport')
+
+/** One audited correction of a typed forecast, as the report shows it. */
+export interface ForecastCorrectionClient {
+  round: number
+  period: number
+  from: number
+  to: number
+  /** ISO timestamp. */
+  at: string
+  note: string | null
+}
+
+export interface ForecastCorrectResult {
+  ok: true
+  changed: boolean
+  round: number
+  period: number
+  from: number
+  to: number
+}
+
+/** Instructor: fix one student's typed forecast for a played month. Never the demand,
+ *  never a score — see functions/forecast/correctForecast.ts. */
+export const forecastCorrectForecast = (participantId: string, round: number, forecast: number, note?: string) =>
+  callFn<ForecastCorrectResult>('forecastCorrectForecast', { participant_id: participantId, round, forecast, ...(note ? { note } : {}) })
 
 /** The editable instance settings (spec §3). Split by destination on the server:
  *  student-safe fields to config/main, the model and seed to the rules-denied

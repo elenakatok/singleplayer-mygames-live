@@ -5,6 +5,7 @@ import {
   type ForecastDebriefQuestionClient, type ForecastReveal,
 } from './api'
 import { formatBig, formatMetric, formatPercent, formatSigned } from './format'
+import { DataExport } from './DataExport'
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // THE DEBRIEF (spec §9) — one free-text question, ungraded, and then the REVEAL:
@@ -169,6 +170,22 @@ export function RevealPanel({ reveal }: { reveal: ForecastReveal }) {
           You beat {beaten} of the {rows.length} rules above. Your Forecast Accuracy was
           {' '}{formatPercent(yours.accuracy)}.
         </p>
+      </section>
+
+      {/* ⚠ THE FULL DATA FILE, HERE TOO. The reveal is the TERMINAL screen: a student who
+          finishes and comes back lands on it, never again on the results screen — and the
+          assignment's workbook needs the full CSV. Until 2026-10-06 the only download was
+          on the results screen, so a student who clicked Finish without downloading, or
+          who returned later, had no way to get the file (Jamaal, Forecasting, 10-06).
+          Same server-built file as the results screen (getExport.ts): nothing is assembled
+          in the browser. */}
+      <section data-testid="fc-reveal-export" style={{ ...card, display: 'flex', alignItems: 'center', gap: '0.9rem', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: '0.9rem' }}>Your data for the assignment workbook:</span>
+        <DataExport
+          kind="full"
+          label="Download the full data (CSV)"
+          testIdPrefix="fc-reveal-export"
+        />
       </section>
     </div>
   )

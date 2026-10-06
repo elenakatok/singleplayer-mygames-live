@@ -183,6 +183,8 @@ export { forecastSyncRoster } from './forecast/syncRoster'
 export { forecastScoreAndRecord } from './forecast/scoreAndRecord'
 export { forecastGetReport } from './forecast/report'
 export { forecastGetConfig, forecastUpdateConfig } from './forecast/instructorConfig'
+// Instructor: fix one typed forecast after the fact (audited; never the demand, never a score).
+export { forecastCorrectForecast } from './forecast/correctForecast'
 
 // ── Procurement Auction (game_id: procurement) ────────────────────────────────
 //

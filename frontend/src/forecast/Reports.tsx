@@ -7,7 +7,7 @@ import {
 import { InstructorChrome } from '../shared/InstructorChrome'
 import { useInstructorSession } from '../shared/useInstructorSession'
 import {
-  forecastGetReport, forecastInstructorSession, instructorErrorMessage,
+  forecastGetReport, forecastCorrectForecast, forecastInstructorSession, instructorErrorMessage,
   type ForecastReportData, type ForecastReportParticipant,
 } from './api'
 import { ClassChartSVG, MseHistogramSVG } from './ClassChartSVG'
@@ -278,10 +278,34 @@ function OutcomesTable({
   )
 }
 
-/** One student's month-by-month table — the Tier-1 drill-through (spec §10). */
-function StudentDetail({ p }: { p: ForecastReportParticipant }) {
+/** One student's month-by-month table — the Tier-1 drill-through (spec §10), with the
+ *  instructor's one editing power: fixing a TYPED forecast (never the demand, never a
+ *  score — functions/forecast/correctForecast.ts). */
+function StudentDetail({ p, onCorrected }: { p: ForecastReportParticipant; onCorrected: () => Promise<void> }) {
   const th = { padding: '0.35rem 0.5rem', fontSize: '0.72rem', fontWeight: 600, color: colors.textSecondary, borderBottom: `1px solid ${colors.borderMid}`, textAlign: 'right' as const }
   const td = { padding: '0.3rem 0.5rem', fontSize: '0.8rem', textAlign: 'right' as const, ...tnum, borderBottom: `1px solid ${colors.borderLight ?? '#eee'}` }
+  const [editing, setEditing] = useState<number | null>(null)   // the ROUND being edited
+  const [value, setValue] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const corrected = new Set(p.corrections.map(c => c.round))
+
+  const start = (round: number, forecast: number) => { setEditing(round); setValue(String(forecast)); setError(null) }
+  const save = async (round: number) => {
+    const n = Number(value.replace(/[,\s]/g, ''))
+    if (!Number.isInteger(n)) { setError('Enter a whole number.'); return }
+    setSaving(true); setError(null)
+    try {
+      await forecastCorrectForecast(p.participant_id, round, n)
+      await onCorrected()
+      setEditing(null)
+    } catch (e) {
+      setError(instructorErrorMessage(e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <>
       <p style={{ margin: '0 0 0.75rem', fontSize: '0.85rem', color: colors.textSecondary }}>
@@ -289,29 +313,84 @@ function StudentDetail({ p }: { p: ForecastReportParticipant }) {
         {' '}· Y6 <span style={tnum}>{big(p.first_year_mse)}</span> · Y7 <span style={tnum}>{big(p.second_year_mse)}</span>
         {p.improved !== null && (p.improved ? ' · improved in Year 7' : ' · did not improve in Year 7')}
       </p>
+      <p style={{ margin: '0 0 0.75rem', fontSize: '0.78rem', color: colors.textSecondary }}>
+        Typed the wrong number? <strong>Fix</strong> rewrites that month&rsquo;s forecast only — the demand drawn
+        for it and the student&rsquo;s participation score never change, and every correction is recorded below.
+      </p>
       <div style={{ overflowX: 'auto' }}>
         <table data-testid={`fc-drill-${p.participant_id}`} style={{ borderCollapse: 'collapse', width: '100%' }}>
           <thead>
             <tr>
-              {['Period', 'Forecast', 'Actual', 'Error', 'Abs error', 'Squared error', 'Abs % error']
-                .map(h => <th key={h} style={th}>{h}</th>)}
+              {['Period', 'Forecast', 'Actual', 'Error', 'Abs error', 'Squared error', 'Abs % error', '']
+                .map((h, i) => <th key={i} style={th}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
-            {p.months.map(m => (
-              <tr key={m.period}>
-                <td style={td}>{m.period}</td>
-                <td style={td}>{m.forecast.toLocaleString()}</td>
-                <td style={td}>{m.actual.toLocaleString()}</td>
-                <td style={td}>{formatSigned(m.error)}</td>
-                <td style={td}>{m.absoluteError.toLocaleString()}</td>
-                <td style={td}>{formatBig(m.squaredError)}</td>
-                <td style={td}>{formatPercent(m.absolutePercentageError)}</td>
-              </tr>
-            ))}
+            {p.months.map((m, i) => {
+              const round = i + 1
+              const isEditing = editing === round
+              return (
+                <tr key={m.period} data-testid={`fc-drill-row-${round}`}>
+                  <td style={td}>{m.period}</td>
+                  <td style={td}>
+                    {isEditing
+                      ? (
+                        <input
+                          data-testid={`fc-fix-input-${round}`}
+                          value={value}
+                          onChange={e => setValue(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') void save(round); if (e.key === 'Escape') setEditing(null) }}
+                          disabled={saving}
+                          inputMode="numeric"
+                          autoFocus
+                          onFocus={e => e.currentTarget.select()}
+                          style={{ width: '6.5rem', textAlign: 'right', fontSize: '0.8rem', padding: '0.15rem 0.3rem' }}
+                        />
+                      )
+                      : <>{m.forecast.toLocaleString()}{corrected.has(round) && <span title="corrected by the instructor" style={{ color: colors.textSecondary }}> ✎</span>}</>}
+                  </td>
+                  <td style={td}>{m.actual.toLocaleString()}</td>
+                  <td style={td}>{formatSigned(m.error)}</td>
+                  <td style={td}>{m.absoluteError.toLocaleString()}</td>
+                  <td style={td}>{formatBig(m.squaredError)}</td>
+                  <td style={td}>{formatPercent(m.absolutePercentageError)}</td>
+                  <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                    {isEditing
+                      ? (
+                        <>
+                          <button data-testid={`fc-fix-save-${round}`} onClick={() => void save(round)} disabled={saving} style={{ fontSize: '0.75rem', padding: '0.15rem 0.5rem' }}>
+                            {saving ? 'Saving…' : 'Save'}
+                          </button>
+                          {' '}
+                          <button onClick={() => setEditing(null)} disabled={saving} style={{ fontSize: '0.75rem', padding: '0.15rem 0.5rem' }}>Cancel</button>
+                        </>
+                      )
+                      : (
+                        <button data-testid={`fc-fix-${round}`} onClick={() => start(round, m.forecast)} disabled={editing !== null} style={{ fontSize: '0.75rem', padding: '0.15rem 0.5rem' }}>
+                          Fix
+                        </button>
+                      )}
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
+      {error && <p data-testid="fc-fix-error" role="alert" style={{ color: colors.errorAction ?? '#c00', fontSize: '0.8rem', margin: '0.5rem 0 0' }}>{error}</p>}
+      {p.corrections.length > 0 && (
+        <div data-testid="fc-corrections" style={{ marginTop: '0.75rem', fontSize: '0.78rem', color: colors.textSecondary }}>
+          <strong>Corrections</strong>
+          <ul style={{ margin: '0.25rem 0 0', paddingLeft: '1.1rem' }}>
+            {p.corrections.map((c, i) => (
+              <li key={i}>
+                Period {c.period}: {c.from.toLocaleString()} → {c.to.toLocaleString()}
+                {c.at ? ` (${new Date(c.at).toLocaleString()})` : ''}{c.note ? ` — ${c.note}` : ''}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </>
   )
 }
@@ -416,10 +495,11 @@ export default function Reports() {
   const [active, setActive] = useState<TileId | null>(null)
   const [student, setStudent] = useState<string | null>(null)
 
+  const reload = async () => { setData(await forecastGetReport()) }
   useEffect(() => {
     if (session.kind !== 'ready') return
-    forecastGetReport().then(setData).catch(e => setErr(instructorErrorMessage(e)))
-  }, [session])
+    reload().catch(e => setErr(instructorErrorMessage(e)))
+  }, [session]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const navLinks = [
     { label: '← Dashboard', href: `/dashboard${window.location.search}` },
@@ -536,7 +616,7 @@ export default function Reports() {
           onClose={() => (detail ? setStudent(null) : setActive(null))}
         >
           {detail
-            ? <StudentDetail p={detail} />
+            ? <StudentDetail p={detail} onCorrected={reload} />
             : <OutcomesTable rows={data.participants} onOpenStudent={setStudent} />}
         </Modal>
       )}

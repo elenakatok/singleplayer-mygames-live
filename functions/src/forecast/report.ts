@@ -66,6 +66,9 @@ export interface ForecastReportParticipant {
   debrief: string | null
   /** The per-student drill-down (spec §10): their full month-by-month table. */
   months: ReturnType<typeof studentMonthRows>
+  /** Instructor corrections to typed forecasts (correctForecast.ts), oldest first.
+   *  `at` is an ISO string — a Timestamp does not survive the callable boundary intact. */
+  corrections: Array<{ round: number; period: number; from: number; to: number; at: string; note: string | null }>
   /**
    * ⚠ THE BELOW-FLOOR FLAG (spec §5b) — INSTRUCTOR-ONLY, and informational only.
    *
@@ -80,6 +83,21 @@ export interface ForecastReportParticipant {
    * else.
    */
   below_floor: BelowFloorResult | null
+}
+
+/** The audit trail as stored by correctForecast.ts, made safe for the wire. */
+function readCorrections(raw: unknown): ForecastReportParticipant['corrections'] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((c): ForecastReportParticipant['corrections'] => {
+    if (!c || typeof c !== 'object') return []
+    const o = c as Record<string, unknown>
+    const at = o.at as { toDate?: () => Date } | undefined
+    return [{
+      round: Number(o.round), period: Number(o.period), from: Number(o.from), to: Number(o.to),
+      at: at && typeof at.toDate === 'function' ? at.toDate().toISOString() : '',
+      note: typeof o.note === 'string' ? o.note : null,
+    }]
+  }).sort((a, b) => a.at.localeCompare(b.at))
 }
 
 export const forecastGetReport = onCall({ cors: FORECAST_CORS_ORIGINS }, async (request) => {
@@ -136,6 +154,7 @@ export const forecastGetReport = onCall({ cors: FORECAST_CORS_ORIGINS }, async (
       participation_score: typeof p.normalized_score === 'number' ? p.normalized_score : null,
       debrief: typeof debriefRaw === 'string' ? debriefRaw : null,
       months: studentMonthRows(points),
+      corrections: readCorrections(p.forecast_corrections),
       below_floor: belowFloor,
     }
   })
