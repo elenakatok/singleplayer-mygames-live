@@ -339,7 +339,7 @@ export default function Settings() {
         {numField('a', 'Intercept (a)', 'The low-season level at month 0.')}
         {numField('b', 'Trend per month (b)')}
         {numField('H', 'High-season lift (H)')}
-        {numField('sigma', 'Noise standard deviation (σ)', 'Sets the floor: no forecast can beat σ².')}
+        {numField('sigma', 'Noise standard deviation (σ)', 'Sets the floor: the expected MSE no method beats on average is σ².')}
         <div style={row}>
           <label style={label} htmlFor="fc-set-highSeasonMonths">High-season months</label>
           <input

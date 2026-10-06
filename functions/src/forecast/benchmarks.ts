@@ -93,7 +93,7 @@ export const PUBLISHED_BENCHMARKS: readonly Benchmark[] = [
   bench('true_process', 'Knowing the true process', 3599,
     'What perfect knowledge of the systematic component buys. The regression is essentially at it.'),
   bench('floor', 'The floor (σ²)', 3600,
-    'Unsystematic variability. No forecast can beat this — it is what “some variability cannot be predicted” means numerically.'),
+    'Unsystematic variability. No method beats this on average — it is what “some variability cannot be predicted” means numerically. A single run of a few dozen months can land below it by luck.'),
 ]
 
 /** The row the debrief highlights as "where the lecture's method would have landed". */

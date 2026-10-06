@@ -85,7 +85,7 @@ function ProcessHeader({ data }: { data: ForecastReportData }) {
       </div>
       <div style={{ fontSize: '0.8rem', color: colors.textSecondary }}>
         {data.numHistory} months of history · {data.params.rounds} months played ·
-        {' '}floor σ² = <span style={tnum}>{formatBig(p.floorMse)}</span> — no forecast can beat it.
+        {' '}floor σ² = <span style={tnum}>{formatBig(p.floorMse)}</span> — the expected MSE no method beats on average (one student's run can land below it by luck).
         {' '}<strong>Instructor reference; students see none of this until the debrief.</strong>
       </div>
     </div>

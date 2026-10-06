@@ -96,9 +96,12 @@ export function RevealPanel({ reveal }: { reveal: ForecastReveal }) {
 
       <section data-testid="fc-reveal-floor" style={card}>
         <p style={{ margin: 0, fontSize: '0.92rem', lineHeight: 1.6 }}>
-          Because that last part is unpredictable, <strong>no forecast could have beaten an MSE
-          of about <span style={tnum}>{formatBig(process.floorMse)}</span></strong> — the variance of
-          the noise. Your MSE was <strong style={tnum} data-testid="fc-reveal-your-mse">{formatBig(yours.mse)}</strong>
+          Because that last part is unpredictable, <strong>no forecasting method can be expected
+          to beat an MSE of about <span style={tnum}>{formatBig(process.floorMse)}</span></strong> — the
+          variance of the noise. That is an average over many months: in a single run of{' '}
+          <span style={tnum}>{yours.n}</span> months the noise can break your way and land you below it,
+          or against you and land you above it, with no difference in skill either way.
+          Your MSE was <strong style={tnum} data-testid="fc-reveal-your-mse">{formatBig(yours.mse)}</strong>
           {' '}(Standard Error <span style={tnum}>{formatMetric(yours.standardError)}</span>, mean signed
           error <span style={tnum}>{formatSigned(yours.meanError, 1)}</span>).
         </p>
@@ -167,8 +170,8 @@ export function RevealPanel({ reveal }: { reveal: ForecastReveal }) {
           </tbody>
         </table>
         <p style={{ margin: '0.6rem 0 0', fontSize: '0.82rem', color: colors.textSecondary }}>
-          You beat {beaten} of the {rows.length} rules above. Your Forecast Accuracy was
-          {' '}{formatPercent(yours.accuracy)}.
+          Your result is below the expected MSE of {beaten} of the {rows.length} rules above.
+          Your Forecast Accuracy was {formatPercent(yours.accuracy)}.
         </p>
       </section>
 
